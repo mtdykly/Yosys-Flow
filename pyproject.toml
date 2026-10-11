@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yosys-flow"
+version = "0.1.0"
+description = "Instrumented Yosys transformation provenance in JSONL"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+yosys-flow = "yosys_flow.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["yosys_flow*"]

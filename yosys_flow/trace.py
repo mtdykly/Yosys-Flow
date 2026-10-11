@@ -58,6 +58,7 @@ class Trace:
         require(self.records[0].get("record_type") == "run_begin", "missing run_begin")
         require(self.records[-1].get("record_type") == "run_end", "missing run_end (interrupted trace)")
         run = self.records[0].get("run_id")
+        current_snapshot_ids = self.records[0].get("step_snapshot_ids") == "current"
         active, declared, used, versions, steps = set(), set(), set(), {}, set()
         current_step = None
         initialized = False
@@ -92,6 +93,10 @@ class Trace:
                 require(initialized and current_step is None, "nested step or missing initial snapshot")
                 current_step = record["step_id"]
                 require(current_step not in steps, "duplicate step ID")
+                if current_snapshot_ids:
+                    previous = self.records[sequence - 2]
+                    require(previous.get("record_type") == "snapshot" and previous.get("phase") == "before"
+                            and previous.get("step_id") == current_step, "missing or mislabelled step before snapshot")
                 require(record.get("coverage") == "instrumented" and record.get("pass") == "opt_merge",
                         "unsupported step coverage")
                 steps.add(current_step)
@@ -114,6 +119,9 @@ class Trace:
                 used |= outputs
                 self.events[eid] = record
             elif kind == "snapshot":
+                require(record["phase"] in {"initial", "before", "after", "final"}, "unknown snapshot phase")
+                if current_snapshot_ids and record["phase"] == "after":
+                    require(current_step is not None and record["step_id"] == current_step, "mislabelled step after snapshot")
                 refs = [o["ref"] for o in record["objects"]]
                 require(len(refs) == len(set(refs)), "duplicate snapshot object")
                 require(set(refs) <= declared, "snapshot references undeclared objects")
@@ -207,8 +215,10 @@ class Trace:
                     queue.append(nxt)
         return seen, edges
 
-    def source_seeds(self, filename, first, last=None, instance=None):
+    def source_seeds(self, filename, first, last=None, instance=None, column=None, end_column=None):
         target = Path(filename).resolve()
+        start_query = (first, column or 1)
+        end_query = (last or first, (end_column or column) if column else float("inf"))
         seeds = []
         for ref, obj in self.objects.items():
             if obj["kind"] != "source_span":
@@ -216,8 +226,10 @@ class Trace:
             match = re.fullmatch(r"(.+):(\d+)\.(\d+)-(\d+)\.(\d+)", obj["state"]["src"])
             if not match:
                 continue
-            file, start, _, end, _ = match.groups()
-            if Path(file).resolve() == target and int(start) <= (last or first) and int(end) >= first:
+            file, start, start_col, end, end_col = match.groups()
+            # Yosys source ranges have an exclusive end; CLI ranges are inclusive.
+            if (Path(file).resolve() == target and (int(start), int(start_col)) <= end_query
+                    and (int(end), int(end_col)) > start_query):
                 if instance is None or unescape(obj["module"]) == unescape(instance):
                     seeds.append(ref)
         return seeds

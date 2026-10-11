@@ -198,6 +198,11 @@ def load_run(directory):
 
 def query(args):
     manifest, trace, _ = load_run(args.directory)
+    return query_loaded(args, manifest, trace)
+
+
+def query_loaded(args, manifest, trace):
+    """Reuse an already validated run for export; build its indexes only once."""
     reverse = args.object is not None
     if reverse:
         require(args.object in trace.objects, f"unknown object: {args.object}")
@@ -205,7 +210,12 @@ def query(args):
     else:
         require(args.line is not None and args.line > 0, "source query requires positive --line")
         require(args.end_line is None or args.end_line >= args.line, "--end-line must be >= --line")
-        seeds = trace.source_seeds(args.source, args.line, args.end_line, args.instance)
+        column, end_column = getattr(args, "column", None), getattr(args, "end_column", None)
+        require(column is None or column > 0, "--column must be positive")
+        require(end_column is None or (column is not None and end_column > 0), "--end-column requires --column and must be positive")
+        require(column is None or (args.end_line or args.line, end_column or column) >= (args.line, column),
+                "end location must not precede start location")
+        seeds = trace.source_seeds(args.source, args.line, args.end_line, args.instance, column, end_column)
     seen, edges = trace.walk(seeds, reverse=reverse)
     finals = [r for r in sorted(seen & trace.final) if trace.objects[r]["kind"] == "cell"]
     source_refs = [r for r in sorted(seen) if trace.objects[r]["kind"] == "source_span"]
@@ -218,8 +228,15 @@ def query(args):
                               if trace.objects[r]["kind"] == "source_span"]
     changed_inputs = [i["path"] for i in manifest["inputs"]
                       if not Path(i["path"]).is_file() or digest(i["path"]) != i["sha256"]]
+    non_cells = [{"ref": r, "kind": trace.objects[r]["kind"], "name": trace.objects[r]["name"],
+                  "state": trace.objects[r]["state"]} for r in sorted(seen & trace.final)
+                 if trace.objects[r]["kind"] != "cell"]
+    resolution = ("cells_found" if finals else "source_not_mapped" if not seeds else
+                  "non_cell_objects_only" if non_cells else "no_final_objects")
     return {"run_id": manifest["run_id"], "direction": "reverse" if reverse else "forward", "seeds": seeds,
-            "matched": bool(seeds), "final_cells": [{"ref": r, "name": trace.objects[r]["name"],
+            "matched": bool(seeds), "resolution": resolution, "final_non_cell_objects": non_cells,
+            "empty_result_means_no_effect": False,
+            "final_cells": [{"ref": r, "name": trace.objects[r]["name"], "module": trace.objects[r]["module"],
                 "type": trace.objects[r]["state"]["type"], "all_origins": other_origins[r],
                 "consumers": sharing[r]} for r in finals],
             "sources": [{"ref": r, **trace.objects[r]["state"]} for r in source_refs],

@@ -1,10 +1,10 @@
 import argparse
 import json
-from pathlib import Path
 import subprocess
 import sys
 
 from .runner import ROOT, load_run, query, run
+from .extract import extract
 from .trace import TraceError
 
 
@@ -24,14 +24,22 @@ def parser():
     execute.add_argument("--nomux", action="store_true")
     validate = commands.add_parser("validate", help="重新检查哈希、事件引用、结构重放及网表")
     validate.add_argument("directory")
-    inspect = commands.add_parser("query", help="源码正查或对象反查；JSON 输出含完整可达事件子图")
-    inspect.add_argument("directory")
-    group = inspect.add_mutually_exclusive_group(required=True)
-    group.add_argument("--source")
-    group.add_argument("--object", help="完整版本引用，如 yosys:object_17@1")
-    inspect.add_argument("--line", type=int)
-    inspect.add_argument("--end-line", type=int)
-    inspect.add_argument("--instance", help="第一阶段为顶层模块名")
+    for name, help_text in [("query", "源码正查或对象反查；JSON 输出含完整可达事件子图"),
+                            ("extract", "导出来源关联的 cell 子网表及边界、来源说明")]:
+        inspect = commands.add_parser(name, help=help_text)
+        inspect.add_argument("directory")
+        group = inspect.add_mutually_exclusive_group(required=True)
+        group.add_argument("--source")
+        group.add_argument("--object", help="完整版本引用，如 yosys:object_17@1")
+        inspect.add_argument("--line", type=int)
+        inspect.add_argument("--end-line", type=int)
+        inspect.add_argument("--column", type=int, help="1 起始列号；与行号共同限定源码位置")
+        inspect.add_argument("--end-column", type=int, help="包含在查询内的末列，默认同起始列")
+        inspect.add_argument("--instance", help="第一阶段为顶层模块名")
+        if name == "extract":
+            inspect.add_argument("--out", required=True, help="新建 .v 文件，附带 .il/.json/.provenance.json")
+            inspect.add_argument("--module-name", default="selected", help="导出子模块名称")
+            inspect.add_argument("--yosys", default="yosys")
     return cli
 
 
@@ -42,6 +50,8 @@ def main(argv=None):
             result = run(args)
         elif args.command == "query":
             result = query(args)
+        elif args.command == "extract":
+            result = extract(args)
         else:
             _, _, result = load_run(args.directory)
         print(json.dumps(result, ensure_ascii=False, indent=2))

@@ -6,7 +6,7 @@
 
 | record_type | 主要字段 | 语义 |
 | --- | --- | --- |
-| `run_begin` | `capture` | 开始一次独立记录 |
+| `run_begin` | `capture`, `step_snapshot_ids` | 开始一次独立记录；新日志用 `current` 声明前后快照均标记当前步骤 |
 | `object` | `object_id`, `version`, `ref`, `kind`, `module`, `name`, `state`, `source_ids` | 不可变的对象版本定义 |
 | `snapshot` | `phase`, `step_id`, `objects` | 从实际 RTLIL 重新读取的存活对象集合和状态 |
 | `step_begin` | `step_id`, `pass`, `command`, `coverage` | 一次 pass 调用开始 |
@@ -67,3 +67,17 @@
 该检查器不重新实现上游优化的所有规范化判定，也不试图证明任意恶意重写的日志真实发生过。产物 SHA-256 用于发现意外修改，不是签名或信任认证。`validate` 重算哈希和结构检查，读取已保存的原版/形式检查报告；它不重新启动形式工具。
 
 来源索引 `对象 → 使用事件`、`对象 → 生成事件` 与电气连接索引相互独立。新格式加入条件依赖、删除、拆分、位精度或 ABC invocation 时，应同步升级写入、校验、查询和测试，不能把未知记录静默忽略。
+
+## 步骤快照兼容
+
+当前 `begin_step()` 先分配步骤 ID，再写 `before` 快照。因此 `step_2` 的前后快照都使用 `step_2`。校验器要求声明 `step_snapshot_ids=current` 的日志在 `step_begin` 前紧邻一个同 ID 的 `before` 快照，并检查 `after` 的 ID。
+
+早期 v1 日志没有此标记，其 `before` ID 可能为空或沿用上一轮。读取器继续允许这些已存在的日志，但不能把其中的 `before.step_id` 作为准确分组依据；不会静默修改历史文件。
+
+## 子网表说明文件
+
+`extract` 的 `.provenance.json` 是导出报告，与原始 JSONL 分开保存。它记录原运行 ID、`after.json` 摘要、选择条件、原模块、导出模块、所选 cell 及来源事件子图、实际边界、导出产物摘要和检查结果。
+
+`boundary` 的每项对应一个一位端口：`original_bit` 是原 `after.json` 的电气信号 ID；`aliases` 包括原 wire 名、LSB-first offset 和按原声明方向换算的 `source_index`；`drivers/users` 记录完整端点，`external_drivers/external_users` 只列选中集合外部端点。这些 bit ID 与日志中的 `signal_bit` 对象 ID 是不同编号空间。
+
+`mode=source_association`、`upstream_cone_included=false` 表示导出范围由来源关系选择，没有递归加入上游逻辑。`last_recorded_pass=opt_merge` 和 `coverage=partial` 防止把当前末端误认为完整 synth 末端。`safe_for_incremental_reuse` 仍然为 false。

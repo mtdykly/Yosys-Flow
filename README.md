@@ -2,7 +2,7 @@
 
 按照[分享对话中的方案](https://chatgpt.com/share/6aca0247-c794-83e8-a1e1-31c0c9792df2)实现的第一阶段原型：**在 Base 综合时主动记录对象演化，以 JSONL 保存，并支持 RTL → 合并后网表、网表 → RTL 的双向查询。**
 
-目前实现的是对话最后确定的四个交付物：统一记录器、实际插桩的 `opt_merge`、独立查询程序和检查报告。它是增量综合所需的来源追踪基础，还没有实现局部重综合、网表拼接或完整 Yosys/ABC 追踪。
+目前实现统一记录器、实际插桩的 `opt_merge`、独立查询程序、检查报告，以及按源码位置导出带边界端口的子网表。后续完整流程已确定以默认 `synth -top <top>` 为目标，见 [默认 synth 接入计划](docs/default-synth-plan.md)。当前追踪终点仍是 `opt_merge`，尚未覆盖完整 synth、局部重综合或网表拼接。
 
 ## 快速运行
 
@@ -14,6 +14,7 @@ make
 python3 -m yosys_flow run --source examples/merge.v --top demo --out runs/my-first-run
 python3 -m yosys_flow query runs/my-first-run --source examples/merge.v --line 2
 python3 -m yosys_flow query runs/my-first-run --source examples/merge.v --line 3
+python3 -m yosys_flow extract runs/my-first-run --source examples/merge.v --line 2 --out runs/exports/selected.v
 python3 -m yosys_flow validate runs/my-first-run
 make test
 ```
@@ -38,6 +39,53 @@ python3 -m yosys_flow query runs/my-first-run --object 'yosys:object_20@1'
 编号在运行内分配，这个例子里的数字不是固定 API；不同设计、版本和运行应使用各自结果中的 `ref`。`run_id + ref` 才能唯一定位一个运行中的对象。
 
 `examples/merge_new.v` 将第一处 AND 改成 OR。单独运行它会得到两个门，用来检验为什么修改共享逻辑时不能直接替换旧 AND。这里对 New 的完整运行仅是测试用对照，不是已经实现的增量算法。
+
+## 从源码导出子网表
+
+```bash
+python3 -m yosys_flow extract runs/my-first-run \
+  --source examples/merge.v --line 2 \
+  --out runs/exports/selected.v
+```
+
+此命令只复制所选来源关联的 cell，**不递归加入上游驱动 cell**。子模块边界由同一次运行的 `after.json` 实际电气连接确定：外部驱动成为输入、外部使用成为输出，内部连线和常量保留。未被任何对象使用的选中输出也会暴露为观察端口，并在说明中标为 `unconsumed_selected_output`。
+
+示例导出的逻辑如下：
+
+```verilog
+module selected(input in_2, input in_3, output out_4);
+    assign out_4 = in_2 & in_3;
+endmodule
+```
+
+端口按信号位命名；数字是原 JSON 的电气信号 ID，不是源码变量下标。`out_4` 对应原设计中的两个别名 `y1`、`y2`，不会因为有两处源码来源而复制两遍共享门。对于总线，每一位使用独立边界端口，cell 的位宽、符号参数和端口位序均保留。
+
+一次导出会生成：
+
+| 文件 | 内容 |
+| --- | --- |
+| `selected.v` | 可独立读取的 Verilog 子模块，内建 cell 由 Yosys 转成表达式 |
+| `selected.il` | 保留原 cell 名称、类型、参数的 RTLIL 子网表 |
+| `selected.json` | 从 `after.json` 直接复制的 cell 及边界连接 |
+| `selected.provenance.json` | 所选 cell 的全部已记录来源、共享使用者、端口和原信号的对应、覆盖缺口及验证结果 |
+| `selected.ys` / `selected.log` | 独立子网表检查和导出格式等价检查的脚本、日志 |
+
+导出先在临时目录中通过 `check -assert`，再重新读取生成的 Verilog，与直接复制的 cell 子网表做形式等价检查；全部通过后才发布产物。该检查证明导出格式保持功能，不证明来源覆盖完整或这些门可被单独替换。任一同名产物已存在时拒绝覆盖。脚本使用相对文件名，可在导出目录内用 `yosys -s selected.ys` 复查。
+
+`query` 和 `extract` 都支持 `--column` / `--end-column`（从 1 开始，查询末列包含在范围内），可缩小同一行多个表达式的选择范围。例如 `--line 2 --column 17 --end-column 21`。仅给 `--column` 时选择该位置；给 `--end-line` 时和末列共同构成连续范围。匹配依然基于 `src` 范围，不是独立 AST 语句身份。
+
+也可用 `extract --object '<最终 cell 的 ref>'` 或 `--module-name my_slice`。目前不支持 inout 或多驱动的边界，也不导出缺少语句来源证据的纯连接子网表。
+
+空查询现在返回明确的 `resolution`：
+
+| 值 | 含义 |
+| --- | --- |
+| `cells_found` | 找到来源关联的最终 cell，可尝试导出 |
+| `non_cell_objects_only` | 只找到 wire/connection 等对象，见 `final_non_cell_objects` |
+| `source_not_mapped` | 该源码位置没有已记录的来源映射 |
+| `no_final_objects` | 找到了起点，但查询方向上没有可达的最终对象 |
+
+以上后三项均不表示“这条语句没有影响”或“已经被消除”。纯 `assign y=a` / 常量赋值的语句来源尚不完整，导出会给出说明并拒绝生成空模块。只有将来有明确删除事件时，才能报告“被消除”及其原因。
 
 ## 运行流程
 
@@ -119,8 +167,10 @@ Base 的源码后来修改或移走时，历史仍可查询；结果中的 `chan
 | `tools/instrument.py` | 校验源码 SHA-256，再在明确的转换位置加入钩子；锚点变化时拒绝生成 |
 | `yosys_flow/runner.py` | 运行、配置摘要、原版对照、等价检查、完成状态 |
 | `yosys_flow/trace.py` | JSONL 检查、事件重放、双向来源索引、独立连接索引 |
+| `yosys_flow/extract.py` | 复制来源关联的 cell、计算电气边界、导出并验证子模块 |
 | `tests/test_flow.py` | 真实 Yosys 集成测试和损坏日志测试 |
 | [docs/schema.md](docs/schema.md) | 格式约定与一致性规则 |
 | [docs/roadmap.md](docs/roadmap.md) | 后续前端、其他 pass、ABC 与增量综合的接入顺序 |
+| [docs/default-synth-plan.md](docs/default-synth-plan.md) | 用户已选定的默认 synth 目标、阶段清单和验收标准 |
 
 上游依据：[固定版本 opt_merge 源码](https://github.com/YosysHQ/yosys/blob/0e82bbefe/passes/opt/opt_merge.cc)、[Yosys 扩展文档](https://yosyshq.readthedocs.io/projects/yosys/en/latest/yosys_internals/extending_yosys/extensions.html)。

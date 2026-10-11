@@ -25,7 +25,7 @@ struct Recorder {
         if (existing.good()) log_cmd_error("Refusing to overwrite trace file %s.\n", path);
         stream.open(path);
         if (!stream) log_cmd_error("Cannot open trace file %s.\n", path);
-        emit({{"record_type", "run_begin"}, {"capture", "instrumented"}});
+        emit({{"record_type", "run_begin"}, {"capture", "instrumented"}, {"step_snapshot_ids", "current"}});
     }
     void emit(J::object record) {
         record["schema_version"] = 1;
@@ -155,8 +155,8 @@ struct Recorder {
         emit({{"record_type", "snapshot"}, {"step_id", step_id}, {"phase", phase}, {"objects", objects}});
     }
     void begin_step(Design *design, const std::vector<std::string> &args) {
-        snapshot(design, "before");
         step_id = "step_" + std::to_string(++step_seq);
+        snapshot(design, "before");
         J::array command;
         for (auto &a : args) command.push_back(a);
         emit({{"record_type", "step_begin"}, {"step_id", step_id}, {"command", command},

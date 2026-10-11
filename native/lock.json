@@ -1,0 +1,8 @@
+{
+  "yosys-source": {"repository": "YosysHQ/yosys", "commit": "0e82bbefe5456a14a9637bf614eddccac181bc65", "directory": ".", "sha256": "e7775ef2d9d791f8818534d3093b2a7054b65170c4f24fdf67eed6e3c3e17d40"},
+  "cxxopts": {"repository": "jarro2783/cxxopts", "commit": "4bf61f08697b110d9e3991864650a405b3dd515d", "directory": "libs/cxxopts", "sha256": "6a198fdd59e95fe8d4e4ba2a5583e72e610e725192e9ccc2a06a23dfc8243a13"},
+  "fmt": {"repository": "fmtlib/fmt", "commit": "1be298e1bd68957e4cd352e1f676f00e07dcfb57", "directory": "libs/fmt", "sha256": "d041f836d9b2a3c1c0fe3cce81ffe6a4a257028faa2f4af0dd20d7e58b493766"},
+  "tomlplusplus": {"repository": "marzer/tomlplusplus", "commit": "a43ad3787293f4a46b1d70c0924b5a25d10e79fc", "directory": "libs/tomlplusplus", "sha256": "46995ddc5baff656a2d527d4329a382c14412f963fa0edf418319280e8435c40"},
+  "boost_regex": {"repository": "MikePopoloski/regex", "commit": "2b3ac0834f31086c6e3c0e0ceb8516e427d5c39d", "directory": "libs/boost_regex", "sha256": "5674d9802e115d3ed12c9a1301716f7f0debabf46478449f1112e2a21e6eeecf"},
+  "sv-elab": {"repository": "povik/sv-elab", "commit": "2caaaefa831a1d548a681268ccf3eea925ca1312", "directory": "frontends/slang/lib", "sha256": "89cb0fea5d88e9a0f5b746637da4de1c39ce7f69f3739a63e3b22fba73edfacb"}
+}

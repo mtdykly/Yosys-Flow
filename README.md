@@ -2,7 +2,38 @@
 
 按照[分享对话中的方案](https://chatgpt.com/share/6aca0247-c794-83e8-a1e1-31c0c9792df2)实现的第一阶段原型：**在 Base 综合时主动记录对象演化，以 JSONL 保存，并支持 RTL → 合并后网表、网表 → RTL 的双向查询。**
 
-目前实现统一记录器、实际插桩的 `opt_merge`、独立查询程序、检查报告，以及按源码位置导出带边界端口的子网表。后续完整流程已确定以默认 `synth -top <top>` 为目标，见 [默认 synth 接入计划](docs/default-synth-plan.md)。当前追踪终点仍是 `opt_merge`，尚未覆盖完整 synth、局部重综合或网表拼接。
+可运行原有 `opt_merge` 插件流程，以及原生 `m1`、`m1-opt` 检查点和 **`synth` 默认完整综合流程**。`--flow synth` 的终点已经是包含 ABC 后优化的细粒度通用逻辑门和触发器网表；来源覆盖仍为 **partial**，ABC 结果明确标为区域候选，尚未完成精确定位验收。目标和验收标准见 [默认 synth 接入计划](docs/default-synth-plan.md)。标准单元映射、增量重综合和网表拼接属于后续研究。
+
+## 默认 synth 查询与导出（新增）
+
+```bash
+make native NATIVE_JOBS=4
+python3 -m yosys_flow run --flow synth \
+  --source examples/proc.v --top demo --out runs/my-synth-run
+python3 -m yosys_flow query runs/my-synth-run --source examples/proc.v --line 13
+python3 -m yosys_flow extract runs/my-synth-run \
+  --source examples/proc.v --line 13 --out runs/my-synth-run/state.v
+```
+
+已接入基础优化的部分改写、连接别名迁移、算术模型替换、techmap 拆分和 ABC 区域交接，并保存实际 ABC 网络、脚本和版本摘要。单模块范围、候选精度、验证及后续缺口见 [默认 synth 使用说明](docs/native-synth.md)。普通 `proc` 和 ABC 的候选关联不能当作端到端精确 cell 定位。
+
+## 原生前端 / proc 试验流程（新增）
+
+```bash
+make native                          # 首次需要下载、编译固定版本源码
+python3 -m yosys_flow run --flow m1 \
+  --source examples/proc.v --top demo --out runs/my-proc-run
+python3 -m yosys_flow query runs/my-proc-run --source examples/proc.v --line 13
+python3 -m yosys_flow extract runs/my-proc-run \
+  --source examples/proc.v --line 13 --out runs/my-proc-run/state.v
+python3 -m yosys_flow extract runs/my-proc-run \
+  --source examples/proc.v --line 15 --out runs/my-proc-run/direct.v
+make test-native
+```
+
+真实终点为 `proc -noopt; opt_merge`。原生钩子在 AST 简化前分配语句/表达式 ID，记录生成的 cell、连接和过程动作，接入普通 `proc` 子 pass 和普通 `opt_merge`，没有加入 `keep`。新增直接连接/常量导出、FF 参数和逐位初始化保留、外部状态边界及适用的时序格式验证。
+
+`proc` 生成对象目前使用 **`process_signal_candidate`** 精度：按过程内目标信号收集来源，不能当作逐分支精确 cell 定位。AST 简化也尚未完整插桩；结果始终报告覆盖缺口。已验证的 RTL 形式、构建依赖、验证语义及未完成项见 [原生 M1 使用说明](docs/native-m1.md)。下面原有流程的命令默认仍运行 M0。
 
 ## 快速运行
 
@@ -72,9 +103,9 @@ endmodule
 
 导出先在临时目录中通过 `check -assert`，再重新读取生成的 Verilog，与直接复制的 cell 子网表做形式等价检查；全部通过后才发布产物。该检查证明导出格式保持功能，不证明来源覆盖完整或这些门可被单独替换。任一同名产物已存在时拒绝覆盖。脚本使用相对文件名，可在导出目录内用 `yosys -s selected.ys` 复查。
 
-`query` 和 `extract` 都支持 `--column` / `--end-column`（从 1 开始，查询末列包含在范围内），可缩小同一行多个表达式的选择范围。例如 `--line 2 --column 17 --end-column 21`。仅给 `--column` 时选择该位置；给 `--end-line` 时和末列共同构成连续范围。匹配依然基于 `src` 范围，不是独立 AST 语句身份。
+`query` 和 `extract` 都支持 `--column` / `--end-column`（从 1 开始，查询末列包含在范围内），可缩小同一行多个表达式的选择范围。例如 `--line 2 --column 17 --end-column 21`。仅给 `--column` 时选择该位置；给 `--end-line` 时和末列共同构成连续范围。M0 匹配基于 `src` 范围；M1 使用原生记录的 AST 身份和位置。
 
-也可用 `extract --object '<最终 cell 的 ref>'` 或 `--module-name my_slice`。目前不支持 inout 或多驱动的边界，也不导出缺少语句来源证据的纯连接子网表。
+也可用 `extract --object '<最终 cell 的 ref>'` 或 `--module-name my_slice`。目前两条流程均不支持 inout 或多驱动的边界。M0 不导出缺少语句来源证据的纯连接；M1 支持有原生赋值记录的连接/常量导出。
 
 空查询现在返回明确的 `resolution`：
 
@@ -85,7 +116,7 @@ endmodule
 | `source_not_mapped` | 该源码位置没有已记录的来源映射 |
 | `no_final_objects` | 找到了起点，但查询方向上没有可达的最终对象 |
 
-以上后三项均不表示“这条语句没有影响”或“已经被消除”。纯 `assign y=a` / 常量赋值的语句来源尚不完整，导出会给出说明并拒绝生成空模块。只有将来有明确删除事件时，才能报告“被消除”及其原因。
+M0 中以上后三项均不表示“这条语句没有影响”或“已经被消除”。M0 的纯 `assign y=a` / 常量赋值语句来源尚不完整，导出会拒绝生成空模块；M1 对有生成证据的此类语句返回 `connections_found` 并导出。只有将来有明确删除事件时，才能报告“被消除”及其原因。
 
 ## 运行流程
 
@@ -105,7 +136,7 @@ validation.json 通过后，manifest.status 才设为 complete
 
 前端只执行一次，两个分支读取同一份 RTLIL，从而避免前端重复生成的命名差异干扰对照。`trace_opt_merge` 使用固定版本的上游实现，仅在实际变换处加入观察钩子；没有重写合并算法，没有添加 `keep` 或来源属性来改变综合决策，也没有覆盖内置 `opt_merge` 命令。
 
-独立插件适合当前小实验。若以后要直接记录 `opt`/`synth` 内部调用，需把同一组钩子接入所用 Yosys 源码。当前执行内置 `opt` 不会自动获得本插件的覆盖。
+独立插件适合 M0 小实验。新增 M1 已将部分钩子接入原生源码和内部调用链，但尚未覆盖完整 `opt`/`synth`。当前执行内置 `opt` 不会自动获得完整语义追踪。
 
 ## 配置
 
@@ -125,9 +156,11 @@ python3 -m yosys_flow run \
 - `--steps` 可验证同名 pass 多次调用时的顺序和独立步骤编号；`--nomux` 对应原版的选项。
 - `--yosys` 和 `--plugin` 可指定路径，但二进制必须匹配上述固定版本。编译器可用 `make CXX=...` 指定。
 - 源文件和运行目录可含空格。当前固定版本前端的 `-I` 路径不处理引号，因此本程序明确拒绝包含空白的 include 目录。
-- `query --line A --end-line B` 查询 Base 的源码范围，`--instance demo` 限定实例；当前阶段只支持一个展开后的组合模块，因此实例就是顶层模块。
+- `query --line A --end-line B` 查询 Base 的源码范围，`--instance demo` 限定实例；M0 仅支持单个组合模块，M1 也暂限单模块，因此实例就是顶层模块。
 
 ## 产物
+
+下表列出 M0 产物。M1 使用相同的 manifest/网表/验证文件名，但前端仍含 process，因此只保存 `frontend.il`；真实输入清单在 JSONL 的结束记录中，不生成 M0 的 `before.json` / `inputs.json`。
 
 | 文件 | 内容 |
 | --- | --- |
@@ -148,6 +181,8 @@ python3 -m yosys_flow run \
 
 ## 覆盖边界
 
+本节描述默认 M0 流程。新增 M1 的已验证输入、候选精度和未覆盖项单独列于 [native-m1.md](docs/native-m1.md)。
+
 **已经覆盖：** `opt_merge` 运行内的单元身份、保留对象的新版本、被删除对象的完整旧状态、新增信号别名、合并的多来源关系、重复步骤、前后实际结构校验。wire、signal bit、module 和 connection 均有独立记录，常量与直接连线不会因为没有 cell 而从结构快照中消失。
 
 **尚未覆盖：** 宏展开、AST 节点演化、条件/参数依赖、generate 未选分支、`proc`、其他优化、`flatten`、`techmap`、ABC、时序状态对应、区域切割、局部综合和拼接。前端来源只是 `src` 属性观察，不能解释已经被前端删除的对象。直接赋值的连接被保留，但不承诺恢复没有 `src` 的赋值语句来源。
@@ -165,10 +200,14 @@ Base 的源码后来修改或移走时，历史仍可查询；结果中的 `chan
 | `plugin/recorder.h` | 统一对象/步骤/事件记录器，以及 `trace_begin`、`trace_end`、`trace_inputs` 命令 |
 | `vendor/opt_merge.cc` | 固定版本上游源码，保留原始 ISC 版权许可 |
 | `tools/instrument.py` | 校验源码 SHA-256，再在明确的转换位置加入钩子；锚点变化时拒绝生成 |
+| `native/` | 原生 M1 公共记录器、前端身份代码和固定源码依赖锁 |
+| `tools/build_native.py` / `tools/instrument_native.py` | 构建原生版、应用转换钩子并保留上游自动命名行号 |
 | `yosys_flow/runner.py` | 运行、配置摘要、原版对照、等价检查、完成状态 |
 | `yosys_flow/trace.py` | JSONL 检查、事件重放、双向来源索引、独立连接索引 |
+| `yosys_flow/native.py` | M1 运行器、v2 校验、精度报告与源码查询 |
 | `yosys_flow/extract.py` | 复制来源关联的 cell、计算电气边界、导出并验证子模块 |
 | `tests/test_flow.py` | 真实 Yosys 集成测试和损坏日志测试 |
+| `tests/test_native.py` | 原生来源集合、状态/连接导出及缺口验证 |
 | [docs/schema.md](docs/schema.md) | 格式约定与一致性规则 |
 | [docs/roadmap.md](docs/roadmap.md) | 后续前端、其他 pass、ABC 与增量综合的接入顺序 |
 | [docs/default-synth-plan.md](docs/default-synth-plan.md) | 用户已选定的默认 synth 目标、阶段清单和验收标准 |

@@ -1,0 +1,475 @@
+"""Native synthesis provenance, separate from the opt_merge v1 proof format.
+
+Semantic bindings are recorded at AST generation and proc/merge sites. Structural
+checkpoints audit cell lifecycle; they do not establish transformation causality.
+Process-signal and ABC-region candidates are not promoted to exact cell results.
+"""
+from copy import deepcopy
+import json
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import time
+import uuid
+
+from .runner import PIN, digest, identifier, token, write_json
+from .trace import TraceError, require, unescape
+
+PASSES = ["proc -noopt", "opt_merge"]
+OPT_PASSES = ["proc", "opt_expr", "opt_clean", "opt_merge", "opt_clean"]
+GAPS = [
+    {"stage": "frontend", "coverage": "partial", "reason":
+     "语句/表达式 ID 在 AST 简化前分配；已接入 clone 和生成位置，尚未完整记录 AST 简化、宏及参数依赖。"},
+    {"stage": "proc", "coverage": "partial", "reason":
+     "mux/FF 关联按 process 的目标信号收集赋值和条件来源，为 process_signal_candidate，非逐分支精确定位。"},
+    {"stage": "opt_expr / opt_clean / remaining synth / ABC", "coverage": "not_executed", "reason":
+     "本次终点是 proc -noopt; opt_merge。尚未执行完整基础优化或默认 synth。"},
+]
+
+
+def resolve_bit(bit, module):
+    if isinstance(bit, str):
+        require(bit in {"0", "1", "x", "z"}, f"invalid constant: {bit}")
+        return bit
+    name = unescape(bit["wire"])
+    require(name in module["netnames"], f"recorded signal no longer exists: {name}")
+    bits = module["netnames"][name]["bits"]
+    require(isinstance(bit["offset"], int) and 0 <= bit["offset"] < len(bits), "invalid recorded signal offset")
+    return bits[bit["offset"]]
+
+
+class NativeTrace:
+    def __init__(self, path):
+        self.records = [json.loads(line) for line in Path(path).read_text().splitlines()]
+        require(bool(self.records) and self.records[0].get("record_type") == "run_begin" and
+                self.records[0].get("schema_version") == 2, "invalid native trace header")
+        require(self.records[-1].get("record_type") == "run_end", "incomplete native trace")
+        self.sources, self.objects, self.assignments, self.events, self.edges = {}, {}, {}, [], []
+        self.regions, self.removals = [], []
+        invocations = {}
+        live, stack, steps, retired = set(), [], set(), set()
+        self.gaps = []
+        for sequence, row in enumerate(self.records, 1):
+            require(row.get("seq") == sequence, "native sequence discontinuity")
+            kind = row["record_type"]
+            if kind == "run_begin":
+                require(sequence == 1, "duplicate native run header")
+            if kind == "step_begin":
+                sid = row["step_id"]
+                require(sid > 0 and sid not in steps and row["parent_step_id"] == (stack[-1] if stack else 0), "invalid native step nesting")
+                steps.add(sid)
+                stack.append(sid)
+            else:
+                require(row["step_id"] == (stack[-1] if stack else 0), "native record has wrong step ID")
+            if "origins" in row:
+                require(set(row["origins"]) <= self.sources.keys(), "unknown native source reference")
+            if kind == "source":
+                require(row["id"] not in self.sources and row["id"] > 0, "duplicate native source ID")
+                self.sources[row["id"]] = row
+            elif kind == "cell_create":
+                ref = row["ref"]
+                require(re.fullmatch(r"native:cell_[1-9][0-9]*@0", ref) and ref not in self.objects and ref not in retired,
+                        "duplicate or invalid native cell creation")
+                self.objects[ref] = row
+                live.add(ref)
+                self.events.append(row)
+                inputs = row.get("inputs", [])
+                if inputs:
+                    require(set(inputs) <= self.objects.keys() and ref not in inputs, "unknown or circular native derivation input")
+                    expected = set().union(*(set(self.objects[r]["origins"]) for r in inputs))
+                    require(set(row["origins"]) == expected, "native creation origins differ from derivation inputs")
+                if row.get("abc_invocation"):
+                    region = invocations.get(row["abc_invocation"])
+                    require(region is not None and inputs == region["inputs"] and row["precision"] == "abc_region_candidate",
+                            "native ABC output does not match its region")
+                elif inputs:
+                    expected_precision = self.objects[inputs[0]]["precision"] if len(inputs) == 1 else "cell_group_candidate"
+                    require(row["precision"] == expected_precision, "native derivation changed association precision")
+                self.edges += [{"from": source, "to": ref, "event_id": sequence,
+                                "capture": row.get("operation") or ("ast_generation_scope" if row["precision"] == "cell" else "process_target_signal"),
+                                "precision": row["precision"]} for source in (inputs or row["origins"])]
+            elif kind in {"cell_state", "merge"}:
+                inputs = [row["input"]] if kind == "cell_state" else row["inputs"]
+                require(len(inputs) == (1 if kind == "cell_state" else 2) and len(set(inputs)) == len(inputs),
+                        "invalid native transformation arity")
+                require(set(inputs) <= live, "native transformation input is not live")
+                out = row["ref"] if kind == "cell_state" else row["output"]
+                stem, version = inputs[0].rsplit("@", 1)
+                require(out == stem + "@" + str(int(version) + 1), "invalid native cell version")
+                require(out not in self.objects, "duplicate native output reference")
+                expected = set().union(*(set(self.objects[r]["origins"]) for r in inputs))
+                require(set(row["origins"]) == expected, "native source propagation does not match event inputs")
+                expected_precision = self.objects[inputs[0]]["precision"]
+                if kind == "merge" and self.objects[inputs[1]]["precision"] != "cell":
+                    expected_precision = self.objects[inputs[1]]["precision"]
+                require(row["precision"] == expected_precision, "native transformation changed association precision")
+                obj = deepcopy(self.objects[inputs[0]])
+                obj.update(row)
+                obj["ref"] = out
+                self.objects[out] = obj
+                live.remove(inputs[0])
+                retired.add(inputs[0])
+                live.add(out)
+                self.events.append(row)
+                self.edges += [{"from": source, "to": out, "event_id": sequence,
+                                "capture": "instrumented_merge" if kind == "merge" else row["capture"],
+                                "precision": row["precision"]} for source in inputs]
+            elif kind == "cell_remove":
+                require(row["ref"] in live, "native removal of non-live object")
+                live.remove(row["ref"])
+                retired.add(row["ref"])
+                self.events.append(row)
+                self.removals.append(row)
+            elif kind == "assignment":
+                require(row["ref"] not in self.assignments, "duplicate native connection")
+                require(len(row["lhs"]) == len(row["rhs"]), "native assignment width mismatch")
+                self.assignments[row["ref"]] = {**row, "original_lhs": deepcopy(row["lhs"]),
+                                                "offsets": list(range(len(row["lhs"]))), "revision": 0}
+                self.events.append(row)
+                inputs = row.get("inputs", [])
+                if inputs:
+                    require(set(inputs) <= self.objects.keys(), "unknown native connection derivation input")
+                    require(set(row["origins"]) == set().union(*(set(self.objects[r]["origins"]) for r in inputs)),
+                            "native connection origins differ from derivation inputs")
+                if row.get("abc_invocation"):
+                    region = invocations.get(row["abc_invocation"])
+                    require(region is not None and inputs == region["inputs"] and row["precision"] == "abc_region_candidate",
+                            "native ABC connection does not match its region")
+                self.edges += [{"from": source, "to": row["ref"], "event_id": sequence,
+                                "capture": row.get("operation") or "assignment_generation", "precision": row["precision"]}
+                               for source in (inputs or row["origins"])]
+            elif kind == "connection_state":
+                require(row["ref"] in self.assignments, "unknown connection migration")
+                obj = self.assignments[row["ref"]]
+                require(row["revision"] == obj["revision"] + 1, "invalid connection revision")
+                require(len(row["lhs"]) == len(row["rhs"]) == len(row["offsets"]), "connection migration width mismatch")
+                require(row["offsets"] == sorted(set(row["offsets"])) and set(row["offsets"]) <= set(obj["offsets"]),
+                        "connection migration introduced unknown offsets")
+                require(row["reason"] in {"opt_clean_alias_representative", "signal_removed"}, "unknown connection migration reason")
+                obj.update(row)
+                self.events.append(row)
+            elif kind == "abc_region":
+                require(set(row["inputs"]) <= retired, "ABC region includes non-retired input")
+                require(set(row["origins"]) == set().union(*(set(self.objects[r]["origins"]) for r in row["inputs"])),
+                        "ABC region origins differ from extracted inputs")
+                require(row["precision"] == "abc_region_candidate", "ABC region cannot claim cell precision")
+                if "invocation_id" in row:
+                    iid = row["invocation_id"]
+                    require(iid not in invocations, "duplicate ABC invocation")
+                    extracted = {r["ref"] for r in self.removals if r.get("abc_invocation") == iid and r["step_id"] == row["step_id"]}
+                    require(set(row["inputs"]) == extracted and len(row["inputs"]) == len(extracted),
+                            "ABC region differs from actual extracted members")
+                    require(not set(row["input_ports"]).intersection(row["output_ports"]), "ABC boundary directions overlap")
+                    for key in ("input_ports", "output_ports"):
+                        require(len(row[key]) == len(set(row[key])) and
+                                all(isinstance(i, int) and 0 <= i < len(row["signals"]) for i in row[key]), "invalid ABC boundary index")
+                    require(set(row["artifacts"]) == {"input.blif", "output.blif", "script"} and
+                            all(Path(p).name == p for p in row["artifacts"].values()), "invalid ABC artifact paths")
+                    invocations[iid] = row
+                self.regions.append(row)
+                self.events.append(row)
+            elif kind in {"checkpoint", "run_end"}:
+                require(len(row["cells"]) == len(set(row["cells"])) and set(row["cells"]) == live,
+                        "native snapshot does not match lifecycle replay")
+                if "connections" in row:
+                    require(row["connections"] == {r: obj["revision"] for r, obj in self.assignments.items()},
+                            "native connection snapshot differs from replay")
+                if kind == "run_end":
+                    require(not stack and sequence == len(self.records), "unclosed native steps or premature end")
+            elif kind == "coverage_gap":
+                self.gaps.append(row["reason"])
+            elif kind == "step_end":
+                require(bool(stack), "unmatched native step end")
+                stack.pop()
+            elif kind in {"process_action", "initialization"}:
+                self.events.append(row)
+            elif kind not in {"run_begin", "step_begin"}:
+                raise TraceError(f"unknown native record type: {kind}")
+        self.final = live
+        require(all("state" in self.objects[r] for r in live), "final native cell has no state")
+
+    def compare_abc_artifacts(self, directory):
+        for region in self.regions:
+            if "artifacts" not in region:
+                continue  # Older v2 pilot logs did not archive ABC files.
+            files = {k: Path(directory) / v for k, v in region["artifacts"].items()}
+            require(all(p.is_file() and p.stat().st_size > 0 for p in files.values()), "missing ABC evidence artifact")
+            lines = files["input.blif"].read_text().splitlines()
+            for directive, field in ((".inputs", "input_ports"), (".outputs", "output_ports")):
+                ports = next((line.split()[1:] for line in lines if line.startswith(directive)), None)
+                expected = [f"ys__n{i}" for i in region[field]]
+                if directive == ".inputs" and not expected:
+                    expected = ["dummy_input"]
+                require(ports == expected, "ABC boundary differs from exported network")
+
+    def compare_netlist(self, path):
+        modules = json.loads(Path(path).read_text())["modules"]
+        expected = {(unescape(self.objects[r]["state"]["module"]), self.objects[r]["state"]["name"]): r for r in self.final}
+        actual = {(m, n) for m, module in modules.items() for n in module["cells"]}
+        require({(m, unescape(n)) for m, n in expected} == actual, "native final cell inventory differs from netlist")
+        for (name, cell_name), ref in expected.items():
+            module = modules[name]
+            cell = module["cells"][unescape(cell_name)]
+            state = self.objects[ref]["state"]
+            require(cell["type"] == unescape(state["type"]), "native cell type differs from netlist")
+            require(cell["parameters"] == {unescape(k): v for k, v in state["parameters"].items()}, "native cell parameters differ")
+            connections = {unescape(p): [resolve_bit(b, module) for b in bits] for p, bits in state["connections"].items()}
+            require(connections == cell["connections"], "native cell connections differ")
+            require(cell["port_directions"] == {unescape(k): v for k, v in state["port_directions"].items()}, "native cell directions differ")
+        for row in self.assignments.values():
+            module = modules[unescape(row["module"])]
+            require([resolve_bit(b, module) for b in row["lhs"]] == [resolve_bit(b, module) for b in row["rhs"]],
+                    "recorded frontend connection is no longer valid at endpoint")
+
+
+def run_native(args):
+    out = Path(args.out).resolve()
+    require(not out.exists(), f"output directory already exists: {out}")
+    native, stock = shutil.which(args.native_yosys), shutil.which(args.yosys)
+    require(native is not None, "native Yosys is missing; run make native first")
+    require(stock is not None, f"stock Yosys is missing: {args.yosys}")
+    versions = {key: subprocess.check_output([binary, "-V"], text=True).strip()
+                for key, binary in (("native", native), ("stock", stock))}
+    require(all(PIN in v for v in versions.values()), f"native flows are pinned to {PIN}: {versions}")
+    require(Path(native).resolve() != Path(stock).resolve(), "--yosys must be an independent stock executable")
+    require(args.steps == 1 and not args.nomux, "native flows have fixed pass lists; --steps/--nomux apply only to opt-merge")
+    sources = [Path(p).resolve(strict=True) for p in args.source]
+    includes = [Path(p).resolve(strict=True) for p in args.include]
+    for p in [out, *sources, *includes]:
+        token(p)
+    require(all(p.is_dir() and not any(c.isspace() for c in str(p)) for p in includes), "unsupported include directory")
+    top = identifier(args.top)
+    defines = []
+    for definition in args.define:
+        require(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(=[A-Za-z0-9_'()+*/.<>=!~&|^?:+-]+)?", definition) is not None,
+                f"unsupported macro definition: {definition}")
+        defines.append("-D" + definition)
+    parameters = []
+    for parameter in args.param:
+        name, sep, value = parameter.partition("=")
+        require(sep and re.fullmatch(r"[0-9][A-Za-z0-9_'?+-]*", value) is not None, "--param expects NAME=numeric_value")
+        parameters.extend(["-chparam", identifier(name), value])
+    read = "read_verilog -sv -defer " + " ".join(defines + ["-I" + str(p) for p in includes] + [token(p) for p in sources])
+    frontend = read + "\nhierarchy -check -top " + top + " " + " ".join(parameters)
+    passes = [f"synth -top {top}"] if args.flow == "synth" else OPT_PASSES if args.flow == "m1-opt" else PASSES
+    gaps = deepcopy(GAPS[:2])
+    if args.flow == "m1":
+        gaps += deepcopy(GAPS[2:])
+    else:
+        gaps.append({"stage": "optimizations", "coverage": "partial", "reason":
+                     "已记录 opt_expr 的目标 cell 改写和 opt_clean 的连接迁移；跨 cell 常量/控制依赖、opt_dff 吸收的控制逻辑及其他优化尚未完整记录。"})
+        if args.flow == "synth":
+            gaps.append({"stage": "ABC", "coverage": "region_candidate", "reason":
+                         "按实际送入 ABC 的 cell 集合关联重写区域；尚无 ABC 内部逐节点变换证据，不代表精确 cell 级定位。"})
+        else:
+            gaps.append({"stage": "remaining synth / ABC", "coverage": "not_executed", "reason": "本次只执行基础优化检查点。"})
+    pipeline = "\n".join(passes)
+    run_id = uuid.uuid4().hex
+    out.mkdir(parents=True)
+    manifest = {"schema_version": 2, "run_id": run_id, "status": "running", "flow": args.flow,
+                "endpoint": "; ".join(passes), "coverage": "partial", "coverage_gaps": gaps,
+                "safe_for_incremental_reuse": False, "inputs": [], "artifacts": {}, "timings_seconds": {},
+                "configuration": {"top": top, "sources": list(map(str, sources)), "include_dirs": list(map(str, includes)),
+                                  "defines": args.define, "parameters": args.param, "passes": passes},
+                "tool": {"versions": versions, "native_executable": str(Path(native).resolve()),
+                         "native_sha256": digest(native), "stock_executable": str(Path(stock).resolve())}}
+    write_json(out / "manifest.json", manifest)
+
+    def path(name):
+        return token(out / name)
+
+    def execute(name, binary, script, dependencies=False):
+        target = out / (name + ".ys")
+        target.write_text(script + "\n")
+        command = [binary, "-Q", "-T"]
+        if dependencies:
+            command += ["-E", str(out / "frontend.d")]
+        start = time.perf_counter()
+        with (out / (name + ".log")).open("w") as log:
+            result = subprocess.run(command + ["-s", str(target)], stdout=log, stderr=subprocess.STDOUT)
+        manifest["timings_seconds"][name] = time.perf_counter() - start
+        require(result.returncode == 0, f"{name} failed:\n" + (out / (name + ".log")).read_text()[-4000:])
+
+    try:
+        start_ns = time.time_ns()
+        execute("traced", native, f"flow_start {path('yosys.jsonl')} {run_id}\n{frontend}\n"
+                f"write_rtlil {path('frontend.il')}\n{pipeline}\ncheck -assert\n"
+                f"write_json {path('after.json')}\nwrite_rtlil {path('after.il')}\nflow_stop\nwrite_verilog {path('after.v')}", True)
+        after = json.loads((out / "after.json").read_text())["modules"]
+        require(set(after) == {top}, "native flows currently require one elaborated module without hierarchy")
+        allowed = {"$dff", "$adff"}
+        from .extract import state_cell
+        require(all(not state_cell(c) or c["type"] in allowed or
+                    (args.flow == "synth" and c["type"].startswith(("$_DFF_", "$_DFFE_", "$_SDFF_", "$_SDFFE_", "$_SDFFCE_")))
+                    for c in after[top]["cells"].values()),
+                "native state support is limited to $dff/$adff and final DFF/DFFE/SDFF gates; latches and other state forms are not supported")
+        trace = NativeTrace(out / "yosys.jsonl")
+        trace.compare_netlist(out / "after.json")
+        trace.compare_abc_artifacts(out)
+        manifest["tool"]["abc"] = []
+        for executable in sorted({r["executable"] for r in trace.regions if "executable" in r}):
+            binary = shutil.which(executable)
+            require(binary is not None, f"recorded ABC executable missing: {executable}")
+            require(Path(binary).stat().st_mtime_ns <= start_ns, "ABC executable changed during run")
+            manifest["tool"]["abc"].append({"executable": str(Path(binary).resolve()), "sha256": digest(binary),
+                "version_output": subprocess.check_output([binary, "-c", "version"], text=True).strip()})
+        # Yosys lists every file opened by its frontend, including includes.
+        # Use its native input_files set via a file list emitted by the recorder.
+        input_record = trace.records[-1]
+        dependencies = set(sources) | {Path(p).resolve(strict=True) for p in input_record.get("input_files", [])}
+        dependencies.discard(out / "traced.ys")
+        for file in sorted(dependencies):
+            require(file.stat().st_mtime_ns <= start_ns, f"input changed during frontend: {file}")
+            manifest["inputs"].append({"path": str(file), "sha256": digest(file), "size_bytes": file.stat().st_size})
+        execute("baseline", stock, f"{frontend}\n{pipeline}\ncheck -assert\nwrite_json {path('baseline.json')}\nwrite_rtlil {path('baseline.il')}")
+        require(after == json.loads((out / "baseline.json").read_text())["modules"], "native result differs from stock flow")
+        execute("equivalence", stock, f"read_rtlil {path('baseline.il')}\nrename {top} gold\ndesign -stash gold_design\n"
+                f"read_rtlil {path('after.il')}\nrename {top} gate\ndesign -stash gate_design\n"
+                "design -copy-from gold_design -as gold gold\ndesign -copy-from gate_design -as gate gate\n"
+                "equiv_make gold gate equiv\nhierarchy -top equiv\nclk2fflogic\n"
+                "equiv_simple -seq 5\nequiv_induct -seq 5\nequiv_status -assert")
+        for row in manifest["inputs"]:
+            require(digest(row["path"]) == row["sha256"], f"input changed during run: {row['path']}")
+        for tool in manifest["tool"]["abc"]:
+            require(digest(tool["executable"]) == tool["sha256"], "ABC executable changed during validation")
+        manifest["coverage_gaps"] += [{"stage": "native hooks", "coverage": "gap", "reason": g} for g in trace.gaps]
+        validation = {"valid": True, "run_id": run_id, "schema_version": 2, "coverage": "partial",
+                      "endpoint": manifest["endpoint"], "safe_for_incremental_reuse": False,
+                      "checks": {"cell_lifecycle_replay": True, "source_references": True, "final_cell_netlist_match": True,
+                                 "recorded_connections_match": True, "stock_flow_exact_match": True,
+                                 "abc_boundary_matches_exported_network": True,
+                                 "stock_to_traced_equivalence": True, "inputs_unchanged": True},
+                      "counts": {"sources": len(trace.sources), "final_cells": len(trace.final), "assignments": len(trace.assignments),
+                                 "abc_invocations": len(trace.regions)},
+                      "full_transformation_coverage": False, "exact_proc_cell_attribution": False}
+        write_json(out / "validation.json", validation)
+        manifest["artifacts"] = {p.name: {"sha256": digest(p), "size_bytes": p.stat().st_size}
+                                 for p in sorted(out.iterdir()) if p.is_file() and p.name != "manifest.json"}
+        manifest["status"] = "complete"
+        write_json(out / "manifest.json", manifest)
+        return {"run_directory": str(out), "status": "complete", **validation}
+    except BaseException as exc:
+        manifest.update(status="failed", error=str(exc))
+        write_json(out / "manifest.json", manifest)
+        raise
+
+
+def load_native(directory, manifest):
+    require(manifest.get("status") == "complete", "native run is incomplete or failed")
+    required = {"yosys.jsonl", "after.json", "baseline.json", "validation.json", "equivalence.log"}
+    require(required <= manifest["artifacts"].keys(), "native manifest is missing required artifacts")
+    for name, meta in manifest["artifacts"].items():
+        require(Path(name).name == name, "invalid native artifact path")
+        require(digest(directory / name) == meta["sha256"], f"artifact hash mismatch: {name}")
+    trace = NativeTrace(directory / "yosys.jsonl")
+    require(trace.records[0]["run_id"] == manifest["run_id"], "native run ID mismatch")
+    trace.compare_netlist(directory / "after.json")
+    for region in trace.regions:
+        require(set(region.get("artifacts", {}).values()) <= manifest["artifacts"].keys(), "ABC evidence missing from artifact manifest")
+    trace.compare_abc_artifacts(directory)
+    require(json.loads((directory / "after.json").read_text())["modules"] ==
+            json.loads((directory / "baseline.json").read_text())["modules"], "native stock comparison mismatch")
+    validation = json.loads((directory / "validation.json").read_text())
+    require(validation.get("valid") is True and validation.get("run_id") == manifest["run_id"], "native validation failed")
+    return manifest, trace, validation
+
+
+def query_native(args, manifest, trace):
+    reverse = args.object is not None
+    expression_selection = False
+    module_name = manifest["configuration"]["top"]
+    if args.instance:
+        require(args.instance in {module_name, "\\" + module_name}, "native flows currently support only the top-level instance")
+    if reverse:
+        require(args.object in trace.objects or args.object in trace.assignments, f"unknown object: {args.object}")
+        obj = trace.objects.get(args.object, trace.assignments.get(args.object))
+        seeds = set(obj["origins"])
+    else:
+        require(args.line is not None and args.line > 0, "source query requires positive --line")
+        end_line = args.end_line or args.line
+        column, end_column = getattr(args, "column", None), getattr(args, "end_column", None)
+        require(end_line >= args.line and (column is None or column > 0), "invalid source range")
+        require(end_column is None or (column is not None and end_column > 0), "--end-column requires a positive --column")
+        require(column is None or (end_line, end_column or column) >= (args.line, column), "reversed source range")
+        source = Path(args.source).resolve()
+        start, end = (args.line, column or 0), (end_line, (end_column or column) if column else 10**9)
+        seeds = {sid for sid, row in trace.sources.items() if Path(row["file"]).resolve() == source and
+                 (row["line"], row["column"]) <= end and (row["end_line"], row["end_column"]) > start}
+        if column is not None:
+            # A point inside a nested expression also overlaps the containing
+            # assignment. Prefer the smallest operator span, otherwise a column
+            # query would silently expand to the entire statement.
+            operators = [sid for sid in seeds if trace.sources[sid]["kind"] not in
+                         {"AST_IDENTIFIER", "AST_CONSTANT", "AST_ASSIGN", "AST_ASSIGN_EQ", "AST_ASSIGN_LE"} and
+                         (trace.sources[sid]["line"], trace.sources[sid]["column"]) <= start and
+                         (trace.sources[sid]["end_line"], trace.sources[sid]["end_column"]) > end]
+            if operators:
+                def extent(sid):
+                    row = trace.sources[sid]
+                    return row["end_line"] - row["line"], row["end_column"] - row["column"]
+                smallest = min(map(extent, operators))
+                seeds = {sid for sid in operators if extent(sid) == smallest}
+                expression_selection = True
+    design = json.loads((Path(args.directory) / "after.json").read_text())["modules"][module_name]
+    final = []
+    for ref in sorted(trace.final):
+        row = trace.objects[ref]
+        if (reverse and args.object != ref) or (not reverse and not seeds.intersection(row["origins"])):
+            continue
+        state = row["state"]
+        final.append({"ref": ref, "module": state["module"], "name": state["name"], "type": state["type"],
+                      "precision": row["precision"], "origin_ids": row["origins"],
+                      "all_origins": [trace.sources[s] for s in row["origins"]], "consumers": []})
+        selected = design["cells"][unescape(state["name"])]
+        output_bits = {b for port, bits in selected["connections"].items()
+                       if selected["port_directions"][port] == "output" for b in bits if isinstance(b, int)}
+        consumers = final[-1]["consumers"]
+        for name, cell in design["cells"].items():
+            for port, bits in cell["connections"].items():
+                if cell["port_directions"][port] == "input":
+                    consumers.extend({"kind": "cell", "name": name, "port": port, "offset": i}
+                                     for i, bit in enumerate(bits) if bit in output_bits)
+        for name, port in design["ports"].items():
+            if port["direction"] == "output":
+                consumers.extend({"kind": "module_port", "name": name, "offset": i}
+                                 for i, bit in enumerate(port["bits"]) if bit in output_bits)
+    connections = []
+    selected_output_bits = {bit for cell in final for port, bits in design["cells"][unescape(cell["name"])]["connections"].items()
+                            if design["cells"][unescape(cell["name"])]["port_directions"][port] == "output" for bit in bits}
+    for ref, row in trace.assignments.items():
+        if (reverse and args.object != ref) or (not reverse and not seeds.intersection(row["origins"])):
+            continue
+        lhs_bits = [resolve_bit(b, design) for b in row["lhs"]]
+        if expression_selection and final and not all(b in selected_output_bits for b in lhs_bits):
+            continue
+        if lhs_bits:
+            connections.append({**row, "lhs_bits": lhs_bits, "rhs_bits": [resolve_bit(b, design) for b in row["rhs"]]})
+    changed = [row["path"] for row in manifest["inputs"]
+               if not Path(row["path"]).is_file() or digest(row["path"]) != row["sha256"]]
+    reachable, selected_edges = set(seeds), []
+    for edge in trace.edges:
+        if edge["from"] in reachable:
+            reachable.add(edge["to"])
+            selected_edges.append(edge)
+    evidence_ids = {e["event_id"] for e in selected_edges}
+    eliminated = [{**row, "origins": trace.objects[row["ref"]]["origins"]} for row in trace.removals
+                  if seeds.intersection(trace.objects[row["ref"]]["origins"])]
+    return {"run_id": manifest["run_id"], "direction": "reverse" if reverse else "forward", "matched": bool(seeds),
+            "seeds": sorted(seeds), "sources": [trace.sources[s] for s in sorted(seeds)],
+            "final_cells": final, "final_connections": connections, "final_non_cell_objects": connections,
+            "retired_cells": eliminated,
+            "retired_connections": [r for r in trace.assignments.values() if not r["lhs"] and seeds.intersection(r["origins"])],
+            "abc_regions": [r for r in trace.regions if seeds.intersection(r["origins"])],
+            "resolution": "cells_found" if final else "connections_found" if connections else "source_not_mapped" if not seeds else "no_final_object_with_recorded_binding",
+            "empty_result_means_no_effect": False,
+            "association_precision": sorted({r["precision"] for r in final + connections}),
+            "cell_level_refs": [r["ref"] for r in final if r["precision"] == "cell"],
+            "candidate_cell_refs": [r["ref"] for r in final if r["precision"] != "cell"],
+            "end_to_end_exact": False,
+            "edges": selected_edges, "events": [r for r in trace.events if r["seq"] in evidence_ids or
+                (r["record_type"] == "connection_state" and r["ref"] in reachable) or
+                (r["record_type"] in {"process_action", "initialization"} and seeds.intersection(r["origins"]))],
+            "coverage": manifest["coverage"], "coverage_gaps": manifest["coverage_gaps"], "endpoint": manifest["endpoint"],
+            "safe_for_incremental_reuse": False, "changed_or_missing_base_inputs": changed,
+            "note": "按记录的转换关系选择来源关联逻辑；process_signal_candidate 和 abc_region_candidate 均为候选，覆盖仍不完整。"}

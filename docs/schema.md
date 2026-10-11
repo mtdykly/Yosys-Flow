@@ -81,3 +81,15 @@
 `boundary` 的每项对应一个一位端口：`original_bit` 是原 `after.json` 的电气信号 ID；`aliases` 包括原 wire 名、LSB-first offset 和按原声明方向换算的 `source_index`；`drivers/users` 记录完整端点，`external_drivers/external_users` 只列选中集合外部端点。这些 bit ID 与日志中的 `signal_bit` 对象 ID 是不同编号空间。
 
 `mode=source_association`、`upstream_cone_included=false` 表示导出范围由来源关系选择，没有递归加入上游逻辑。`last_recorded_pass=opt_merge` 和 `coverage=partial` 防止把当前末端误认为完整 synth 末端。`safe_for_incremental_reuse` 仍然为 false。
+
+## 原生试验格式 v2
+
+原生 `m1`、`m1-opt` 和 `synth` 的 manifest 和 JSONL 使用 `schema_version=2`，由独立 `NativeTrace` 读取；以上原有说明适用于 M0/v1。v2 的范围、精度和验证见 [native-m1.md](native-m1.md) 和 [native-synth.md](native-synth.md)。v2 行带连续 `seq` 和当前 `step_id`，步骤记录带父步骤；`source` 在 AST 简化前分配来源 ID；`cell_create`、`cell_state`、`merge`、`cell_remove` 表达 cell 生命周期；`assignment`、`process_action`、`initialization` 保存实际生成位置的绑定。`run_end` 保存最终 cell 引用和真实输入文件清单。
+
+`cell_state.capture=structural_observation` 仅声明观察到的结构版本，不能当作变换原因。`precision=process_signal_candidate` 不能升级为精确 cell 来源。v2 始终保留 `coverage=partial` 和 `end_to_end_exact=false`，尚未达到 v1 对受控 opt_merge 的完整语义事件重放保证。
+
+新建对象和连接可带 `inputs` / `operation`，指向实际目标处理位置捕获的输入版本。替换可能先退休原对象再创建新对象，因此这些输入可以是历史版本；读取器验证引用存在和来源并集。`cell_state.capture=before_instrumented_rewrite/instrumented_rewrite/before_removal` 标明观察时机，不单独证明跨对象语义。
+
+`connection_state` 使用稳定连接 `ref` 和从 1 连续递增的 `revision`，记录迁移后的 `lhs` / `rhs`、原位 `offsets` 和原因（`opt_clean_alias_representative` / `signal_removed`）。位只能保留或退休；原始 LHS 仍由创建事件保存。新检查点额外保存每条连接的修订号，读取器支持旧 v2 中缺少此字段的检查点。最终活动连接必须与 `after.json` 的实际别名一致。
+
+`abc_region` 使用唯一 `invocation_id`，保存真实提取的 `inputs`、来源并集、原信号 `signals` 及其 `input_ports` / `output_ports` 索引、ABC 可执行路径和归档文件名。成员必须与同一步骤带该调用 ID 的退休事件一致；重新导入的对象带 `abc_invocation`，输入集合必须与该区域相同，精度只能是 `abc_region_candidate`。归档 BLIF/脚本列入 manifest 摘要，输入边界还要与实际 BLIF 一致。`cell_group_candidate` 表示实际多输入模型的候选集合。所有候选均不升级为端到端精确定位。

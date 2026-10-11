@@ -49,6 +49,9 @@ def identifier(value):
 
 
 def run(args):
+    if getattr(args, "flow", "opt-merge") in {"m1", "m1-opt", "synth"}:
+        from .native import run_native
+        return run_native(args)
     out = Path(args.out).resolve()
     require(not out.exists(), f"output directory already exists: {out}; choose a new --out")
     plugin = Path(args.plugin).resolve()
@@ -180,6 +183,9 @@ def run(args):
 def load_run(directory):
     directory = Path(directory).resolve()
     manifest = json.loads((directory / "manifest.json").read_text())
+    if manifest.get("schema_version") == 2:
+        from .native import load_native
+        return load_native(directory, manifest)
     require(manifest.get("schema_version") == 1 and manifest.get("status") == "complete", "run is incomplete or failed")
     require(manifest.get("artifacts"), "manifest has no artifact hashes")
     required = {"yosys.jsonl", "before.json", "after.json", "baseline.json", "validation.json", "equivalence.log"}
@@ -203,6 +209,9 @@ def query(args):
 
 def query_loaded(args, manifest, trace):
     """Reuse an already validated run for export; build its indexes only once."""
+    if manifest.get("schema_version") == 2:
+        from .native import query_native
+        return query_native(args, manifest, trace)
     reverse = args.object is not None
     if reverse:
         require(args.object in trace.objects, f"unknown object: {args.object}")

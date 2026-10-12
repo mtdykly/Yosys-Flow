@@ -12,8 +12,8 @@ import unittest
 from yosys_flow.cli import parser
 from yosys_flow.extract import extract
 from yosys_flow.native import NativeTrace
-from yosys_flow.runner import ROOT, load_run, query, run
-from yosys_flow.trace import TraceError
+from yosys_flow.common import ROOT, TraceError, token
+from yosys_flow.runner import load_run, query, run
 
 NATIVE = Path(os.environ.get("YOSYS_FLOW_NATIVE", ROOT / "build/native/install/bin/yosys"))
 
@@ -75,7 +75,7 @@ class NativeTests(unittest.TestCase):
             self.assertEqual(len(result["final_cells"]), 2)
             mux = next(r for r in result["final_cells"] if r["type"] == "$mux")
             self.assertEqual(self.module["cells"][mux["name"]]["connections"]["Y"], self.module["ports"]["y"]["bits"])
-            self.assertEqual(mux["precision"], "process_signal_candidate")
+            self.assertEqual(mux["precision"], "process_action")
             self.assertFalse(result["end_to_end_exact"])
             self.assertTrue(result["edges"])
             _, _, report, module = self.export("branch" + str(line), line)
@@ -84,7 +84,7 @@ class NativeTests(unittest.TestCase):
 
     def test_simple_ff_reset_enable_init_and_state_export(self):
         result = self.select(13)
-        self.assertEqual({r["type"] for r in result["final_cells"]}, {"$adff", "$mux", "$reduce_or"})
+        self.assertEqual({r["type"] for r in result["final_cells"]}, {"$adff", "$mux"})
         self.assertNotIn("$and", {r["type"] for r in result["final_cells"]})
         target, _, report, module = self.export("state", 13)
         ff = next(c for c in module["cells"].values() if c["type"] == "$adff")
@@ -260,6 +260,68 @@ endmodule
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         trace = NativeTrace(target)
         self.assertIn("partial_pass:opt_expr", trace.gaps)
+
+
+    def test_commutative_multibit_cascade_keeps_all_merge_sources(self):
+        source, out = self.experiment("cascade", """module demo(input [3:0] a,b,c, output [3:0] y1,y2,y3);
+wire [3:0] x1 = a & b;
+wire [3:0] x2 = b & a;
+wire [3:0] x3 = a & b;
+assign y1 = x1 ^ c;
+assign y2 = x2 ^ c;
+assign y3 = x3 ^ c;
+endmodule
+""")
+        _, trace, _ = load_run(out)
+        self.assertEqual(len(trace.final), 2)
+        self.assertEqual(sum(r["record_type"] == "merge" for r in trace.records), 4)
+        for lines in ((2, 3, 4), (5, 6, 7)):
+            refs = [self.select(line, source, out)["final_cells"][0]["ref"] for line in lines]
+            self.assertEqual(len(set(refs)), 1)
+            reverse = query(parser().parse_args(["query", str(out), "--object", refs[0]]))
+            self.assertEqual({r["line"] for r in reverse["sources"]}, set(lines))
+
+    def test_user_keep_repeated_merge_and_module_rename(self):
+        source = self.base / "kept.v"
+        source.write_text((ROOT / "examples/merge.v").read_text())
+        tracefile, netlist = self.base / "kept.jsonl", self.base / "kept.json"
+        commands = (f"read_verilog {token(source)}\nhierarchy -top demo\nproc -noopt\n"
+                    "setattr -set keep 1 t:$and\nopt_merge\nopt_merge\nrename demo renamed\n")
+        script = self.base / "kept.ys"
+        script.write_text(f"flow_start {token(tracefile)} kept\n{commands}write_json {token(netlist)}\nflow_stop\n")
+        subprocess.run([str(NATIVE), "-Q", "-T", "-s", str(script)], check=True, capture_output=True, text=True)
+        trace = NativeTrace(tracefile)
+        trace.compare_netlist(netlist)
+        self.assertEqual(len(trace.final), 2)
+        self.assertFalse(any(r["record_type"] == "merge" for r in trace.records))
+        steps = [r["step_id"] for r in trace.records if r["record_type"] == "step_begin" and r["pass"] == "opt_merge"]
+        self.assertEqual(len(steps), 2)
+        self.assertEqual(len(set(steps)), 2)
+        baseline = self.base / "kept-baseline.json"
+        script.write_text(commands + f"write_json {token(baseline)}\n")
+        subprocess.run(["yosys", "-Q", "-T", "-s", str(script)], check=True, capture_output=True, text=True)
+        actual = json.loads(netlist.read_text())["modules"]
+        self.assertEqual(actual, json.loads(baseline.read_text())["modules"])
+        self.assertTrue(all(int(c["attributes"]["keep"], 2) == 1 for c in actual["renamed"]["cells"].values()))
+        self.assertTrue(any(r["record_type"] == "connection_state" and r["reason"] == "module_renamed" for r in trace.records))
+
+    def test_corrupt_native_lifecycle_versions_and_step_parent_rejected(self):
+        cases = []
+        for field, value in (("input", "missing@0"), ("ref", "native:cell_1@9000")):
+            rows = copy.deepcopy(self.trace.records)
+            next(r for r in rows if r["record_type"] == "cell_state")[field] = value
+            cases.append(rows)
+        rows = copy.deepcopy(self.trace.records)
+        rows[-1]["cells"].pop()
+        cases.append(rows)
+        rows = copy.deepcopy(self.trace.records)
+        next(r for r in rows if r["record_type"] == "step_begin")["parent_step_id"] = 9000
+        cases.append(rows)
+        for index, rows in enumerate(cases):
+            path = self.base / f"bad-lifecycle-{index}.jsonl"
+            path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+            with self.subTest(index=index), self.assertRaises(TraceError):
+                NativeTrace(path)
 
 
 if __name__ == "__main__":

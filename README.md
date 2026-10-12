@@ -1,215 +1,127 @@
 # Yosys-Flow
 
-按照[分享对话中的方案](https://chatgpt.com/share/6aca0247-c794-83e8-a1e1-31c0c9792df2)实现的第一阶段原型：**在 Base 综合时主动记录对象演化，以 JSONL 保存，并支持 RTL → 合并后网表、网表 → RTL 的双向查询。**
+在原生 Yosys 综合过程中记录 RTL 来源与对象演化，支持“源码位置 → 最终网表对象 → 带边界端口的子网表”，也支持对象到源码的反查。
 
-可运行原有 `opt_merge` 插件流程，以及原生 `m1`、`m1-opt` 检查点和 **`synth` 默认完整综合流程**。`--flow synth` 的终点已经是包含 ABC 后优化的细粒度通用逻辑门和触发器网表；来源覆盖仍为 **partial**，ABC 结果明确标为区域候选，尚未完成精确定位验收。目标和验收标准见 [默认 synth 接入计划](docs/default-synth-plan.md)。标准单元映射、增量重综合和网表拼接属于后续研究。
-
-## 默认 synth 查询与导出（新增）
-
-```bash
-make native NATIVE_JOBS=4
-python3 -m yosys_flow run --flow synth \
-  --source examples/proc.v --top demo --out runs/my-synth-run
-python3 -m yosys_flow query runs/my-synth-run --source examples/proc.v --line 13
-python3 -m yosys_flow extract runs/my-synth-run \
-  --source examples/proc.v --line 13 --out runs/my-synth-run/state.v
-```
-
-已接入基础优化的部分改写、连接别名迁移、算术模型替换、techmap 拆分和 ABC 区域交接，并保存实际 ABC 网络、脚本和版本摘要。单模块范围、候选精度、验证及后续缺口见 [默认 synth 使用说明](docs/native-synth.md)。普通 `proc` 和 ABC 的候选关联不能当作端到端精确 cell 定位。
-
-## 原生前端 / proc 试验流程（新增）
-
-```bash
-make native                          # 首次需要下载、编译固定版本源码
-python3 -m yosys_flow run --flow m1 \
-  --source examples/proc.v --top demo --out runs/my-proc-run
-python3 -m yosys_flow query runs/my-proc-run --source examples/proc.v --line 13
-python3 -m yosys_flow extract runs/my-proc-run \
-  --source examples/proc.v --line 13 --out runs/my-proc-run/state.v
-python3 -m yosys_flow extract runs/my-proc-run \
-  --source examples/proc.v --line 15 --out runs/my-proc-run/direct.v
-make test-native
-```
-
-真实终点为 `proc -noopt; opt_merge`。原生钩子在 AST 简化前分配语句/表达式 ID，记录生成的 cell、连接和过程动作，接入普通 `proc` 子 pass 和普通 `opt_merge`，没有加入 `keep`。新增直接连接/常量导出、FF 参数和逐位初始化保留、外部状态边界及适用的时序格式验证。
-
-`proc` 生成对象目前使用 **`process_signal_candidate`** 精度：按过程内目标信号收集来源，不能当作逐分支精确 cell 定位。AST 简化也尚未完整插桩；结果始终报告覆盖缺口。已验证的 RTL 形式、构建依赖、验证语义及未完成项见 [原生 M1 使用说明](docs/native-m1.md)。下面原有流程的命令默认仍运行 M0。
+**默认主流程是固定版本 Yosys 的 `synth -top <top>`**，包含 `techmap`、ABC 和其后优化，终点为与工艺库无关的细粒度通用门及触发器网表。来源覆盖仍为 `partial`：过程和已捕获的异步复位路径已有动作/分支证据，ABC 已按保留输出边界细化候选，尚未完成逐语句精确定位。支持范围和验收目标见 [默认 synth 说明](docs/native-synth.md) 与 [开发计划](docs/default-synth-plan.md)。
 
 ## 快速运行
 
-依赖 Python 3.10+、GNU Make、支持 C++20 的 g++，以及带开发头文件的 **Yosys 0.67+24，提交 `0e82bbefe`**。当前工作环境已具备这些依赖。Python 程序只用标准库，不需要安装数据库或 pip 依赖。
+依赖 Python 3.10+、GNU Make、C++20 编译器、CMake ≥ 3.28、Ninja、Bison、Flex、m4、zlib 开发文件及外部 `yosys-abc`。还需提交 `0e82bbefe` 的**独立原版 Yosys**，用于网表对照和等价验证。完整依赖和本地安装方法见[构建说明](docs/native-m1.md#构建)。
 
 ```bash
-cd /workspace/Yosys-Flow
-make
-python3 -m yosys_flow run --source examples/merge.v --top demo --out runs/my-first-run
-python3 -m yosys_flow query runs/my-first-run --source examples/merge.v --line 2
-python3 -m yosys_flow query runs/my-first-run --source examples/merge.v --line 3
-python3 -m yosys_flow extract runs/my-first-run --source examples/merge.v --line 2 --out runs/exports/selected.v
-python3 -m yosys_flow validate runs/my-first-run
+make NATIVE_JOBS=4
+
+# 省略 --flow 即执行默认 synth
+python3 -m yosys_flow run \
+  --source examples/proc.v --top demo --out runs/my-synth-run
+python3 -m yosys_flow query runs/my-synth-run \
+  --source examples/proc.v --line 13
+python3 -m yosys_flow extract runs/my-synth-run \
+  --source examples/proc.v --line 13 --out runs/my-synth-run/selected.v
+python3 -m yosys_flow validate runs/my-synth-run
 make test
 ```
 
-每次 `run` 都必须使用一个不存在的目录，避免覆盖 Base 历史。`make demo` 等价于构建后运行 `examples/merge.v` 到 `runs/merge` 并查询第 2 行；再次运行请改用新的 `--out`。
+`make` 构建插桩原生版到 `build/native/install`；`make native` 是同一构建入口。`make demo` 构建后综合 `examples/proc.v`，查询第 13 行并导出寄存器子网表到 `runs/synth-demo/selected.v`。每次运行必须使用新的目录；重复演示可指定 `make demo DEMO_OUT=runs/another-demo`。已有结果不会被覆盖。
 
-示例 RTL：
+`--native-yosys` 指定插桩版，`--yosys` 指定独立原版。两者用途不同，不能指向同一个可执行文件。原版依然用于检查原生记录是否改变了综合结果。
 
-```verilog
-module demo(input a, b, output y1, y2);
-    assign y1 = a & b;
-    assign y2 = a & b;
-endmodule
-```
+## 查询、精度与导出
 
-两次源码查询会找到同一个 `$and`，`all_origins` 包含两处表达式位置，`consumers` 包含 `y1` 和 `y2`。复制查询结果里的完整 `ref` 可反查来源，例如：
+`query` 和 `extract` 使用运行时的源码坐标，支持 `--line` / `--end-line` 和从 1 开始的 `--column` / `--end-column`。列查询优先选择指定范围内最小的运算表达式；仅按行查询会包含该范围中记录的语句及表达式。源码后来修改时，结果会列出 `changed_or_missing_base_inputs`，行号仍指向本次运行的原始版本。
+
+返回的 `ref` 只在当前运行内有效，可以反查或按对象导出：
 
 ```bash
-python3 -m yosys_flow query runs/my-first-run --object 'yosys:object_20@1'
+# 使用实际 query 结果中的 ref 替换示例编号
+python3 -m yosys_flow query runs/my-synth-run --object 'native:cell_17@1'
+python3 -m yosys_flow extract runs/my-synth-run \
+  --object 'native:cell_17@1' --module-name my_slice --out runs/exports/my_slice.v
 ```
 
-编号在运行内分配，这个例子里的数字不是固定 API；不同设计、版本和运行应使用各自结果中的 `ref`。`run_id + ref` 才能唯一定位一个运行中的对象。
+默认选择沿**已记录的来源关系**传播，不自动把上游扇入锥全部加入。共享门保留全部已记录来源及使用者。边界由同一次运行的 `after.json` 计算：外部驱动成为输入，外部使用成为输出；选中集合内部的驱动和连接保持内部连接。边界总线逐位导出，并保留原声明下标、位序及参数。
 
-`examples/merge_new.v` 将第一处 AND 改成 OR。单独运行它会得到两个门，用来检验为什么修改共享逻辑时不能直接替换旧 AND。这里对 New 的完整运行仅是测试用对照，不是已经实现的增量算法。
+ABC 记录实际输入/输出节点对应，并按保留输出边界细化候选。例如 `assign y=a&b; assign z=c^d;` 即使进入同一次调用，也能分别选择 AND 与 XOR。结果仍为 `abc_output_cone_candidate`；同一输出锥内部尚未精确区分全部来源，未知映射回退 `abc_region_candidate`。**候选细化不代表 ABC 内部重写追踪已经完成**。`coverage`、对象 `precision` 和 `end_to_end_exact=false` 会同时保留在查询及导出报告中。
 
-## 从源码导出子网表
+| resolution | 含义 |
+| --- | --- |
+| `cells_found` | 找到来源关联的最终 cell |
+| `connections_found` | 找到有记录的连接或常量，可独立导出零 cell 模块 |
+| `source_not_mapped` | 该位置没有已记录的来源起点 |
+| `no_final_object_with_recorded_binding` | 有起点但没有最终来源绑定，需检查覆盖缺口及退休证据 |
 
-```bash
-python3 -m yosys_flow extract runs/my-first-run \
-  --source examples/merge.v --line 2 \
-  --out runs/exports/selected.v
-```
+`retired_cells` / `retired_connections` 表示历史对象退休，可能是替换或删除；空结果不等于原语句没有影响。所有结果保留 `safe_for_incremental_reuse=false`，不提供安全替换证明。
 
-此命令只复制所选来源关联的 cell，**不递归加入上游驱动 cell**。子模块边界由同一次运行的 `after.json` 实际电气连接确定：外部驱动成为输入、外部使用成为输出，内部连线和常量保留。未被任何对象使用的选中输出也会暴露为观察端口，并在说明中标为 `unconsumed_selected_output`。
+对于 `examples/proc.v`，第 13 行查询寄存器更新，第 5 行查询组合逻辑候选，第 15、16 行分别查询直接连接与常量。选中 FF 时保留时钟、复位、使能和相关 Q 位初始化；未选中 FF 的 Q 可以作为边界输入，标记外部状态驱动。
 
-示例导出的逻辑如下：
-
-```verilog
-module selected(input in_2, input in_3, output out_4);
-    assign out_4 = in_2 & in_3;
-endmodule
-```
-
-端口按信号位命名；数字是原 JSON 的电气信号 ID，不是源码变量下标。`out_4` 对应原设计中的两个别名 `y1`、`y2`，不会因为有两处源码来源而复制两遍共享门。对于总线，每一位使用独立边界端口，cell 的位宽、符号参数和端口位序均保留。
-
-一次导出会生成：
+一次导出生成：
 
 | 文件 | 内容 |
 | --- | --- |
-| `selected.v` | 可独立读取的 Verilog 子模块，内建 cell 由 Yosys 转成表达式 |
-| `selected.il` | 保留原 cell 名称、类型、参数的 RTLIL 子网表 |
-| `selected.json` | 从 `after.json` 直接复制的 cell 及边界连接 |
-| `selected.provenance.json` | 所选 cell 的全部已记录来源、共享使用者、端口和原信号的对应、覆盖缺口及验证结果 |
-| `selected.ys` / `selected.log` | 独立子网表检查和导出格式等价检查的脚本、日志 |
+| `selected.v` | 可独立读取的 Verilog 子模块 |
+| `selected.il` / `selected.json` | 保留所选 cell 类型、参数、连接和位序的子网表 |
+| `selected.provenance.json` | 来源、候选精度、共享关系、边界、ABC 证据摘要和覆盖缺口 |
+| `selected.ys` / `selected.log` | 子网表检查与格式等价验证脚本、日志 |
+| `selected.roundtrip.json` | 含状态时保存的 Verilog 重读结果，用于逐位初始化核对 |
 
-导出先在临时目录中通过 `check -assert`，再重新读取生成的 Verilog，与直接复制的 cell 子网表做形式等价检查；全部通过后才发布产物。该检查证明导出格式保持功能，不证明来源覆盖完整或这些门可被单独替换。任一同名产物已存在时拒绝覆盖。脚本使用相对文件名，可在导出目录内用 `yosys -s selected.ys` 复查。
+产物先在临时目录中完成检查和等价验证，成功后发布；任一同名产物已存在时拒绝覆盖。导出等价检查证明格式转换保持所选网表功能，不能代替来源选择正确性验收。inout 和多驱动边界目前拒绝导出。
 
-`query` 和 `extract` 都支持 `--column` / `--end-column`（从 1 开始，查询末列包含在范围内），可缩小同一行多个表达式的选择范围。例如 `--line 2 --column 17 --end-column 21`。仅给 `--column` 时选择该位置；给 `--end-line` 时和末列共同构成连续范围。M0 匹配基于 `src` 范围；M1 使用原生记录的 AST 身份和位置。
+新一轮完整 synth 验收、ABC 对应和优化吸收示例见 [来源选择验收](docs/selection-acceptance.md)。
 
-也可用 `extract --object '<最终 cell 的 ref>'` 或 `--module-name my_slice`。目前两条流程均不支持 inout 或多驱动的边界。M0 不导出缺少语句来源证据的纯连接；M1 支持有原生赋值记录的连接/常量导出。
+过程动作细化的使用示例、精度边界与 pmux 导出语义见 [过程来源说明](docs/process-provenance.md)。
 
-空查询现在返回明确的 `resolution`：
-
-| 值 | 含义 |
-| --- | --- |
-| `cells_found` | 找到来源关联的最终 cell，可尝试导出 |
-| `non_cell_objects_only` | 只找到 wire/connection 等对象，见 `final_non_cell_objects` |
-| `source_not_mapped` | 该源码位置没有已记录的来源映射 |
-| `no_final_objects` | 找到了起点，但查询方向上没有可达的最终对象 |
-
-M0 中以上后三项均不表示“这条语句没有影响”或“已经被消除”。M0 的纯 `assign y=a` / 常量赋值语句来源尚不完整，导出会拒绝生成空模块；M1 对有生成证据的此类语句返回 `connections_found` 并导出。只有将来有明确删除事件时，才能报告“被消除”及其原因。
-
-## 运行流程
-
-```text
-源文件、include、宏、顶层参数
-    │ read_verilog -sv -defer; hierarchy -check
-    ▼
-frontend.il + before.json + 实际输入文件清单
-    ├─ trace_begin → trace_opt_merge → trace_end → after.il / after.json
-    └─ 原版 opt_merge → baseline.json
-
-事件重放及快照检查 + 与原版网表严格比较
-    + equiv_make / equiv_simple / equiv_status -assert
-    ▼
-validation.json 通过后，manifest.status 才设为 complete
-```
-
-前端只执行一次，两个分支读取同一份 RTLIL，从而避免前端重复生成的命名差异干扰对照。`trace_opt_merge` 使用固定版本的上游实现，仅在实际变换处加入观察钩子；没有重写合并算法，没有添加 `keep` 或来源属性来改变综合决策，也没有覆盖内置 `opt_merge` 命令。
-
-独立插件适合 M0 小实验。新增 M1 已将部分钩子接入原生源码和内部调用链，但尚未覆盖完整 `opt`/`synth`。当前执行内置 `opt` 不会自动获得完整语义追踪。
-
-## 配置
+## 配置与产物
 
 ```bash
 python3 -m yosys_flow run \
-  --source path/to/top.sv \
-  --source path/to/definitions.sv \
-  --top demo \
-  -I path/to/include \
-  -D WIDTH=8 \
-  --param N=8 \
-  --steps 2 \
+  --source path/to/top.sv --source path/to/definitions.sv \
+  --top demo -I path/to/include -D WIDTH=8 --param N=8 \
   --out runs/configured
 ```
 
-- `--source`、`-I`、`-D`、`--param` 可以重复。参数目前支持数值形式；宏值支持常用数字、标识符和运算符，不支持带空白的复杂宏定义。
-- `--steps` 可验证同名 pass 多次调用时的顺序和独立步骤编号；`--nomux` 对应原版的选项。
-- `--yosys` 和 `--plugin` 可指定路径，但二进制必须匹配上述固定版本。编译器可用 `make CXX=...` 指定。
-- 源文件和运行目录可含空格。当前固定版本前端的 `-I` 路径不处理引号，因此本程序明确拒绝包含空白的 include 目录。
-- `query --line A --end-line B` 查询 Base 的源码范围，`--instance demo` 限定实例；M0 仅支持单个组合模块，M1 也暂限单模块，因此实例就是顶层模块。
+`--source`、`-I`、`-D`、`--param` 可重复；参数限数值，宏值不支持包含空白的复杂定义。源文件、运行和导出路径支持空格；当前前端的 include 目录不支持空白。当前限定单模块，`--instance` 只接受顶层模块名，尚未支持多实例上下文。
 
-## 产物
-
-下表列出 M0 产物。M1 使用相同的 manifest/网表/验证文件名，但前端仍含 process，因此只保存 `frontend.il`；真实输入清单在 JSONL 的结束记录中，不生成 M0 的 `before.json` / `inputs.json`。
-
-| 文件 | 内容 |
+| 运行产物 | 内容 |
 | --- | --- |
-| `manifest.json` | 运行编号、状态、覆盖缺口、工具/插件摘要、实际源码及 include 摘要、宏、顶层参数、脚本和产物哈希、时间与可用时的峰值 RSS |
-| `yosys.jsonl` | 对象定义、版本、步骤、真实合并事件、连接重定向和结构快照 |
-| `inputs.json` / `frontend.d` | Yosys 实际读取的输入清单；JSON 用于处理含空格的路径，Make 依赖文件保留供检查 |
-| `frontend.il` / `before.json` | 追踪开始前的 RTLIL 和独立 JSON 网表 |
-| `after.il` / `after.json` / `after.v` | 追踪结束时的网表 |
-| `baseline.json` | 原版 `opt_merge` 对照结果 |
-| `*.ys` / `*.log` | 实际命令和工具日志，包括形式等价检查 |
-| `validation.json` | 引用、版本、结构重放、原版对照和等价检查结果 |
+| `manifest.json` | 状态、真实终点、配置、输入与产物哈希、工具摘要、耗时和覆盖缺口 |
+| `yosys.jsonl` | 原生 JSONL v2 来源、对象版本、步骤、变换、连接迁移与检查点 |
+| `frontend.il` / `frontend.d` | 前端 RTLIL 和依赖清单；真实输入清单也保存在 `run_end` |
+| `after.il` / `after.json` / `after.v` | 默认 synth 或显式开发检查点的最终网表 |
+| `baseline.il` / `baseline.json` | 独立原版执行相同配置、相同流程的结果 |
+| `yosys.jsonl.abc_*.input.blif` / `.output.blif` / `.script` | 实际执行的 ABC 网络及脚本 |
+| `*.ys` / `*.log` / `validation.json` | 实际命令、运行日志及验证结论 |
 
-`status=complete` 与 `coverage=partial` 可以同时成立：前者表示这次实验执行和验证成功，后者表示它不是全流程来源覆盖。所有查询都输出 `safe_for_incremental_reuse=false`，并附带具体缺口。
+运行器重放生命周期和来源引用，核对最终对象与连接，与原版 JSON modules 严格比较，再执行等价检查。`validate` 重算产物哈希和记录检查，读取已保存的等价结果，不重新运行形式工具。`status=complete` 表示运行及验证完成，`coverage=partial` 表示来源链仍有缺口，两者独立。
 
-日志为缓冲顺序写入，每行一个 JSON 对象。记录器不逐事件刷盘；中断可能丢失末尾缓冲，因此读取必须检查 `run_end`、运行清单和产物哈希。运行失败会保留目录及日志，写入 `failed`；即使进程被强杀而来不及写 `failed`，遗留的 `running` 也不会被查询程序接受。完成清单采用临时文件加原子替换，不承诺断电事务持久性。
+## 开发检查点和测试
 
-计时包含进程启动、校验及额外产物写入，不等于仅记录器自身的开销。Linux 下存在 `/usr/bin/time` 时会记录各进程峰值 RSS，日志大小可直接从产物清单读取。小例子的开销比例不适合外推到大设计。
+所有入口共用同一原生记录器与 JSONL v2 读取器。日常使用默认 `synth`；以下检查点仅用于定位来源在哪个阶段丢失：
 
-## 覆盖边界
+| 显式选项 | 真实终点 |
+| --- | --- |
+| `--flow m1`（proc 检查点） | `proc -noopt; opt_merge` |
+| `--flow m1-opt`（基础优化检查点） | `proc; opt_expr; opt_clean; opt_merge; opt_clean` |
 
-本节描述默认 M0 流程。新增 M1 的已验证输入、候选精度和未覆盖项单独列于 [native-m1.md](docs/native-m1.md)。
+检查点不是默认 synth 的替代终点。构建与详细范围见 [proc 检查点说明](docs/native-m1.md)。`make test` 构建后运行全部测试；`make test-native` 为同一测试入口。
 
-**已经覆盖：** `opt_merge` 运行内的单元身份、保留对象的新版本、被删除对象的完整旧状态、新增信号别名、合并的多来源关系、重复步骤、前后实际结构校验。wire、signal bit、module 和 connection 均有独立记录，常量与直接连线不会因为没有 cell 而从结构快照中消失。
+`tests/test_selection.py` 检查最终选择集合、优化吸收和 ABC 候选隔离；`tests/test_process.py` 检查逐动作、分支、覆盖及位范围来源；`tests/test_native.py` 检查过程来源、状态、连接和原生合并；`tests/test_synth.py` 检查默认综合、ABC 精度及最终导出；`tests/test_export.py` 保留迁移后的共享、切割、总线、参数、路径和覆盖保护测试；`tests/test_cli.py` 检查默认入口及退役格式的明确拒绝。
 
-**尚未覆盖：** 宏展开、AST 节点演化、条件/参数依赖、generate 未选分支、`proc`、其他优化、`flatten`、`techmap`、ABC、时序状态对应、区域切割、局部综合和拼接。前端来源只是 `src` 属性观察，不能解释已经被前端删除的对象。直接赋值的连接被保留，但不承诺恢复没有 `src` 的赋值语句来源。
-
-当前拒绝 process、memory、触发器、模块实例及多模块设计，避免将这些设计误报为已覆盖。阶段间实际新增、删除或改变 RTLIL 对象而没有记录的情况会被检测并使运行失败。不过，快照检测不能发现某个外部 pass 曾修改又完全恢复的内部历史，因此应用应使用受控 CLI 流程，不能把任意自定义脚本视为获得了全覆盖。
-
-查询遍历的只有来源关系；电路连接单独用于报告驱动和使用者，不会沿连接无限扩大“来源”。`edges` 是可达事件子图，保留多条路径，不是只给一个最短路径。来源位置信息不是 AST 精确身份，信号与连接粒度也不意味着已经得到位级逻辑依赖证明。
-
-Base 的源码后来修改或移走时，历史仍可查询；结果中的 `changed_or_missing_base_inputs` 会提示对应文件，行号仍然指向 Base 坐标。新增语句不具备旧来源，需要后续 New RTL 解析与差分算法处理。
-
-## 代码入口与后续扩展
+## 代码入口
 
 | 路径 | 作用 |
 | --- | --- |
-| `plugin/recorder.h` | 统一对象/步骤/事件记录器，以及 `trace_begin`、`trace_end`、`trace_inputs` 命令 |
-| `vendor/opt_merge.cc` | 固定版本上游源码，保留原始 ISC 版权许可 |
-| `tools/instrument.py` | 校验源码 SHA-256，再在明确的转换位置加入钩子；锚点变化时拒绝生成 |
-| `native/` | 原生 M1 公共记录器、前端身份代码和固定源码依赖锁 |
-| `tools/build_native.py` / `tools/instrument_native.py` | 构建原生版、应用转换钩子并保留上游自动命名行号 |
-| `yosys_flow/runner.py` | 运行、配置摘要、原版对照、等价检查、完成状态 |
-| `yosys_flow/trace.py` | JSONL 检查、事件重放、双向来源索引、独立连接索引 |
-| `yosys_flow/native.py` | M1 运行器、v2 校验、精度报告与源码查询 |
-| `yosys_flow/extract.py` | 复制来源关联的 cell、计算电气边界、导出并验证子模块 |
-| `tests/test_flow.py` | 真实 Yosys 集成测试和损坏日志测试 |
-| `tests/test_native.py` | 原生来源集合、状态/连接导出及缺口验证 |
-| [docs/schema.md](docs/schema.md) | 格式约定与一致性规则 |
-| [docs/roadmap.md](docs/roadmap.md) | 后续前端、其他 pass、ABC 与增量综合的接入顺序 |
-| [docs/default-synth-plan.md](docs/default-synth-plan.md) | 用户已选定的默认 synth 目标、阶段清单和验收标准 |
+| `native/` | 原生记录器、过程证据实现、前端身份和固定源码依赖锁 |
+| `tools/build_native.py` / `tools/instrument_native.py` | 构建与固定锚点插桩，保留上游自动命名行号 |
+| `yosys_flow/common.py` | 公共错误、校验、哈希和参数处理 |
+| `yosys_flow/runner.py` | 统一运行、读取和查询入口 |
+| `yosys_flow/native.py` | 原生运行、JSONL v2 重放、来源查询和精度报告 |
+| `yosys_flow/extract.py` | 子网表切割、状态保留、导出与验证 |
+| [docs/schema.md](docs/schema.md) | 原生格式及不变量 |
+| [docs/default-synth-plan.md](docs/default-synth-plan.md) | 阶段计划和三层验收 |
+| [docs/roadmap.md](docs/roadmap.md) | 后续完整来源及增量综合研究 |
 
-上游依据：[固定版本 opt_merge 源码](https://github.com/YosysHQ/yosys/blob/0e82bbefe/passes/opt/opt_merge.cc)、[Yosys 扩展文档](https://yosyshq.readthedocs.io/projects/yosys/en/latest/yosys_internals/extending_yosys/extensions.html)。
+## 旧版本退役
+
+M0 独立插件、`--flow opt-merge`、`--plugin`、`--steps`、`--nomux` 及 JSONL v1 读取器已移除。历史实现由 Git 保存；旧结果文件不会自动删除或转换，当前 CLI 读取 v1 时会明确提示退役，需要历史 Git 版本才能读取。
+
+这次退役不删除 Yosys 的普通 `opt_merge` 或其原生记录钩子，也不取消独立原版 Yosys 对照。M0–M4 仅在开发计划中表示验收里程碑，不表示多套需要并行维护的产品实现。

@@ -1,4 +1,4 @@
-"""Build the pinned native provenance pilot alongside the stock plugin.
+"""Build the pinned native provenance recorder for synth and checkpoints.
 
 Requires CMake >= 3.28, Ninja, C++20, Bison, Flex, m4, and zlib headers.
 Downloads only immutable, SHA256-verified source archives into build/native.
@@ -72,12 +72,12 @@ def main():
                     destination.mkdir(parents=True, exist_ok=True)
                 elif not destination.is_file() or sha(path) != sha(destination):
                     shutil.copy2(path, destination)
-            changed = ["kernel/flow_provenance.cc", "kernel/flow_provenance.h", "kernel/CMakeLists.txt",
+            changed = ["kernel/flow_provenance.cc", "kernel/flow_provenance.h", "kernel/process_provenance.inc", "kernel/CMakeLists.txt",
                        "kernel/register.cc", "kernel/rtlil.cc", "frontends/ast/ast.cc", "frontends/ast/ast.h",
                        "frontends/ast/flow_sources.inc", "frontends/ast/genrtlil.cc", "passes/proc/proc_mux.cc",
                        "passes/proc/proc_dff.cc", "passes/proc/proc_dlatch.cc", "passes/proc/proc_init.cc", "passes/opt/opt_merge.cc",
-                       "passes/opt/opt_expr.cc", "passes/opt/opt_dff.cc", "passes/opt/opt_clean/wires.cc",
-                       "passes/techmap/techmap.cc", "passes/techmap/alumacc.cc", "passes/techmap/abc.cc"]
+                       "passes/opt/opt_expr.cc", "passes/opt/opt_dff.cc", "passes/opt/opt_muxtree.cc", "passes/opt/opt_reduce.cc", "passes/opt/opt_clean/wires.cc",
+                       "passes/techmap/techmap.cc", "passes/techmap/alumacc.cc", "passes/techmap/abc.cc", "passes/hierarchy/hierarchy.cc", "passes/proc/proc_arst.cc", "passes/proc/proc_prune.cc", "passes/proc/proc_clean.cc", "passes/proc/proc_rmdead.cc"]
             previous = {"fingerprint": fingerprint, "files": {p: sha(source / p) for p in changed}}
             stamp.write_text(json.dumps(previous, indent=2) + "\n")
     for name, expected in previous["files"].items():

@@ -1,4 +1,4 @@
-# 原生 M1 试验流程
+# 原生开发检查点（proc 与基础优化）
 
 本文说明保留的 `--flow m1` 检查点。新增基础优化检查点 `m1-opt` 和实际默认综合入口 `synth`，见 [native-synth.md](native-synth.md)；它们仍保留部分覆盖和候选精度。
 
@@ -15,7 +15,7 @@ opt_merge
 
 ## 构建
 
-保留原版固定版本 Yosys（提交 `0e82bbefe`）用于独立对照。原生版安装在仓库的 `build/native/install`，不覆盖系统安装。默认 `make` 继续构建原有 M0 插件。
+保留原版固定版本 Yosys（提交 `0e82bbefe`）用于独立对照。原生版安装在仓库的 `build/native/install`，不覆盖系统安装。默认 `make` 与 `make native` 都构建这套原生版。
 
 构建需要 Python 3.10+、C++20 编译器、CMake ≥ 3.28、Ninja、Bison ≥ 3.6、Flex ≥ 2.6、m4、zlib 开发文件，以及现有 `yosys-abc`。Slang、Tcl、readline/libedit 和 libffi 在本构建中关闭。ABC 只是链接配置中的外部工具，此试验流程不调用它。
 
@@ -25,7 +25,7 @@ make test-native
 make test
 ```
 
-`tools/build_native.py` 按 `native/lock.json` 下载完整提交固定的 Yosys 源码和必要子模块，先验证归档 SHA256，再应用唯一锚点插桩；锚点或哈希不匹配即失败。`build/native/prepared.json` 保存插桩输入摘要和修改文件摘要。通过 `#line` 保持上游位置，避免 `NEW_ID` 中的 C++ 行号因插桩改变。已有未修改的源码文件保持时间戳，支持增量编译。
+`tools/build_native.py` 按 `native/lock.json` 下载完整提交固定的 Yosys 源码和必要子模块，先验证归档 SHA256，再应用固定锚点插桩；锚点或哈希不匹配即失败。`build/native/prepared.json` 保存插桩输入摘要和修改文件摘要。通过 `#line` 保持上游位置，避免 `NEW_ID` 中的 C++ 行号因插桩改变。已有未修改的源码文件保持时间戳，支持增量编译。
 
 系统 CMake 较旧时可本地安装：
 
@@ -54,7 +54,7 @@ python3 -m yosys_flow extract runs/proc-demo \
 python3 -m yosys_flow validate runs/proc-demo
 ```
 
-`--native-yosys` 指定插桩版；`--yosys` 指定独立原版，两者不能是同一文件。`--steps` / `--nomux` 仅用于 M0。原来的 `query` / `extract` / `validate` 根据 manifest 的 schema 版本自动选择读取器。
+`--native-yosys` 指定插桩版；`--yosys` 指定独立原版，两者不能是同一文件。日常运行省略 `--flow` 即执行 `synth`；检查点须显式选择。`query` / `extract` / `validate` 统一读取原生 JSONL v2，旧 v1 会明确提示已退役。
 
 查询使用运行时的旧源码坐标，报告已改变或缺失的输入文件。列查询优先选择覆盖指定位置/范围的最小运算表达式；仅按行查询则选择该范围内记录的语句与表达式。来源选择不沿电气连接递归扩张完整扇入锥。
 
@@ -65,13 +65,13 @@ python3 -m yosys_flow validate runs/proc-demo
 | `AST::process`、`cloneInto` | 简化前的运行内语句/表达式 ID、文件、行列、模块及复制保留 | 不是完整 AST 简化事件链；预处理、参数依赖仍有缺口 |
 | `AstNode::genRTLIL` | 当前表达式/语句作用域内实际新建的 cell | `precision=cell` 表示该生成位置的关联粒度，不是完整端到端正确性证明 |
 | 连续赋值、过程赋值生成点 | LHS/RHS 位连接；过程动作到原始目标信号及显式临时信号映射 | 不能将随后无产物的源对象推断成“已消除” |
-| `proc_mux`、`proc_dff` | 生成对象到该 process 目标信号的赋值/条件来源 | **`process_signal_candidate`**；同一目标的嵌套分支、被覆盖赋值仍可能过度关联 |
+| `proc_mux`、`proc_dff` | 生成对象到实际参与的赋值位、分支和临时路由 | 普通路径与已捕获的异步复位路由为 `process_action`；未知路径回退候选，完整过程语义仍有缺口 |
 | `proc_init`、敏感沿生成 | 初始化动作及时钟/复位沿的来源参与状态候选集合 | 不是时钟、初始化语义的完整依赖分析 |
 | `proc_dlatch` 的无锁存器路径 | 组合过程生成的直接连接 | 锁存器本身拒绝接入 |
 | 普通 `opt_merge` | 实际合并位置记录双方来源并退休旧对象 | 不自动覆盖其他 `opt` 子 pass |
 | `Pass::call`、cell 创建/删除 | 父子步骤、cell 生命周期、版本与结构检查点 | 检查点标为 `structural_observation`，不能代替语义转换证据 |
 
-源码身份保存在编译器内部侧表/AST 字段中，没有添加 RTLIL `keep` 或其他优化约束。对象退休时清除句柄，避免地址复用继承旧身份。JSONL v2 与 M0 的 JSONL v1 分开读取，不把新格式的结构观察当成 v1 的完整变换证明。
+源码身份保存在编译器内部侧表/AST 字段中，没有添加 RTLIL `keep` 或其他优化约束。对象退休时清除句柄，避免地址复用继承旧身份。所有入口共用 JSONL v2；结构观察不代表完整的语义变换证明。
 
 每条结果同时报告 `coverage=partial`、对象的 `precision`、`cell_level_refs`、`candidate_cell_refs`、`end_to_end_exact=false`、来源边和覆盖缺口。来源可按最终 cell/连接的 `ref` 反查。空结果 `no_final_object_with_recorded_binding` 表示没有足够的最终绑定证据，**不表示没有影响或已被删除**。
 
@@ -89,6 +89,8 @@ python3 -m yosys_flow validate runs/proc-demo
 
 时序格式检查在验证副本上运行 `clk2fflogic; equiv_simple -seq 5; equiv_induct -seq 5`，不改动发布的 FF 网表。`clk2fflogic` 使用采样时钟事件，对异步输入采用 negative hold time；`equiv_induct` 证明可观察状态相同一段时间后的不分歧，不能独自证明初始状态一致。因此另行逐位比较 Verilog 重读后的初始化，并保留 `<名称>.roundtrip.json` 作为验证产物。报告写明这些语义与限制；不能将导出等价检查替代来源选择检查。
 
+动作身份、覆盖/裁剪证据和分支选择的新增实现与验收见 [process-provenance.md](process-provenance.md)。
+
 ## 后续 M1 必做项
 
-将过程候选关联细化到真正参与每次 mux/FF 生成的动作、条件和位；补齐覆盖/删除/常量化原因及完整的 AST 简化路径；接入 `opt_expr`、`opt_clean` 和锁定的基础 `opt` 子 pass。每项都需要独立预期来源集合和完整导出回归，然后才可升级 M1 的完成状态。M2–M4 继续按计划推进到默认 `synth` 的细粒度通用门级终点。
+继续细化异步复位路径及尚未覆盖的过程变换；补齐覆盖/删除/常量化原因及完整的 AST 简化路径；接入 `opt_expr`、`opt_clean` 和锁定的基础 `opt` 子 pass。每项都需要独立预期来源集合和完整导出回归，然后才可升级 M1 的完成状态。M2–M4 继续按计划推进到默认 `synth` 的细粒度通用门级终点。

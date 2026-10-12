@@ -1,6 +1,6 @@
 """Default synth endpoint, source-selection contracts and evidence validation.
 
-ABC tests deliberately assert the conservative region contract, not exact
+ABC tests deliberately assert the conservative output-cone contract, not exact
 statement-to-gate attribution. Expected endpoints come from the RTL ports.
 """
 import copy
@@ -13,8 +13,8 @@ from test_native import NATIVE
 from yosys_flow.cli import parser
 from yosys_flow.extract import extract, state_cell
 from yosys_flow.native import NativeTrace
-from yosys_flow.runner import ROOT, load_run, query, run
-from yosys_flow.trace import TraceError, unescape
+from yosys_flow.common import ROOT, TraceError, unescape
+from yosys_flow.runner import load_run, query, run
 
 
 @unittest.skipUnless(NATIVE.is_file(), "native Yosys not built; run make native")
@@ -35,11 +35,12 @@ class SynthTests(unittest.TestCase):
         cls.temp.cleanup()
 
     @staticmethod
-    def execute(source, out, flow="synth"):
-        return run(parser().parse_args(["run", "--flow", flow, "--native-yosys", str(NATIVE),
-                                       "--source", str(source), "--top", "demo", "--out", str(out)]))
+    def execute(source, out, flow=None):
+        options = ["--flow", flow] if flow else []
+        return run(parser().parse_args(["run", "--native-yosys", str(NATIVE),
+                                       "--source", str(source), "--top", "demo", "--out", str(out), *options]))
 
-    def experiment(self, name, rtl, flow="synth"):
+    def experiment(self, name, rtl, flow=None):
         source, out = self.base / (name + ".v"), self.base / name
         source.write_text(rtl)
         self.execute(source, out, flow)
@@ -58,6 +59,7 @@ class SynthTests(unittest.TestCase):
         return result, report, module
 
     def test_actual_default_synth_and_post_abc_optimization(self):
+        self.assertEqual(self.manifest["flow"], "synth")
         self.assertEqual(self.manifest["endpoint"], "synth -top demo")
         self.assertEqual(self.manifest["configuration"]["passes"], ["synth -top demo"])
         steps = [r for r in self.trace.records if r["record_type"] == "step_begin"]
@@ -73,7 +75,7 @@ class SynthTests(unittest.TestCase):
         result = self.select(5)
         combinational = {n for n, c in self.module["cells"].items() if not state_cell(c)}
         self.assertEqual({unescape(c["name"]) for c in result["final_cells"]}, combinational)
-        self.assertEqual({c["precision"] for c in result["final_cells"]}, {"abc_region_candidate"})
+        self.assertEqual({c["precision"] for c in result["final_cells"]}, {"abc_output_cone_candidate"})
         self.assertFalse(result["cell_level_refs"])
         self.assertFalse(result["end_to_end_exact"])
         region = result["abc_regions"][0]
@@ -165,13 +167,13 @@ endmodule
         for line in (3, 4):
             result = self.select(line, source, out)
             self.assertTrue(result["final_cells"])
-            self.assertEqual({c["precision"] for c in result["final_cells"]}, {"abc_region_candidate"})
-            self.assertTrue({"alumacc", "techmap", "abc_region"} <= {e["capture"] for e in result["edges"]})
+            self.assertEqual({c["precision"] for c in result["final_cells"]}, {"abc_output_cone_candidate"})
+            self.assertTrue({"alumacc", "techmap", "abc_output_cone"} <= {e["capture"] for e in result["edges"]})
         exported, _, mod = self.export("arithmetic", 3, source, out)
         self.assertGreater(len(mod["cells"]), 1)
         self.assertTrue(exported["validation"]["exported_verilog_equivalent_to_cell_slice"])
 
-    def test_independent_outputs_share_only_the_reported_abc_region(self):
+    def test_independent_outputs_separated_within_reported_abc_region(self):
         source, out = self.experiment("independent", """module demo(input a,b,c,d, output y,z);
 assign y = a & b;
 assign z = c ^ d;
@@ -179,9 +181,9 @@ endmodule
 """)
         result = self.select(2, source, out)
         # Default ABC may process disconnected logic in the same invocation.
-        # Its conservative region includes both outputs and must say so.
-        self.assertEqual(len(result["final_cells"]), 2)
-        self.assertEqual({c["precision"] for c in result["final_cells"]}, {"abc_region_candidate"})
+        # The recorded region still contains both, but output-cone candidates separate them.
+        self.assertEqual(len(result["final_cells"]), 1)
+        self.assertEqual({c["precision"] for c in result["final_cells"]}, {"abc_output_cone_candidate"})
         self.assertFalse(result["end_to_end_exact"])
         self.assertTrue(result["abc_regions"])
 
@@ -191,7 +193,7 @@ endmodule
         reverse = query(parser().parse_args(["query", str(self.out), "--object", ref]))
         self.assertEqual([r["ref"] for r in reverse["final_cells"]], [ref])
         self.assertTrue({5, 7} <= {s["line"] for s in reverse["sources"]})
-        self.assertEqual(reverse["association_precision"], ["abc_region_candidate"])
+        self.assertEqual(reverse["association_precision"], ["abc_output_cone_candidate"])
 
     def test_forged_abc_members_precision_and_connection_revision_rejected(self):
         mutations = []

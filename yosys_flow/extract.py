@@ -10,8 +10,8 @@ import shutil
 import subprocess
 import tempfile
 
-from .runner import PIN, digest, identifier, load_run, query_loaded, token, write_json
-from .trace import TraceError, require, unescape
+from .common import PIN, TraceError, digest, identifier, require, token, unescape, write_json
+from .runner import load_run, query_loaded
 
 
 def state_cell(cell):
@@ -124,6 +124,9 @@ def slice_module(module, selected_names, module_name, selected_connections=()):
     for bit in sorted(used - inputs - outputs):
         nets[f"net_{bit}"] = {"hide_name": 0, "bits": [bit], "attributes": {}}
     for row, offset, bit in connection_outputs:
+        # Selected drivers and consumers already retain this internal net.
+        if bit in driven and bit not in outputs:
+            continue
         original_offset = row["offsets"][offset] if "offsets" in row else offset
         original_lhs = row.get("original_lhs", row["lhs"])[original_offset]
         if bit in outputs:
@@ -161,8 +164,7 @@ def extract(args):
         token(path.name)
 
     manifest, trace, _ = load_run(args.directory)
-    last_pass = (manifest["endpoint"] if manifest.get("schema_version") == 2 else
-                 next((r["pass"] for r in reversed(trace.records) if r["record_type"] == "step_begin"), None))
+    last_pass = manifest["endpoint"]
     selection = query_loaded(args, manifest, trace)
     connections = selection.get("final_connections", [])
     require(selection["final_cells"] or connections,
@@ -177,6 +179,7 @@ def extract(args):
     chosen_names = [unescape(cell["name"]) for cell in selection["final_cells"]]
     netlist, boundary = slice_module(design["modules"][original_module], chosen_names, module_name, connections)
     has_state = any(state_cell(c) for c in netlist["modules"][module_name]["cells"].values())
+    has_pmux = any(c["type"] == "$pmux" for c in netlist["modules"][module_name]["cells"].values())
     if has_state:
         targets[".roundtrip.json"] = out.with_suffix(".roundtrip.json")
         require(not targets[".roundtrip.json"].exists() and not targets[".roundtrip.json"].is_symlink(),
@@ -192,8 +195,10 @@ def extract(args):
 
     # Verify both the standalone cut and the emitted Verilog. The gold design is
     # the exact cell slice, not a fresh synthesis of just the source statement.
+    verilog_options = "-noattr -noparallelcase" if has_pmux else "-noattr"
+    undef_option = " -undef" if has_pmux else ""
     commands = [f"read_json {filename('.json')}", f"hierarchy -top {module_name}", "check -assert",
-                f"write_rtlil {filename('.il')}", f"write_verilog -noattr {filename('.v')}"]
+                f"write_rtlil {filename('.il')}", f"write_verilog {verilog_options} {filename('.v')}"]
     if module_name != "gold":
         commands.append(f"rename {module_name} gold")
     commands += ["design -stash gold_design", f"read_verilog {filename('.v')}",
@@ -207,9 +212,9 @@ def extract(args):
                  "hierarchy -top equiv"]
     if has_state:
         commands.append("clk2fflogic")
-    commands.append("equiv_simple -seq 5" if has_state else "equiv_simple")
+    commands.append("equiv_simple" + undef_option + (" -seq 5" if has_state else ""))
     if has_state:
-        commands.append("equiv_induct -seq 5")
+        commands.append("equiv_induct" + undef_option + " -seq 5")
     commands.append("equiv_status -assert")
     script = "\n".join(commands) + "\n"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -253,8 +258,10 @@ def extract(args):
                          ("source", "line", "end_line", "column", "end_column", "instance", "object")},
             "selected_cells": selection["final_cells"], "boundary": boundary,
             "selected_connections": connections, "contains_state": has_state,
-            "association_precision": selection.get("association_precision", ["src_attribute"]),
+            "association_precision": selection["association_precision"],
             "provenance": {key: selection[key] for key in ("seeds", "sources", "edges", "events")},
+            "process_actions": selection["process_actions"], "process_proof_nodes": selection["process_proof_nodes"],
+            "process_discards": selection["process_discards"],
             "coverage": selection["coverage"], "coverage_gaps": selection["coverage_gaps"],
             "changed_or_missing_base_inputs": selection["changed_or_missing_base_inputs"],
             "safe_for_incremental_reuse": False,
@@ -265,11 +272,17 @@ def extract(args):
             "artifacts": {dest.name: {"sha256": digest(staged[suffix]), "size_bytes": staged[suffix].stat().st_size}
                           for suffix, dest in targets.items() if suffix != ".provenance.json"},
         }
-        if manifest["schema_version"] == 2:
-            report["end_to_end_exact"] = selection["end_to_end_exact"]
-            report["abc_regions"] = selection.get("abc_regions", [])
-            report["abc_evidence_artifacts"] = {name: manifest["artifacts"][name]
-                for region in report["abc_regions"] for name in region.get("artifacts", {}).values()}
+        report["end_to_end_exact"] = selection["end_to_end_exact"]
+        report["abc_regions"] = selection.get("abc_regions", [])
+        report["abc_refinement_fallbacks"] = selection.get("abc_refinement_fallbacks", [])
+        report["abc_associations"] = selection.get("abc_associations", [])
+        report["techmap_bit_maps"] = selection.get("techmap_bit_maps", [])
+        for name in ("ff_bit_maps", "ff_mux_absorptions", "ff_alias_maps"):
+            report[name] = selection.get(name, [])
+        report["abc_evidence_artifacts"] = {name: manifest["artifacts"][name]
+            for region in report["abc_regions"] for name in region.get("artifacts", {}).values()}
+        if has_pmux:
+            report["pmux_semantics"] = {"multiple_active_selects": "undefined", "undefined_values_modelled": True, "verilog_option": "-noparallelcase"}
         if has_state:
             report["validation"]["selected_state_init_preserved"] = True
             report["validation"]["sequential_equivalence"] = True

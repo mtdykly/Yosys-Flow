@@ -4,7 +4,11 @@
 
 用户指定原始 RTL 的源码位置及实例上下文后，系统应返回具有来源证据的最终网表对象，并导出带边界端口的子网表。Liberty 标准单元映射、RTL 差分、增量重综合和网表拼接不属于本阶段验收范围；这些研究保留在 [roadmap.md](roadmap.md)。完成来源查询与导出，不要求同时完成安全替换逻辑的证明，`safe_for_incremental_reuse=false` 可以继续保留。
 
-**当前实现状态：** M0 受控 `opt_merge` 闭环已实现；原生流程已接入 AST 身份、部分 process/基础优化、连接迁移、ALU/MACC 替换、techmap 拆分和 ABC 区域交接。`--flow synth` 已实际到达默认 synth 最终门级终点，并支持查询和导出；来源仍为部分覆盖，process 和 ABC 的结果保留候选精度。层次、memory、FSM 等完整来源和 ABC 内部精确定位尚未实现，不能将执行到终点视为 M1–M4 全部验收完成。使用和已验证范围见 [native-synth.md](native-synth.md)。
+**当前实现状态：** 旧 M0 独立实现已退役，默认构建与 CLI 均以原生 `synth` 为主流程；原生流程已接入 AST 身份、部分 process/基础优化、连接迁移、ALU/MACC 替换、techmap 拆分和 ABC 区域交接。`--flow synth` 已实际到达默认 synth 最终门级终点，并支持查询和导出；来源仍为部分覆盖，普通 process 已增加动作/分支证据，已捕获的异步复位路由有动作证据，ABC 已细化为输出锥候选。层次、memory、FSM 等完整来源和 ABC 内部精确定位尚未实现，不能将执行到终点视为 M1–M4 全部验收完成。使用和已验证范围见 [native-synth.md](native-synth.md)。
+
+第三步已续补 `opt_dff` 成功吸收和拆分的逐 Q/D 位证据，以及 `opt_clean` 别名变化时的证据保留；简单使能/复位可排除其他状态位，复杂控制仍保守回退。RTL 支持范围尚未扩大。
+
+本轮最终选择测试、优化吸收与 ABC 节点对应的范围见 [来源选择验收](selection-acceptance.md)。ABC 内部重写历史及全部跨对象依赖仍未完成，前三个方向的阶段成果不代表最终精确定位验收完成。
 
 ## 查询集合的定义
 
@@ -75,7 +79,7 @@ assign y = t ^ c;
 
 | 里程碑 | 查询终点 | 必须声明的支持范围 | 端到端验收 |
 | --- | --- | --- | --- |
-| M0，已实现的受限版本 | `opt_merge` 后 | 单模块简单组合表达式；以 `src` 范围为起点 | 两处来源合并、同一行表达式区分、共享使用说明、来源集合边界及 cell 子网表导出 |
+| M0，历史验证阶段，独立实现已退役 | `opt_merge` 后 | 单模块简单组合表达式；以 `src` 范围为起点 | 两处来源合并、同一行表达式区分、共享使用说明、来源集合边界及 cell 子网表导出 |
 | M1，下一阶段 | `proc` 与基础优化后，锁定具体 pass 列表 | 最小前端语句/表达式身份；直接赋值、常量赋值、组合 `always`、条件赋值、简单寄存器及已声明的复位/使能/初始化形式 | 无 cell 语句也有有证据的查询结果；mux/FF 的来源正确；按时序约定导出；常量化和删除有原因 |
 | M2 | 默认 coarse 阶段结束 | 逐项声明算术、层次实例、FSM 和 memory 的支持形式及限制 | 每种已支持转换都能从源码查询并导出；跨实例不混淆，未支持形式明确返回缺口或拒绝 |
 | M3 | 默认 fine 流程中 ABC 前的检查点，包含 techmap 及其后、ABC 前的优化 | 已支持粗粒度单元的 memory_map/techmap 拆分和随后的优化 | 宽运算一对多拆门后，来源选择不漏门、不无依据地加入无关门，位连接与边界正确 |
@@ -91,11 +95,11 @@ M4 的精确定位验收不能由区域候选替代。某类 RTL 只有区域级
 
 `--flow m1` 保留 `proc -noopt; opt_merge`；`--flow m1-opt` 新增 `proc; opt_expr; opt_clean; opt_merge; opt_clean`；**`--flow synth` 已直接执行默认 `synth -top` 到最终门级终点。** `opt_expr` 记录目标 cell 的替代/删除，`opt_clean` 在删除 wire 前迁移连接身份；`opt_dff`、`alumacc` 和 `techmap` 已记录部分实际目标/模型到生成对象的关系。ABC 保存真实输入成员、边界、调用身份、输入输出网络和脚本，再追踪后续优化。
 
-process 仍为 `process_signal_candidate`，ABC 为 `abc_region_candidate`，整体 `coverage=partial`，M1–M4 的精确验收尚未完成。下一步仍须补齐 AST 简化、逐动作/分支来源、跨 cell 优化依赖及其他 pass；不能把检查点结构观察当作语义证据。构建基础见 [native-m1.md](native-m1.md)，默认终点和当前三层测试见 [native-synth.md](native-synth.md)。
+普通 mux/FF 已新增 `process_action` 动作/分支证据、覆盖赋值和逐位裁剪记录，详见 [process-provenance.md](process-provenance.md)。异步复位仍为 `process_signal_candidate`，ABC 为 `abc_region_candidate`，整体 `coverage=partial`，M1–M4 的精确验收尚未完成。下一步仍须补齐 AST 简化、异步复位及复杂过程来源、跨 cell 优化依赖及其他 pass；不能把检查点结构观察当作语义证据。构建基础见 [native-m1.md](native-m1.md)，默认终点和当前三层测试见 [native-synth.md](native-synth.md)。
 
 **M1 的首项工作是最小前端来源记录。** 在发生会丢失身份的前端变换之前分配运行内语句/表达式 ID，保存源码摘要、文件、行列范围和上下文，并记录其到 RTLIL 对象的关系。连接、常量与 cell 都是合法产物；`assign y=a` 和 `assign z=1'b0` 必须纳入近期验收，不以解析最终 `src` 属性或在查询时猜测语法作为完整来源证据。同一源语句的不同实例化对象使用不同实例身份。宏、generate、循环/函数展开可以分批扩展，但经过未覆盖展开的查询须报告缺口。
 
-**同时把记录器接到正常 Yosys 调用链。** 当前 `trace_opt_merge` 适合验证方案；下一步建立固定版本的 Yosys 源码补丁和构建方式，将钩子接回原生实现，使正常 `synth` 内部调用也被记录。自定义命令负责开关和导出，语义事件仍在实际转换处产生。不能通过添加 `keep` 等约束改变优化决策来维持来源。
+**继续完善正常 Yosys 调用链上的记录。** 已通过固定源码补丁与构建将钩子接入原生实现；默认 `synth` 和两个开发检查点共用它。旧插件入口与 v1 读取器已移除，普通 `opt_merge` 的原生钩子继续保留。自定义命令负责开关，语义事件在实际转换处产生，不能通过添加 `keep` 等约束改变优化决策来维持来源。
 
 记录器需成为公共库接口，统一管理创建、变更、重命名、复制、删除及多对多替换。内部句柄必须显式维护生命周期，避免地址重用或同名再创建继承旧身份。步骤应有父子关系，区分 synth/opt 包装步骤与具体子 pass，同一事件只记录一次。
 

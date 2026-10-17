@@ -10,13 +10,8 @@ import shutil
 import subprocess
 import tempfile
 
-from .common import PIN, TraceError, digest, identifier, require, token, unescape, write_json
+from .common import PIN, TraceError, digest, identifier, require, require_combinational, token, unescape, write_json
 from .runner import load_run, query_loaded
-
-
-def state_cell(cell):
-    kind = cell["type"].lower().lstrip("$_")
-    return kind.startswith(("dff", "adff", "aldff", "sdff", "dlatch", "adlatch", "sr", "ff", "mem"))
 
 
 def slice_module(module, selected_names, module_name, selected_connections=()):
@@ -25,11 +20,12 @@ def slice_module(module, selected_names, module_name, selected_connections=()):
     Traverse connectivity only to find the cut. Never include upstream cells
     merely because they drive a selected cell.
     """
+    require_combinational(module)
     selected = set(selected_names)
     require((bool(selected) or bool(selected_connections)) and selected <= module["cells"].keys(), "invalid or empty selection")
     drivers, users, aliases = defaultdict(list), defaultdict(list), defaultdict(list)
     used, driven = set(), set()
-    ambiguous, state_outputs = set(), set()
+    ambiguous = set()
     connection_outputs = []
     for row in selected_connections:
         require(row["lhs_bits"] == row["rhs_bits"], "selected connection differs from final aliases")
@@ -52,8 +48,6 @@ def slice_module(module, selected_names, module_name, selected_connections=()):
                         used.add(bit)
                         if direction == "output":
                             driven.add(bit)
-                            if state_cell(cell):
-                                state_outputs.add(bit)
                     else:
                         require(direction == "input" and bit in {"0", "1", "x", "z"},
                                 f"unsupported constant on {name}.{port}: {bit}")
@@ -80,7 +74,6 @@ def slice_module(module, selected_names, module_name, selected_connections=()):
             if direction in {"output", "inout"}:
                 users[bit].append(endpoint)
 
-    initial = {}
     for name, net in module["netnames"].items():
         for offset, bit in enumerate(net["bits"]):
             if bit not in used:
@@ -88,16 +81,6 @@ def slice_module(module, selected_names, module_name, selected_connections=()):
             source_index = net.get("offset", 0) + (len(net["bits"]) - 1 - offset if net.get("upto") else offset)
             aliases[bit].append({"name": name, "offset": offset, "source_index": source_index,
                                  "hide_name": bool(net.get("hide_name", 0)), "attributes": deepcopy(net.get("attributes", {}))})
-            init = net.get("attributes", {}).get("init")
-            if init is not None and bit in state_outputs:
-                require(isinstance(init, str) and len(init) == len(net["bits"]), f"unsupported init encoding on {name}")
-                value = init[-1 - offset]
-                require(value in "01xz", f"invalid init bit on {name}")
-                if bit in initial and value != "x" and initial[bit] != "x":
-                    require(initial[bit] == value, f"conflicting init values at net bit {bit}")
-                if bit not in initial or value != "x":
-                    initial[bit] = value
-
     for bit in used:
         require(bit not in ambiguous, f"inout boundary at net bit {bit} is not supported")
         require(len(drivers[bit]) == 1, f"net bit {bit} has {len(drivers[bit])} drivers; cannot extract an unambiguous boundary")
@@ -119,8 +102,6 @@ def slice_module(module, selected_names, module_name, selected_connections=()):
                              "aliases": aliases[bit], "drivers": drivers[bit], "users": users[bit],
                              "external_drivers": [e for e in drivers[bit] if is_external(e)],
                              "external_users": [e for e in users[bit] if is_external(e)]})
-            boundary[-1]["external_state_drivers"] = [e for e in drivers[bit] if e["kind"] == "cell" and
-                e["name"] not in selected and state_cell(module["cells"][e["name"]])]
     for bit in sorted(used - inputs - outputs):
         nets[f"net_{bit}"] = {"hide_name": 0, "bits": [bit], "attributes": {}}
     for row, offset, bit in connection_outputs:
@@ -141,10 +122,6 @@ def slice_module(module, selected_names, module_name, selected_connections=()):
                          "reason": "selected_source_connection", "connection_ref": row["ref"],
                          "connection_offset": original_offset, "original_lhs": original_lhs,
                          "aliases": aliases[bit], "drivers": drivers[bit], "users": users[bit]})
-    for net in nets.values():
-        bit = net["bits"][0]
-        if bit in initial:
-            net["attributes"]["init"] = initial[bit]
     # No optimization here: keep original names, types, parameters, directions,
     # attributes, connection ordering, and literal constants byte-for-value.
     cells = {name: deepcopy(module["cells"][name]) for name in sorted(selected)}
@@ -178,12 +155,7 @@ def extract(args):
     require(digest(after) == manifest["artifacts"]["after.json"]["sha256"], "after.json changed during selection")
     chosen_names = [unescape(cell["name"]) for cell in selection["final_cells"]]
     netlist, boundary = slice_module(design["modules"][original_module], chosen_names, module_name, connections)
-    has_state = any(state_cell(c) for c in netlist["modules"][module_name]["cells"].values())
     has_pmux = any(c["type"] == "$pmux" for c in netlist["modules"][module_name]["cells"].values())
-    if has_state:
-        targets[".roundtrip.json"] = out.with_suffix(".roundtrip.json")
-        require(not targets[".roundtrip.json"].exists() and not targets[".roundtrip.json"].is_symlink(),
-                f"refusing to overwrite {targets['.roundtrip.json']}")
 
     yosys = shutil.which(args.yosys)
     require(yosys is not None, f"Yosys executable not found: {args.yosys}")
@@ -205,16 +177,10 @@ def extract(args):
                  f"hierarchy -top {module_name}", "proc"]
     if module_name != "gate":
         commands.append(f"rename {module_name} gate")
-    if has_state:
-        commands.append(f"write_json {filename('.roundtrip.json')}")
     commands += ["design -stash gate_design", "design -copy-from gold_design -as gold gold",
                  "design -copy-from gate_design -as gate gate", "equiv_make gold gate equiv",
                  "hierarchy -top equiv"]
-    if has_state:
-        commands.append("clk2fflogic")
-    commands.append("equiv_simple" + undef_option + (" -seq 5" if has_state else ""))
-    if has_state:
-        commands.append("equiv_induct" + undef_option + " -seq 5")
+    commands.append("equiv_simple" + undef_option + "")
     commands.append("equiv_status -assert")
     script = "\n".join(commands) + "\n"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -229,25 +195,6 @@ def extract(args):
         if process.returncode:
             raise TraceError("extracted netlist validation failed; no export published:\n" +
                              staged[".log"].read_text()[-3000:])
-        if has_state:
-            # Induction alone can overlook initial-state restrictions. Check the
-            # named state-bit aliases after Verilog reimport as an independent
-            # assertion that the serialized init information survived.
-            roundtrip = json.loads(staged[".roundtrip.json"].read_text())["modules"]["gate"]
-            init_by_bit = {}
-            for net in roundtrip["netnames"].values():
-                if "init" in net.get("attributes", {}):
-                    for i, bit in enumerate(net["bits"]):
-                        init_by_bit[bit] = net["attributes"]["init"][-1 - i]
-            gold_module = netlist["modules"][module_name]
-            state_bits = {bit for cell in gold_module["cells"].values() if state_cell(cell)
-                          for port, bits in cell["connections"].items() if cell["port_directions"][port] == "output" for bit in bits}
-            for name, net in gold_module["netnames"].items():
-                if net["bits"][0] in state_bits:
-                    require(name in roundtrip["netnames"], f"state alias missing after reimport: {name}")
-                    bit = roundtrip["netnames"][name]["bits"][0]
-                    require(init_by_bit.get(bit, "x") == net["attributes"].get("init", "x"),
-                            f"state init changed after reimport: {name}")
         report = {
             "schema_version": manifest["schema_version"], "status": "complete", "run_id": manifest["run_id"],
             "mode": "source_association", "upstream_cone_included": False,
@@ -257,7 +204,7 @@ def extract(args):
             "selector": {key: getattr(args, key, None) for key in
                          ("source", "line", "end_line", "column", "end_column", "instance", "object")},
             "selected_cells": selection["final_cells"], "boundary": boundary,
-            "selected_connections": connections, "contains_state": has_state,
+            "selected_connections": connections, "input_scope": "combinational",
             "association_precision": selection["association_precision"],
             "provenance": {key: selection[key] for key in ("seeds", "sources", "edges", "events")},
             "process_actions": selection["process_actions"], "process_proof_nodes": selection["process_proof_nodes"],
@@ -276,31 +223,20 @@ def extract(args):
         report["abc_regions"] = selection.get("abc_regions", [])
         report["abc_refinement_fallbacks"] = selection.get("abc_refinement_fallbacks", [])
         report["abc_associations"] = selection.get("abc_associations", [])
+        report["abc_internal"] = selection.get("abc_internal", [])
+        report["joint_cut_proven_refs"] = selection.get("joint_cut_proven_refs", [])
+        report["cut_proven_refs"] = selection.get("cut_proven_refs", [])
         report["techmap_bit_maps"] = selection.get("techmap_bit_maps", [])
-        for name in ("ff_bit_maps", "ff_mux_absorptions", "ff_alias_maps"):
-            report[name] = selection.get(name, [])
         report["abc_evidence_artifacts"] = {name: manifest["artifacts"][name]
             for region in report["abc_regions"] for name in region.get("artifacts", {}).values()}
         if has_pmux:
             report["pmux_semantics"] = {"multiple_active_selects": "undefined", "undefined_values_modelled": True, "verilog_option": "-noparallelcase"}
-        if has_state:
-            report["validation"]["selected_state_init_preserved"] = True
-            report["validation"]["sequential_equivalence"] = True
-            report["sequential_verification"] = {
-                "method": "clk2fflogic; equiv_simple -seq 5; equiv_induct -seq 5; equiv_status -assert",
-                "init_check": "per-bit alias comparison after Verilog reimport",
-                "limitations": "clk2fflogic uses sampled clock events and negative hold time for async inputs; "
-                               "equiv_induct is a non-divergence proof after equal observable states. "
-                               "Exact cell copying and the separate init roundtrip check preserve the selected state definition.",
-            }
         write_json(staged[".provenance.json"], report)
         # Publish with exclusive creation and the completion report last. Preserve
         # all pre-existing outputs, including a file created during validation.
         published = []
         try:
             order = [".json", ".il", ".v", ".ys", ".log"]
-            if has_state:
-                order.append(".roundtrip.json")
             for suffix in [*order, ".provenance.json"]:
                 os.link(staged[suffix], targets[suffix])
                 published.append(targets[suffix])

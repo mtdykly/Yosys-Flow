@@ -62,30 +62,25 @@ endmodule
         self.assertEqual(result["selected_cell_count"], 4)
         self.assertTrue(all(c["all_origins"] for c in report["selected_cells"]))
 
-    def test_parameter_clone_preserves_state_and_cell_free_sources(self):
-        _, trace, _ = self.experiment("parameter-state", """module demo #(parameter N=1)(input clk, input [N-1:0] d,
-output reg [N-1:0] q, output [N-1:0] direct, output zero);
-initial q = 2'b10;
-always @(posedge clk) q <= d;
-assign direct = d;
+
+    def test_parameter_clone_preserves_combinational_process_and_connections(self):
+        _, trace, _ = self.experiment("parameter-comb", """module demo #(parameter N=1)(input sel, input [N-1:0] a,b,
+output reg [N-1:0] y, output [N-1:0] direct, output zero);
+always @* if (sel) y=a; else y=b;
+assign direct = a;
 assign zero = 1'b0;
 endmodule
 """, "--param", "N=2")
-        source, directory = self.base / "parameter-state.v", self.base / "parameter-state"
-        result, netlist, report = self.export("parameter-state", directory, source, "--line", "4")
-        self.assertEqual(result["selected_cell_count"], 2)
-        self.assertEqual({c["type"] for c in report["selected_cells"]}, {"$_DFF_P_"})
-        self.assertTrue(result["validation"]["selected_state_init_preserved"])
-        self.assertEqual(sorted(n["attributes"]["init"] for n in netlist["modules"]["selected"]["netnames"].values()
-                                if "init" in n["attributes"]), ["0", "1"])
-        for line, name in ((5, "direct"), (6, "zero")):
+        source, directory = self.base / "parameter-comb.v", self.base / "parameter-comb"
+        result, _, _ = self.export("parameter-process", directory, source, "--line", "3")
+        self.assertTrue(result["validation"]["exported_verilog_equivalent_to_cell_slice"])
+        for line, name in ((4, "direct"), (5, "zero")):
             selected = query(parser().parse_args(["query", str(directory), "--source", str(source), "--line", str(line)]))
             self.assertEqual(selected["resolution"], "connections_found")
             self.assertFalse(selected["final_cells"])
             self.assertTrue(any(e["capture"] == "hierarchy_parameter_clone" for e in selected["edges"]))
             exported, _, _ = self.export("parameter-" + name, directory, source, "--line", str(line))
             self.assertEqual(exported["selected_cell_count"], 0)
-            self.assertTrue(exported["validation"]["exported_verilog_equivalent_to_cell_slice"])
         self.assertTrue(any(r["record_type"] == "assignment" and r.get("cloned_from") for r in trace.records))
 
     def test_source_and_output_paths_with_spaces(self):

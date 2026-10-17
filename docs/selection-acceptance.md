@@ -1,87 +1,69 @@
-# 默认 synth 来源选择验收：ABC 对应、优化吸收和位关系
+# 组合逻辑的来源选择验收
 
-本轮保持 RTL 支持范围与默认 `synth -top <top>` 不变，围绕三个方向推进：独立的最终对象选择验收、ABC 节点交接与候选细化、影响已有结构的优化和过程来源。仍使用同一个原生记录器，未改变默认 ABC 脚本、添加 keep 或跳过优化。
+目标保持为“原始组合 RTL → 完整默认 synth → 原始语句关联的最终逻辑 → 子网表导出”。所有验收使用固定工具与默认 ABC，不添加 keep。时序实现与正向时序用例已移除；输入拒绝检查另行保留。
 
-## 本轮实际达到的范围
+## 当前验收范围
 
-| 方向 | 已实现并验证 | 尚未完成 |
+| 方向 | 已实现及测试的子集 | 未完成 |
 | --- | --- | --- |
-| 最终来源选择验收 | 独立输出、相同输入不同运算、共享表达式、宽算术、重写、使能/复位吸收、时钟反相、寄存器拆位；每例对照原版综合并导出验证 | 任意 RTL 或每种优化的完整验收 |
-| ABC | 原 cell → 实际输入节点、输出 BLIF 节点 → 导回 cell/连接；按保留输出边界收缩候选，独立 AND/XOR 可分开 | ABC 内部节点重写、选择替代实现和映射的事件历史；同一输出锥内的逐语句精确区分 |
-| 内部来源 | 实际 mux 吸收、反相器旁路、子归约合并、mux 树裁剪、复位值求解和 techmap 输出位对应 | 全部跨对象优化依赖、全部算术内部位关系；复杂情形继续保留缺口 |
-
-这张表不将第二、三项的阶段成果计为整个默认 synth 精确追踪已经完成。后续继续补来源精度，层次、memory、generate 等输入支持范围尚未扩大。
+| 来源选择 | 独立输出、相同输入不同运算、共享表达式、宽组合算术、表达式列选择、组合过程的分支/覆盖/裁剪、同一输出内保留切点的组合链、部分三层重结合及分配律因式分解的门组与边界排除 | 任意组合 RTL 的精确选择；同一 ABC 输出内部的一般语句区分 |
+| 过程与优化 | 实际动作位和分支、无状态直连、合并/替代、子归约合并、mux 树裁剪 | 全部跨对象常量/控制依赖、位宽与共享变换 |
+| techmap | 原单元到实际派生单元、输出位对应 | 算术内部门的完整位来源 |
+| ABC | 内部阶段网络、实际替换、选中映射和对象转换、输出门副本，入口到 fraig 的复制链及已采用合并绑定、dch 等价/choice、有界单门/门组证明 | 全部内部重写因果历史；组内的逐门归属、没有已记录等价根或无法证明的共同改写 |
+| 导出 | 参数/连接/常量复制、集合边界、共享说明、Verilog 重读等价 | 每种新来源规则还需独立选择验收 |
 
 ## 可复现例子
 
 ```bash
 make NATIVE_JOBS=4
-python3 -m yosys_flow run \
-  --source examples/selection.v --top demo --out runs/selection-final
-python3 -m yosys_flow query runs/selection-final \
-  --source examples/selection.v --line 2
-python3 -m yosys_flow extract runs/selection-final \
-  --source examples/selection.v --line 2 --out runs/selection-final/and.v
-python3 -m yosys_flow extract runs/selection-final \
-  --source examples/selection.v --line 5 --out runs/selection-final/enable.v
-python3 -m yosys_flow extract runs/selection-final \
-  --source examples/selection.v --line 10 --out runs/selection-final/state-bit.v
+python3 -m yosys_flow run --source examples/selection.v --top demo --out runs/selection-demo
+python3 -m yosys_flow query runs/selection-demo --source examples/selection.v --line 2
+python3 -m yosys_flow extract runs/selection-demo --source examples/selection.v --line 2 --out runs/selection-demo/and.v
+python3 -m yosys_flow extract runs/selection-demo --source examples/selection.v --line 3 --out runs/selection-demo/xor.v
 ```
 
-运行目录和导出文件不能覆盖已有结果，重复实验请换目录。
+第 2、3 行的独立 AND/XOR 输出分别选择自己的最终门；共享表达式仍保留多个来源。它们即使在同一次 ABC 调用中，也不因区域并集而互相混入。
 
-- 第 2、3 行分别对应 AND 与 XOR 的最终对象，不因为同属一次 ABC 调用而互相混入。
-- 第 5 行 mux 被 `opt_dff` 吸收到最终使能 FF；查询仍能返回该 FF。
-- 第 8 行复位关联两个状态位；第 10、11 行数据赋值各关联对应的单个 FF。
+`examples/comb.v` 演示组合 always、直连和常量；`examples/process_precision.v` 演示嵌套分支、覆盖赋值和部分位覆盖；`examples/chain.v` 演示同一输出锥内两条语句的局部切点分离。运行目录和导出文件不可覆盖，重复实验请换目录。
 
-## ABC 候选细化的证据与含义
+## ABC 证据与候选含义
 
-提取时记录实际信号编号、输入节点 fanin、节点对应的退休 cell，以及规范化输出信号。导入时记录实际 BLIF cell 的类型、端口和映射到用户设计的端口；创建对象引用该节点。边界连接另记录实际输出编号。读取器检查这些引用，并与归档的输入/输出 BLIF、首次导回 cell 状态交叉核对。
+提取时捕获真实信号编号、输入节点 fanin、节点对应的退休 cell 和输出边界。导入时记录 BLIF cell 的类型、端口、映射到用户设计的实际端口，以及边界连接。读取器与归档的输入/输出 BLIF、首次对象状态交叉核对。
 
-细化按每个保留输出边界进行：求出映射前关联到该输出的输入成员，以及映射后服务该输出的门。一个共享门服务多个输出时，保留这些输出对应的来源并集。该算法在 `yosys_flow/abc_provenance.py`，结果为 `abc_output_cone_candidate`，证据放入 `abc_associations`。
+细化为每个保留输出求映射前的输入成员锥，以及映射后服务该输出的门。共享门保留多个输出的来源并集。该算法在 `yosys_flow/abc_provenance.py`，结果为 `abc_output_cone_candidate`，证据放入 `abc_associations`。
 
-它利用结构来收缩已有 ABC 区域候选，没有取得 ABC 内部实际重写历史。因此 `internal_rewrite_provenance=false`、`end_to_end_exact=false` 继续保留；同一输出的多个来源仍可能混合。遇到未知门或未解析输出时保留 `abc_region_candidate`，并通过 `abc_refinement_fallbacks` 解释回退。它不将所有原始 RTL 上游门加入默认导出集合，也不改变 `source_association` 的导出模式。
+现在还读取固定 ABC 的内部日志。单门切点验证通过时使用 `abc_internal_cut`；多门整体证明使用 `abc_internal_joint_cut` 并保留组内来源并集，不能将其当成逐门独占归属；未证明的门继续使用上述候选。实际 AIG 替换和选中映射已有钩子，完整内部重写历史尚未建立，因此 `internal_rewrite_provenance=false`、`end_to_end_exact=false` 保留。未知门或无法解析的输出回退 `abc_region_candidate`，原因位于 `abc_refinement_fallbacks`；内部验证的规模/接口限制另见 `abc_internal`。详见 [abc-internals.md](abc-internals.md)。
 
-原始 JSONL 仍记录实际事件及区域来源并集，重放首先校验这些事实，再建立用于查询的细化关联。细化不会改写 `trace.records` 或原始日志。后续 cell 版本、派生及合并继续传播细化结果；多来源关系不能无依据地升级候选精度。
+原始 JSONL 先按真实区域来源并集重放，再建立查询投影；细化不改写原始记录。多来源关系不能无依据地提高精度。
 
-## 优化、复位与 techmap
+## 组合优化的实际事件
 
-`cell_contribution` 表示一个存活对象实际贡献到另一个对象的新版本，供体不因此自动退休。已接入 `opt_dff_mux_absorb`、`opt_dff_feedback`、`opt_expr_polarity`、`opt_reduce_import`。目标来源与供体来源取并集；事件在成功变换的位置捕获，不按事后的名字相似度匹配，也不递归收集任意扇入。
+`cell_contribution` 表示存活供体实际贡献到目标新版本，供体不因此自动退休。当前保留 `opt_reduce_import`，在实际成功合并子归约的位置取来源并集。`opt_muxtree_prune` 记录实际裁剪目标与替代连接；全部条件分析的跨对象依据仍未覆盖。
 
-`opt_muxtree_prune` 的作用域记录实际被裁剪对象及替代连接。条件分析的全部跨对象依据尚未覆盖，因此 `opt_muxtree` 与 `opt_reduce` 仍声明部分覆盖。
+`techmap_bit_map` 保存原输出位和实际生成对象输出位及双方信号，用于核对拆分边界；它不自动证明算术内部门的位级来源。组合过程细节见 [process-provenance.md](process-provenance.md)。
 
-`proc_arst` 在实际求复位值的递归遍历中传递动作证据，`reset_value` 节点把存活的复位赋值接到对应状态位。找不到记录的复位路由或遇到不完整证据时仍回退 `process_signal_candidate`。敏感事件继续标明 `clock_or_reset`，没有声称拆分全部前端控制依赖。
+## 验收方法
 
-`process_binding.output_proofs` 保存普通/已捕获复位 FF 的逐 Q 位过程证据。`techmap_bit_map` 记录原输出端口位和生成对象输出端口位的真实对应，以及双方信号。当前只对有完整逐位证据、Q 对应直接一致且 D 位一致的单比特 DFF 派生应用来源细化；相关结构或来源发生未解释变化时放弃该细化。宽算术的输出位对应可查看，但不等于每个内部门的位级来源已经解决。
+`tests/test_selection.py` 使用最终输出端点、独立逻辑锥和应排除的对象定义预期，不用记录器自己的来源并集生成答案。检查共享、候选精度、原始记录不可变、ABC 节点/归档损坏，以及实际导出。
 
-## 第三步续补：寄存器优化中的逐位来源
+`tests/test_combinational.py` 验证组合 always 被保留，时钟过程、初始化、推导锁存器和组合环路不能发布成功结果。`tests/test_native.py`、`tests/test_process.py` 保留组合过程和开发检查点测试；`tests/test_synth.py` 验证完整默认终点，`tests/test_export.py` 验证边界、常量、参数和共享。
 
-宽 FF 在 `opt_dff` 中可能按不同使能或复位拆成多个 FF。此前仅把成功吸收的 mux 来源并入整个原 FF，会导致查询 `q[0]` 的赋值也选中 `q[1]`。本次在实际成功旁路处记录 `ff_mux_absorb`：原 FF 版本、Q 位、供体 mux 的输出位、替换前后的 D 位，以及 `ce` / `srst` 模式。在同次实际重写结束时，`ff_bit_map` 记录存活 FF 的 Q/D 位与原位的对应及吸收证据编号。
+三层验收分别是记录一致性、来源选择正确性、导出正确性。运行还对照独立原版的完整 JSON modules 并验证功能等价；这些检查不能把未捕获转换认定为已覆盖。
 
-回放检查连续 D 替换链、mux 端口、反馈位或复位常量、Q 位、位宽和真实派生关系。只有时钟及保留控制一致、新增使能/复位直接对应已记录 mux 选择端、极性和值一致时，才应用逐位来源细化。过程的逐位证据与该位实际吸收的供体一起传递给新 FF，再传到直接 D/Q 对应的通用 DFF/SDFF 门族。没有完整逐位过程证据时保留原来源；不会凭一个 Q 信号匹配推断全部优化语义。
+`make test` 通过 `tools/run_regression.py` 保存完整报告和日志，记录工具版本、提交/工作区身份、测试清单及失败/跳过详情。验收层与测试模块的对应单独列出，某个模块通过不意味着其所属层的全部来源场景已覆盖。完整回归要求零跳过。
 
-`opt_clean` 使用实际 `assign_map` 生成 `ff_alias_map`，在后续观察与该映射、类型和参数完全一致时保留逐位证据。别名映射在并行改写前记录，不在并行 worker 中写日志。原始来源并集记录不变，细化仍是经过校验的查询投影。
+`tests/test_abc_internal.py` 专门检查同输出组合链、共享中间逻辑、极性、实际替换记录、内部证据损坏，多级重结合的组级包含/排除、共享边界、嵌套条件、实际 fraig/dch 等价/choice、损坏极性/复制/计数，以及缺少证明依据和超出证明规模后的候选回退。
 
-查询及 `.provenance.json` 新增 `ff_mux_absorptions`、`ff_bit_maps`、`ff_alias_maps`，同时保留 `techmap_bit_maps`。`ff_bit_maps.applied` 说明是否采用细化；复杂控制不满足条件时为 `false`，并给出 `unsupported_ff_control_rewrite`。递归反馈树等尚未捕获逐位控制证据的路径不生成可应用的切片证据，继续保留原来源与整体缺口。旧 v2 日志仍可读，但缺少新证据的历史结果不会自动取得这项细化。
+`tests/test_abc_factoring.py` 为新的等价表达式门组定义以下独立预期；不以记录器自己的来源集合生成期望值。
 
-可复现示例包含两个有各自同步复位、使能和初始化的状态位：
+| 用例 | 必须包含 | 必须排除或拒绝 |
+| --- | --- | --- |
+| `(a&b)|(a&c)` 与 `a&(b|c)` | 任意一行均选择最终共享 AND、OR，两行来源并集 | 独立输出 XOR；不允许漏掉共享 OR |
+| 公共上游 `a=s&t` 作为输出保留 | 两种等价写法均选择下游两门，导出以 `a,b,c` 为输入 | 上游 `s&t` 的门及独立输出 |
+| 正反相等价输出 | 实际 AND、NAND、OR 共享组，保留原根与复制链极性 | 独立输出 XOR |
+| 输出门复制后再合并 | 所有副本都有真实复制证据，最终共享来源和精度保留 | 因未记录副本而退回候选 |
+| 仅函数相同、没有已记录合并 | 不产生新的等价门组 | 不得仅凭函数匹配提升精度 |
+| 损坏入口或副本证据 | 拒绝非法极性、缺项、断链、绑定、计数及不完整副本表 | 函数相同但未采用的 sweep 目标也必须拒绝 |
+| ABC 将整个区域化为 0/1 | 零 cell 模块和实际常量输出，综合/导出验证通过 | 不得引用已退休常量对象或无依据地提升连接精度 |
 
-```bash
-make NATIVE_JOBS=4
-python3 -m yosys_flow run \
-  --source examples/register_bits.v --top demo --out runs/register-bits-demo
-python3 -m yosys_flow query runs/register-bits-demo \
-  --source examples/register_bits.v --line 4
-python3 -m yosys_flow extract runs/register-bits-demo \
-  --source examples/register_bits.v --line 4 --out runs/register-bits-demo/q0.v
-```
-
-第 4 行只关联驱动 `q[0]` 的最终 FF，第 5 行只关联 `q[1]`；第 2 行初始化关联两个状态位。导出保留所选位的时钟、使能、复位和初始化。重复运行请换输出目录。
-
-新增验收覆盖独立使能、独立同步复位、独立 mux 语句、共享使能、部分位拆分、异步复位叠加负使能、连续复位/使能重写和逐位初始化。还检查错误位号、缺失吸收证据的拒绝，以及复杂使能的保守回退。这仍是第三步中寄存器优化的一个已验证子集；常量传播、复杂反馈控制、更多跨对象优化和算术内部门的位关系尚未完成，RTL 支持范围保持不变。
-
-## 验收方式
-
-`tests/test_selection.py` 用最终模块的输出端点、独立逻辑锥和明确应排除的对象定义预期集合，不以记录器自己报告的来源集合生成预期。逐项检查选择结果、共享、精度和导出。还检查节点对应篡改、techmap 位交换、原始记录不被细化修改，以及旧 v2 日志保留旧区域精度。
-
-原版与插桩版的完整 JSON modules 对照、整体等价检查及导出重读等价继续执行。通过这些检查不会将未捕获的转换认定为已覆盖。
+导出另检查两门集合、实际边界位及 Verilog 重读等价，反查检查两行共享来源。结果继续报告 `end_to_end_exact=false`；门组证明不计作组内逐门独占归属或完整内部历史。示例及命令见 [ABC 因式分解门组](abc-internals.md#等价表达式与因式分解门组)。

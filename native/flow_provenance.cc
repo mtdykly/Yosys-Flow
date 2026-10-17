@@ -41,10 +41,7 @@ struct ConnectionInfo {
 static std::vector<ConnectionInfo> connections;
 static dict<RTLIL::Process*, dict<RTLIL::SigBit, Origins>> actions;
 static dict<RTLIL::Process*, dict<RTLIL::SigBit, RTLIL::SigBit>> temporaries;
-static dict<RTLIL::Process*, Origins> clocks;
-static dict<RTLIL::SigBit, Origins> initial_sources;
 static std::set<std::string> gaps;
-static Origins process_initialization_sources(RTLIL::Process *proc, RTLIL::SigBit bit);
 static void process_created(RTLIL::Cell *cell);
 static void process_retired(RTLIL::Cell *cell);
 static void process_release(RTLIL::Process *proc);
@@ -107,6 +104,7 @@ Scope::Scope(const Origins &origins, const std::string &p, bool inherit) : previ
 Scope::~Scope() { active = previous; precision = previous_precision; }
 static void observe(RTLIL::Cell *cell, const std::string &capture) {
     if (!cells.count(cell)) return;
+    if (cell->is_builtin_ff()) log_error("Combinational-only flow rejects state cell %s (%s).\n", log_id(cell), log_id(cell->type));
     auto &info = cells.at(cell);
     auto data = state(cell);
     auto serial = J(data).dump();
@@ -139,10 +137,6 @@ CellScope::CellScope(const std::vector<RTLIL::Cell*> &cs, const std::string &op)
         observe(c, "before_instrumented_rewrite");
         targets.emplace_back(c, cells.at(c).id);
         active_inputs.push_back(ref(cells.at(c)));
-        if (op == "opt_dff" && cs.size() == 1 && c->hasPort(ID::Q) && c->hasPort(ID::D)) {
-            ff_input = ref(cells.at(c)); ff_q = c->getPort(ID::Q); ff_d = c->getPort(ID::D);
-            ff_absorptions.resize(ff_q.size());
-        }
         if (op == "techmap" && cs.size() == 1) {
             mapping_input = ref(cells.at(c));
             SigMap map(c->module);
@@ -170,29 +164,6 @@ CellScope::~CellScope() {
         emit({{"record_type", "techmap_bit_map"}, {"input", mapping_input}, {"ref", ref(cells.at(c))},
             {"links", links}, {"meaning", "actual_output_boundary_correspondence"}});
     }
-    if (!ff_input.empty() && ff_supported) {
-        auto outputs = generated;
-        outputs.insert(outputs.end(), targets.begin(), targets.end());
-        for (auto [c, id] : outputs) if (cells.count(c) && cells.at(c).id == id &&
-                c->is_builtin_ff() && c->hasPort(ID::Q) && c->hasPort(ID::D)) {
-            observe(c, "opt_dff_output");
-            if (ref(cells.at(c)) == ff_input) continue;
-            auto q = c->getPort(ID::Q), d = c->getPort(ID::D);
-            J::array links;
-            for (int j = 0; j < q.size() && j < d.size(); ++j) {
-                int source = -1;
-                for (int i = 0; i < ff_q.size(); ++i) if (q[j] == ff_q[i]) {
-                    if (source != -1) { source = -1; break; }
-                    source = i;
-                }
-                if (source < 0 || d[j] != ff_d[source]) { links.clear(); break; }
-                links.push_back(J::object{{"offset", j}, {"source_offset", source},
-                    {"q", signal(q[j])}, {"d", signal(d[j])}, {"absorptions", ff_absorptions[source]}});
-            }
-            if (int(links.size()) == q.size() && !links.empty())
-                emit({{"record_type", "ff_bit_map"}, {"input", ff_input}, {"ref", ref(cells.at(c))}, {"links", links}});
-        }
-    }
     cell_scope = previous_scope;
     for (auto [cell, id] : targets)
         if (cells.count(cell) && cells.at(cell).id == id) observe(cell, "instrumented_rewrite");
@@ -212,7 +183,7 @@ RegionScope::RegionScope(const Region &region, RTLIL::Module *module, const RTLI
     active_region = region.id;
     log_assert(!active_region.empty());
     J::object artifacts;
-    for (auto name : {"input.blif", "output.blif", "script"}) {
+    for (auto name : {"input.blif", "output.blif", "script", "input.blif.flow.jsonl"}) {
         auto path = trace_path + "." + active_region.substr(7) + "." + name;
         std::ifstream existing(path);
         if (existing.good()) log_error("Refusing to overwrite ABC provenance artifact.\n");
@@ -232,7 +203,7 @@ RegionScope::RegionScope(const Region &region, RTLIL::Module *module, const RTLI
         J::array inputs; for (int n : fanins.at(i)) if (n >= 0) inputs.push_back(n);
         nodes.push_back(J::object{{"id", i}, {"fanins", inputs}, {"cell", region.node_cells.at(signals[i], "")}});
     }
-    emit({{"input_nodes", nodes}, {"record_type", "abc_region"}, {"module", module->name.str()}, {"invocation_id", active_region},
+    emit({{"input_nodes", nodes}, {"record_type", "abc_region"}, {"internal_trace_schema", 3}, {"module", module->name.str()}, {"invocation_id", active_region},
         {"inputs", region.inputs}, {"origins", ids(region.origins)}, {"signals", signal(signals)},
         {"input_ports", input_ports}, {"output_ports", output_ports}, {"artifacts", artifacts}, {"executable", executable},
         {"precision", "abc_region_candidate"}});
@@ -252,6 +223,7 @@ AbcImportScope::AbcImportScope(int boundary) : previous(abc_node), previous_boun
 AbcImportScope::~AbcImportScope() { abc_node = previous; abc_boundary = previous_boundary; }
 void created(RTLIL::Cell *cell) {
     if (!tracks(cell->module)) return;
+    if (cell->is_builtin_ff()) log_error("Combinational-only flow rejects state cell %s (%s).\n", log_id(cell), log_id(cell->type));
     cells[cell] = {++object_id, 0, active, precision, ""};
     emit({{"record_type", "cell_create"}, {"ref", ref(cells.at(cell))}, {"origins", ids(active)},
           {"precision", precision}, {"module", cell->module->name.str()}, {"name", cell->name.str()},
@@ -308,45 +280,6 @@ void contribute(RTLIL::Cell *target, RTLIL::Cell *donor, const std::string &op) 
         r = ref(t); active.insert(d.origins.begin(), d.origins.end()); precision = merged_precision(precision, d.precision);
     }
 }
-void contribute_bit(RTLIL::Cell *target, RTLIL::Cell *donor, RTLIL::SigBit q,
-                    RTLIL::SigBit before, RTLIL::SigBit after, int donor_offset, const std::string &mode) {
-    if (cell_scope && !cell_scope->ff_input.empty() && cells.count(donor)) {
-        observe(donor, "before_ff_mux_absorb");
-        auto &scope = *cell_scope;
-        int offset = -1;
-        for (int i = 0; i < scope.ff_q.size(); ++i) if (scope.ff_q[i] == q) {
-            if (offset != -1) { offset = -1; break; }
-            offset = i;
-        }
-        if (offset < 0 || scope.ff_d[offset] != before) scope.ff_supported = false;
-        else {
-            emit({{"record_type", "ff_mux_absorb"}, {"input", scope.ff_input}, {"donor", ref(cells.at(donor))},
-                {"source_offset", offset}, {"donor_offset", donor_offset}, {"q", signal(q)},
-                {"before", signal(before)}, {"after", signal(after)}, {"mode", mode}});
-            scope.ff_absorptions[offset].push_back(sequence);
-            scope.ff_d[offset] = after;
-        }
-    }
-    contribute(target, donor, "opt_dff_mux_absorb");
-}
-void contribute_active(RTLIL::Cell *donor, const std::string &op) {
-    // Feedback-tree rewrites have not yet captured per-bit control proofs.
-    if (cell_scope) cell_scope->ff_supported = false;
-    for (auto &item : cells) if (!active_inputs.empty() && ref(item.second) == active_inputs.front()) {
-        contribute(item.first, donor, op); break;
-    }
-}
-void polarity_contribution(RTLIL::Cell *target, const RTLIL::SigSpec &sig, const SigMap &map) {
-    // Called only when opt_expr actually bypasses an inverter. Do not expand
-    // arbitrary fanin cones or attach unused inputs to the target.
-    for (auto donor : target->module->cells()) {
-        bool inv = donor->type.in(ID($_NOT_), ID($not), ID($logic_not)) &&
-            GetSize(donor->getPort(ID::A)) == 1;
-        bool mux = donor->type.in(ID($mux), ID($_MUX_)) &&
-            donor->getPort(ID::A) == RTLIL::SigSpec(RTLIL::State::S1) && donor->getPort(ID::B) == RTLIL::SigSpec(RTLIL::State::S0);
-        if ((inv || mux) && map(donor->getPort(ID::Y)) == sig) contribute(target, donor, "opt_expr_polarity");
-    }
-}
 void assignment(RTLIL::Module *module, const RTLIL::SigSpec &lhs, const RTLIL::SigSpec &rhs, const Origins &origins, const std::string &p, const std::string &cloned_from) {
     if (!tracks(module)) return;
     ConnectionInfo info{module, lhs, rhs, "native:connection_" + std::to_string(++object_id), {}};
@@ -371,20 +304,6 @@ static void connection_state(ConnectionInfo &info, const std::string &reason) {
           {"module", info.module->name.str()}});
 }
 void remap_connections(RTLIL::Module *module, const SigMap &map) {
-    // opt_clean uses this very map in its following (parallel) cell rewrite.
-    // Record before that loop; never emit from the parallel workers.
-    if (tracks(module)) for (auto cell : module->cells()) if (cell->is_builtin_ff() && cells.count(cell)) {
-        J::object ports; bool changed = false;
-        for (const auto &port : cell->connections()) {
-            auto mapped = map(port.second);
-            changed |= mapped != port.second;
-            ports[port.first.str()] = signal(mapped);
-        }
-        if (changed) {
-            observe(cell, "before_alias_remap");
-            emit({{"record_type", "ff_alias_map"}, {"input", ref(cells.at(cell))}, {"connections", ports}});
-        }
-    }
     if (!tracks(module)) return;
     for (auto &info : connections) if (info.module == module && !info.lhs.empty()) {
         auto lhs = map(info.lhs), rhs = map(info.rhs);
@@ -409,9 +328,6 @@ void wires_removed(RTLIL::Module *module, const pool<RTLIL::Wire*> &wires) {
             connection_state(info, "signal_removed");
         }
     }
-    std::vector<RTLIL::SigBit> removed;
-    for (auto &it : initial_sources) if (it.first.wire && wires.count(it.first.wire)) removed.push_back(it.first);
-    for (auto bit : removed) initial_sources.erase(bit);
 }
 void parameter_module_cloned(RTLIL::Module *original, RTLIL::Module *copy) {
     if (!tracks(original) || !tracks(copy)) return;
@@ -452,15 +368,7 @@ void parameter_module_cloned(RTLIL::Module *original, RTLIL::Module *copy) {
             auto values = temporaries.at(source);
             for (const auto &t : values) temporaries[target][copy_bit(t.first)] = copy_bit(t.second);
         }
-        if (clocks.count(source)) {
-            auto values = clocks.at(source);
-            clocks[target] = values;
-        }
     }
-    auto previous_initial = initial_sources;
-    for (auto &it : previous_initial)
-        if (it.first.wire && original->wire(it.first.wire->name) == it.first.wire)
-            initial_sources[copy_bit(it.first)] = it.second;
 }
 void module_removed(RTLIL::Module *module) {
     if (!tracks(module)) return;
@@ -483,10 +391,7 @@ void module_renamed(RTLIL::Module *module) {
         connection_state(info, "module_renamed");
 }
 void process_removed(RTLIL::Process *proc) {
-    if (tracks(proc->module)) { process_release(proc); actions.erase(proc); temporaries.erase(proc); clocks.erase(proc); }
-}
-void clock_sources(RTLIL::Process *proc, const Origins &origins) {
-    if (tracks(proc->module)) clocks[proc].insert(origins.begin(), origins.end());
+    if (tracks(proc->module)) { process_release(proc); actions.erase(proc); temporaries.erase(proc); }
 }
 static RTLIL::SigBit original(RTLIL::Process *proc, RTLIL::SigBit bit) {
     if (!temporaries.count(proc)) return bit;
@@ -522,25 +427,6 @@ Origins process_sources(RTLIL::Process *proc, const RTLIL::SigSpec &sig) {
     }
     return result;
 }
-void initialization(RTLIL::Process *proc, const RTLIL::SigSpec &lhs, const RTLIL::SigSpec &value) {
-    if (!tracks(proc->module)) return;
-    Origins origins;
-    for (auto bit : lhs) {
-        auto source = process_initialization_sources(proc, bit);
-        initial_sources[bit].insert(source.begin(), source.end());
-        origins.insert(source.begin(), source.end());
-    }
-    emit({{"record_type", "initialization"}, {"module", proc->module->name.str()},
-          {"lhs", signal(lhs)}, {"value", signal(value)}, {"origins", ids(origins)}});
-}
-Origins state_sources(RTLIL::Process *proc, const RTLIL::SigSpec &sig) {
-    auto origins = process_sources(proc, sig);
-    if (!tracks(proc->module)) return origins;
-    if (clocks.count(proc)) origins.insert(clocks.at(proc).begin(), clocks.at(proc).end());
-    for (auto bit : sig) if (initial_sources.count(bit))
-        origins.insert(initial_sources.at(bit).begin(), initial_sources.at(bit).end());
-    return origins;
-}
 #include "process_provenance.inc"
 
 static void checkpoint(RTLIL::Design *design, bool final) {
@@ -564,8 +450,8 @@ void step_begin(const std::vector<std::string> &args, RTLIL::Design *design) {
     emit({{"record_type", "step_begin"}, {"parent_step_id", parent}, {"pass", args[0]}, {"args", args}});
     static const std::set<std::string> supported = {"read_verilog", "hierarchy", "proc", "proc_clean", "proc_rmdead",
         "proc_prune", "proc_init", "proc_arst", "proc_rom", "proc_mux", "proc_dlatch", "proc_dff", "proc_memwr",
-        "opt_merge", "opt_clean", "techmap", "abc", "write_json", "write_rtlil", "write_verilog", "check", "stat", "synth", "opt"};
-    static const std::set<std::string> partial = {"opt_expr", "opt_dff", "opt_muxtree", "opt_reduce", "alumacc"};
+        "opt_merge", "opt_clean", "opt_dff", "techmap", "abc", "write_json", "write_rtlil", "write_verilog", "check", "stat", "synth", "opt"};
+    static const std::set<std::string> partial = {"opt_expr", "opt_muxtree", "opt_reduce", "alumacc"};
     if (partial.count(args[0])) gap("partial_pass:" + args[0]);
     else if (!supported.count(args[0])) gap("uncovered_pass:" + args[0]);
 }
@@ -583,7 +469,7 @@ struct Start : Pass {
             log_cmd_error("flow_start FILE RUN_ID requires an empty design and inactive recorder.\n");
         sequence = source_id = object_id = step_id = 0;
         cells.clear(); actions.clear(); temporaries.clear(); gaps.clear(); active.clear(); steps.clear(); passes.clear();
-        initial_sources.clear(); clocks.clear(); process_reset();
+        process_reset();
         root_design = design; pending_modules.clear(); connections.clear(); active_inputs.clear(); active_outputs.clear(); operation.clear(); capturing_region = nullptr;
         abc_id = 0; active_region.clear(); abc_node.clear(); abc_boundary = -1; captured_outputs = RTLIL::SigSpec(); cell_scope = nullptr;
         rewrite_filename(args[1]);
@@ -592,7 +478,7 @@ struct Start : Pass {
         if (existing.good()) log_cmd_error("Refusing to overwrite native provenance output.\n");
         output.open(args[1]);
         if (!output) log_cmd_error("Cannot open provenance output.\n");
-        emit({{"record_type", "run_begin"}, {"schema_version", 2}, {"run_id", args[2]}, {"profile", "native-process-actions"}, {"features", J::array{"process_action_proofs", "conservative_precision_merge", "abc_node_correspondence", "conservative_derivation", "techmap_output_bits", "opt_dff_bit_rewrites"}}});
+        emit({{"record_type", "run_begin"}, {"schema_version", 2}, {"run_id", args[2]}, {"profile", "native-combinational"}, {"features", J::array{"process_action_proofs", "conservative_precision_merge", "abc_node_correspondence", "conservative_derivation", "techmap_output_bits", "combinational_only", "abc_internal_v3"}}});
     }
 } Start;
 struct Stop : Pass {

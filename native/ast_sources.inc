@@ -15,13 +15,16 @@ static void flow_register_ast(AST::AstNode *node, std::string module = "",
     using namespace AST;
     if (!FlowProvenance::enabled()) return;
     if (node->type == AST_MODULE) module = node->str;
-    // These forms need elaboration/instance hooks that this pilot does not have.
+    // Reject source-level state even if later optimization would remove it.
+    if (node->type == AST_POSEDGE || node->type == AST_NEGEDGE || node->type == AST_INITIAL || node->attributes.count(ID::init))
+        log_error("Combinational-only flow rejects clocked processes and initialization (%s).\n", type2str(node->type));
+    // These forms still need elaboration/instance hooks.
     switch (node->type) {
     case AST_CELL: case AST_CELLARRAY: case AST_PRIMITIVE: case AST_MEMORY:
     case AST_FUNCTION: case AST_TASK: case AST_FCALL: case AST_TCALL:
     case AST_FOR: case AST_WHILE: case AST_REPEAT: case AST_GENFOR:
     case AST_GENIF: case AST_GENCASE: case AST_GENBLOCK:
-        log_error("Native M1 pilot does not support %s.\n", type2str(node->type));
+        log_error("Combinational provenance does not support %s.\n", type2str(node->type));
     default: break;
     }
     bool statement = node->type == AST_ASSIGN || node->type == AST_ASSIGN_EQ || node->type == AST_ASSIGN_LE;

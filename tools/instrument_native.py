@@ -28,9 +28,9 @@ def instrument(root):
     edit("kernel/CMakeLists.txt", "\tbinding.cc", "\tflow_provenance.cc\n\tflow_provenance.h\n\tbinding.cc")
     for file in ("kernel/rtlil.cc", "kernel/register.cc", "frontends/ast/ast.cc",
                  "frontends/ast/genrtlil.cc", "passes/proc/proc_mux.cc",
-                 "passes/proc/proc_dff.cc", "passes/proc/proc_dlatch.cc", "passes/proc/proc_init.cc", "passes/opt/opt_merge.cc",
-                 "passes/opt/opt_expr.cc", "passes/opt/opt_dff.cc", "passes/opt/opt_muxtree.cc", "passes/opt/opt_reduce.cc", "passes/opt/opt_clean/wires.cc",
-                 "passes/techmap/techmap.cc", "passes/techmap/alumacc.cc", "passes/techmap/abc.cc", "passes/hierarchy/hierarchy.cc", "passes/proc/proc_arst.cc", "passes/proc/proc_prune.cc", "passes/proc/proc_clean.cc", "passes/proc/proc_rmdead.cc"):
+                 "passes/proc/proc_dff.cc", "passes/proc/proc_dlatch.cc", "passes/opt/opt_merge.cc",
+                 "passes/opt/opt_expr.cc", "passes/opt/opt_muxtree.cc", "passes/opt/opt_reduce.cc", "passes/opt/opt_clean/wires.cc",
+                 "passes/techmap/techmap.cc", "passes/techmap/alumacc.cc", "passes/techmap/abc.cc", "passes/hierarchy/hierarchy.cc", "passes/proc/proc_prune.cc", "passes/proc/proc_clean.cc", "passes/proc/proc_rmdead.cc"):
         path = root / file
         originals.setdefault(file, path.read_text())
         path.write_text('#include "kernel/flow_provenance.h"\n' + path.read_text())
@@ -56,11 +56,6 @@ def instrument(root):
          "\tFlowProvenance::Scope flow_scope(flow_origins);")
     edit(file, "\tvoid processAst(AstNode *ast)\n\t{",
          "\tvoid processAst(AstNode *ast)\n\t{\n\t\tFlowProvenance::Scope flow_scope(ast->flow_origins);")
-    edit(file, "\t\tset_src_attr(proc, always.get());",
-         "\t\tset_src_attr(proc, always.get());\n"
-         "\t\tfor (auto &child : always->children)\n"
-         "\t\t\tif (child->type == AST_POSEDGE || child->type == AST_NEGEDGE)\n"
-         "\t\t\t\tFlowProvenance::clock_sources(proc, child->flow_sources());")
     edit(file, "\t\t\tcurrent_module->connect(RTLIL::SigSig(left, right));",
          "\t\t\tFlowProvenance::assignment(current_module, left, right, flow_sources());\n"
          "\t\t\tcurrent_module->connect(RTLIL::SigSig(left, right));")
@@ -158,11 +153,6 @@ def instrument(root):
          "\tFlowProvenance::process_augment(last_mux_cell, FlowProvenance::process_union(flow_result));\n\tlast_mux_cell->type = ID($pmux);")
     # All comparator cells derive only from the controlling branch, not its data actions.
     edit(f, "\tRTLIL::Wire *cmp_wire = mod->addWire", "\tFlowProvenance::ProcessScope flow_compare(FlowProvenance::process_branch(cs), \"proc_compare\");\n\tRTLIL::Wire *cmp_wire = mod->addWire")
-    edit("passes/proc/proc_dff.cc", "\t\tRTLIL::SigSpec insig = RTLIL::SigSpec(RTLIL::State::Sz, sig.size());",
-         "\t\tFlowProvenance::ProcessScope flow_scope(FlowProvenance::process_state(proc, sig), \"proc_dff\", FlowProvenance::process_state_precision(proc));\n"
-         "\t\tRTLIL::SigSpec insig = RTLIL::SigSpec(RTLIL::State::Sz, sig.size());")
-    edit("passes/proc/proc_dff.cc", "\t\t\tconst auto rstval = async_rules.front().first;",
-         "\t\t\tFlowProvenance::ProcessScope flow_trigger(FlowProvenance::process_reset_controls(proc), \"proc_reset_trigger\");\n\t\t\tconst auto rstval = async_rules.front().first;")
     edit("passes/proc/proc_dff.cc", "\t\t\tmod->connect(RTLIL::SigSig(sig, insig));",
          "\t\t\tFlowProvenance::process_connection(proc, sig, insig);\n\t\t\tmod->connect(RTLIL::SigSig(sig, insig));")
     edit("passes/proc/proc_dlatch.cc", "\t\tdb.module->connect(lhs, rhs);",
@@ -179,8 +169,6 @@ def instrument(root):
          "\t\t\t\tFlowProvenance::process_dead_case(sw->cases[i]);\n\t\t\t\tdelete sw->cases[i];")
     edit("kernel/rtlil.cc", "RTLIL::CaseRule::~CaseRule()\n{",
          "RTLIL::CaseRule::~CaseRule()\n{\n\tFlowProvenance::process_case_removed(this);")
-    edit("passes/proc/proc_init.cc", "\t\t\t\tint offset = 0;",
-         "\t\t\t\tFlowProvenance::initialization(proc, lhs, rhs);\n\t\t\t\tint offset = 0;")
     edit("passes/opt/opt_merge.cc", "\t\t\tfor (auto [remove_cell, keep_cell] : cell_ptrs)\n\t\t\t{",
          "\t\t\tfor (auto [remove_cell, keep_cell] : cell_ptrs)\n\t\t\t{\n"
          "\t\t\t\tFlowProvenance::merge(keep_cell, remove_cell);")
@@ -190,10 +178,6 @@ def instrument(root):
          "\tFlowProvenance::remap_connections(module, actx.assign_map);")
     edit("passes/opt/opt_expr.cc", "\tfor (auto cell : cells.sorted)\n\t{",
          "\tfor (auto cell : cells.sorted)\n\t{\n\t\tFlowProvenance::CellScope flow_scope(cell, \"opt_expr\");")
-    # opt_dff can replace a register with several registers. This records the
-    # actual target and Q/D correspondence; successful mux donors are hooked below.
-    edit("passes/opt/opt_dff.cc", "\t\t\tdff_cells.pop_back();",
-         "\t\t\tdff_cells.pop_back();\n\t\t\tFlowProvenance::CellScope flow_scope(cell, \"opt_dff\");")
     edit("passes/techmap/techmap.cc", "\t\tfor (auto cell : cells.sorted)\n\t\t{",
          "\t\tfor (auto cell : cells.sorted)\n\t\t{\n\t\t\tFlowProvenance::CellScope flow_scope(cell, \"techmap\");")
     edit("passes/techmap/alumacc.cc", "\t\t\t\t\tbool do_subtract = port.do_subtract;",
@@ -228,26 +212,6 @@ def instrument(root):
     edit("passes/techmap/abc.cc", "\t\t\tsnprintf(buffer, 100, \"\\\\ys__n%d\", si.id);",
          "\t\t\tFlowProvenance::AbcImportScope flow_boundary(si.id);\n\t\t\tsnprintf(buffer, 100, \"\\\\ys__n%d\", si.id);")
 
-    for f, anchor in (("passes/opt/opt_expr.cc", "\t\tcell->setPort(port, (invert_map.at(sig)));"),
-                      ("passes/opt/opt_expr.cc", "\t\t\tcell->setPort(port, (invert_map.at(sig)));")):
-        edit(f, "\n" + anchor, "\n" + anchor[:len(anchor)-len(anchor.lstrip())] + "FlowProvenance::polarity_contribution(cell, sig, assign_map);\n" + anchor)
-    for value in ("a", "b"):
-        # Exact successful reset/enable absorption branches (one each per function).
-        f = root / "passes/opt/opt_dff.cc"
-        text = f.read_text()
-        old = "\t\t\t\t\tff.sig_d[i] = " + value + ";"
-        if text.count(old) != 2: raise ValueError("opt_dff mux absorption anchors changed")
-        for mode in ("srst", "ce"):
-            hook = f'\t\t\t\t\tFlowProvenance::contribute_bit(cell, mbit.first, ff.sig_q[i], ff.sig_d[i], {value}, mbit.second, "{mode}");\n'
-            # The srst function precedes ce in the pinned source.
-            index = text.index(old, 0 if mode == "srst" else text.index("bool try_merge_ce("))
-            text = text[:index] + hook + text[index:]
-        f.write_text(text)
-    # Recursive feedback: transfer a mux only if this search found feedback.
-    edit("passes/opt/opt_dff.cc", "\t\t\t\treturn ret;\n\t\t\t}\n\t\t}\n\n\t\t// Specific path",
-         "\t\t\t\tif (!ret.empty()) FlowProvenance::contribute_active(mbit.first, \"opt_dff_feedback\");\n\t\t\t\treturn ret;\n\t\t\t}\n\t\t}\n\n\t\t// Specific path")
-    edit("passes/opt/opt_dff.cc", "\t\treturn ret;\n\t}\n\n\tctrl_t make_patterns_logic",
-         "\t\tif (!ret.empty()) FlowProvenance::contribute_active(mbit.first, \"opt_dff_feedback\");\n\t\treturn ret;\n\t}\n\n\tctrl_t make_patterns_logic")
     edit("passes/opt/opt_muxtree.cc", "\t\t\tif (live_ports.empty()) {",
          "\t\t\tFlowProvenance::CellScope flow_scope(mi.cell, \"opt_muxtree_prune\");\n\t\t\tif (live_ports.empty()) {")
     edit("passes/opt/opt_reduce.cc", "\t\tcells.erase(cell);",
@@ -258,18 +222,6 @@ def instrument(root):
         edit("passes/opt/opt_reduce.cc", "\tvoid " + name + "(RTLIL::Cell *cell)\n\t{",
              "\tvoid " + name + "(RTLIL::Cell *cell)\n\t{\n\t\tFlowProvenance::CellScope flow_scope(cell, \"opt_reduce\");")
 
-
-    f = "passes/proc/proc_arst.cc"
-    edit(f, "bool polarity, bool unknown)\n{", "bool polarity, bool unknown, FlowProvenance::ProcessValue &flow_value)\n{")
-    edit(f, "\tfor (auto &action : cs->actions) {",
-         "\tfor (auto &action : cs->actions) {\n\t\tFlowProvenance::process_reset_consume(mod, cs, action, rspec, flow_value, unknown);")
-    for mode in ("unknown", "false", "true"):
-        edit(f, "apply_const(mod, rspec, rval, cs2, const_sig, polarity, " + mode + ");",
-             "apply_const(mod, rspec, rval, cs2, const_sig, polarity, " + mode + ", flow_value);")
-    edit(f, "\tRTLIL::SigSpec last_rval;", "\tFlowProvenance::ProcessValue flow_value(rspec.size());\n\tRTLIL::SigSpec last_rval;")
-    edit(f, "apply_const(mod, rspec, rval, &proc->root_case, root_sig, polarity, false);",
-         "apply_const(mod, rspec, rval, &proc->root_case, root_sig, polarity, false, flow_value);")
-    edit(f, "\treturn rval;", "\tFlowProvenance::process_reset_bind(proc, sync, log_sig, flow_value);\n\treturn rval;")
 
     file = root / "passes/hierarchy/hierarchy.cc"
     text = file.read_text()

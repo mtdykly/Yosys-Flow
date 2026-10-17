@@ -25,7 +25,7 @@ class NativeTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory(prefix="yosys-native-tests-")
         cls.base = Path(cls.temp.name)
         cls.source = cls.base / "process with spaces.v"
-        cls.source.write_text((ROOT / "examples/proc.v").read_text())
+        cls.source.write_text((ROOT / "examples/comb.v").read_text())
         cls.out = cls.base / "base"
         cls.execute(cls.source, cls.out)
         cls.manifest, cls.trace, cls.validation = load_run(cls.out)
@@ -69,7 +69,7 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(self.trace.gaps, [])
 
     def test_branch_operator_and_mux_excludes_other_branch_operator(self):
-        for line, operator, exclude in ((5, "$and", "$or"), (7, "$or", "$and")):
+        for line, operator, exclude in ((4, "$and", "$or"), (6, "$or", "$and")):
             result = self.select(line)
             self.assertEqual({r["type"] for r in result["final_cells"]}, {operator, "$mux"})
             self.assertEqual(len(result["final_cells"]), 2)
@@ -82,28 +82,9 @@ class NativeTests(unittest.TestCase):
             self.assertNotIn(exclude, {c["type"] for c in module["cells"].values()})
             self.assertEqual(sum(p["direction"] == "output" for p in report["boundary"]), 1)
 
-    def test_simple_ff_reset_enable_init_and_state_export(self):
-        result = self.select(13)
-        self.assertEqual({r["type"] for r in result["final_cells"]}, {"$adff", "$mux"})
-        self.assertNotIn("$and", {r["type"] for r in result["final_cells"]})
-        target, _, report, module = self.export("state", 13)
-        ff = next(c for c in module["cells"].values() if c["type"] == "$adff")
-        original = next(c for c in self.module["cells"].values() if c["type"] == "$adff")
-        self.assertEqual(ff, original)
-        self.assertTrue(report["contains_state"])
-        self.assertTrue(report["validation"]["selected_state_init_preserved"])
-        init = {n["bits"][0]: n["attributes"]["init"] for n in module["netnames"].values() if "init" in n["attributes"]}
-        self.assertEqual(init[ff["connections"]["Q"][0]], "1")
-        self.assertIn("posedge", target.read_text())
-
-    def test_initial_statement_and_clock_reach_state(self):
-        for line in (2, 9):
-            result = self.select(line)
-            self.assertIn("$adff", {r["type"] for r in result["final_cells"]})
-            self.assertNotIn("$and", {r["type"] for r in result["final_cells"]})
 
     def test_connection_only_and_constant_export(self):
-        for line, count in ((15, 1), (16, 0)):
+        for line, count in ((8, 1), (9, 0)):
             result = self.select(line)
             self.assertEqual(result["final_cells"], [])
             self.assertEqual(result["resolution"], "connections_found")
@@ -142,34 +123,6 @@ endmodule
         mux = next(r for r in result["final_cells"] if r["type"] == "$mux")
         self.assertEqual(module["cells"][mux["name"]]["connections"]["Y"], module["ports"]["y"]["bits"])
 
-    def test_two_registers_in_one_process_do_not_mix(self):
-        source, out = self.experiment("registers", """module demo(input clk,a,b, output reg q,r);
-always @(negedge clk) begin
-  q <= a;
-  r <= b;
-end
-endmodule
-""")
-        result = self.select(3, source, out)
-        self.assertEqual([r["type"] for r in result["final_cells"]], ["$dff"])
-        module = json.loads((out / "after.json").read_text())["modules"]["demo"]
-        cell = module["cells"][result["final_cells"][0]["name"]]
-        self.assertEqual(cell["connections"]["Q"], module["ports"]["q"]["bits"])
-        self.assertEqual(int(cell["parameters"]["CLK_POLARITY"], 2), 0)
-        _, _, _, exported = self.export("negative_clock", 3, source, out)
-        self.assertFalse(any("init" in n["attributes"] for n in exported["netnames"].values()))
-
-    def test_unselected_ff_is_external_state_input(self):
-        source, out = self.experiment("external_state", """module demo(input clk,d,a, output reg q, output y);
-always @(posedge clk) q <= d;
-assign y = q & a;
-endmodule
-""")
-        self.assertEqual([r["type"] for r in self.select(3, source, out)["final_cells"]], ["$and"])
-        _, _, report, module = self.export("external_state", 3, source, out)
-        self.assertFalse(report["contains_state"])
-        self.assertTrue(any(p.get("external_state_drivers") for p in report["boundary"]))
-        self.assertEqual({c["type"] for c in module["cells"].values()}, {"$and"})
 
     def test_columns_and_two_stage_cut(self):
         source, out = self.experiment("columns", """module demo(input a,b,c, output t,y);
@@ -193,16 +146,6 @@ endmodule
         self.assertEqual({r["name"] for r in first["final_cells"][0]["consumers"]}, {"y1", "y2"})
         self.assertTrue(any(r["record_type"] == "merge" for r in first["events"]))
 
-    def test_init_bus_bit_order(self):
-        source, out = self.experiment("init_bits", """module demo(input clk, input [2:0] d, output reg [0:2] q);
-initial q = 3'b110;
-always @(posedge clk) q <= d;
-endmodule
-""")
-        _, _, _, module = self.export("init_bits", 3, source, out)
-        ff = next(c for c in module["cells"].values() if c["type"] == "$dff")
-        values = {n["bits"][0]: n["attributes"]["init"] for n in module["netnames"].values() if "init" in n["attributes"]}
-        self.assertEqual([values[b] for b in ff["connections"]["Q"]], list("011"))
 
     def test_column_inside_nested_expression_excludes_enclosing_operator(self):
         source, out = self.experiment("nested_expression", """module demo(input a,b,c, output y);

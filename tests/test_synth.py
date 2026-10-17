@@ -11,7 +11,7 @@ import unittest
 
 from test_native import NATIVE
 from yosys_flow.cli import parser
-from yosys_flow.extract import extract, state_cell
+from yosys_flow.extract import extract
 from yosys_flow.native import NativeTrace
 from yosys_flow.common import ROOT, TraceError, unescape
 from yosys_flow.runner import load_run, query, run
@@ -24,7 +24,7 @@ class SynthTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory(prefix="yosys-synth-tests-")
         cls.base = Path(cls.temp.name)
         cls.source = cls.base / "process.v"
-        cls.source.write_text((ROOT / "examples/proc.v").read_text())
+        cls.source.write_text((ROOT / "examples/comb.v").read_text())
         cls.out = cls.base / "full"
         cls.execute(cls.source, cls.out)
         cls.manifest, cls.trace, cls.validation = load_run(cls.out)
@@ -71,38 +71,26 @@ class SynthTests(unittest.TestCase):
         self.assertFalse(self.validation["full_transformation_coverage"])
         self.assertTrue(self.manifest["tool"]["abc"])
 
-    def test_abc_candidates_exclude_register_and_report_real_members(self):
-        result = self.select(5)
-        combinational = {n for n, c in self.module["cells"].items() if not state_cell(c)}
+    def test_abc_candidates_report_real_combinational_members(self):
+        result = self.select(4)
+        combinational = set(self.module["cells"])
         self.assertEqual({unescape(c["name"]) for c in result["final_cells"]}, combinational)
         self.assertEqual({c["precision"] for c in result["final_cells"]}, {"abc_output_cone_candidate"})
         self.assertFalse(result["cell_level_refs"])
         self.assertFalse(result["end_to_end_exact"])
         region = result["abc_regions"][0]
         self.assertTrue(region["input_ports"] and region["output_ports"])
-        self.assertTrue(all(not state_cell({"type": self.trace.objects[r]["state"]["type"]}) for r in region["inputs"]))
         self.assertTrue(any(e["capture"] == "techmap" for e in result["edges"]))
-        exported, report, mod = self.export("abc", 5)
+        exported, report, mod = self.export("abc", 4)
         self.assertEqual(set(mod["cells"]), combinational)
         self.assertEqual(report["abc_regions"], result["abc_regions"])
         self.assertTrue(report["abc_evidence_artifacts"])
         self.assertFalse(report["end_to_end_exact"])
         self.assertTrue(exported["validation"]["exported_verilog_equivalent_to_cell_slice"])
 
-    def test_final_ff_preserves_init_and_cuts_combinational_input(self):
-        result = self.select(13)
-        ff = [c for c in result["final_cells"] if c["type"].startswith("$_DFFE_")]
-        self.assertEqual(len(ff), 1)
-        self.assertEqual(len(result["final_cells"]), 1)
-        self.assertEqual(self.module["cells"][unescape(ff[0]["name"])]["connections"]["Q"], self.module["ports"]["q"]["bits"])
-        exported, _, mod = self.export("state", 13)
-        self.assertEqual(len(mod["cells"]), 1)
-        self.assertTrue(exported["validation"]["selected_state_init_preserved"])
-        self.assertTrue(exported["validation"]["sequential_equivalence"])
-        self.assertIn("1", [n["attributes"].get("init") for n in mod["netnames"].values()])
 
     def test_direct_and_constant_survive_clean_and_export_without_cells(self):
-        for line, name in ((15, "direct"), (16, "zero")):
+        for line, name in ((8, "direct"), (9, "zero")):
             result = self.select(line)
             self.assertEqual(result["resolution"], "connections_found")
             self.assertFalse(result["final_cells"])
@@ -112,20 +100,6 @@ class SynthTests(unittest.TestCase):
             self.assertFalse(mod["cells"])
             self.assertTrue(exported["validation"]["exported_verilog_equivalent_to_cell_slice"])
 
-    def test_multibit_negative_edge_init_survives_default_synth(self):
-        source, out = self.experiment("vector-state", """module demo(input clk, input [0:2] d, output reg [0:2] q);
-initial q = 3'b110;
-always @(negedge clk) q <= d;
-endmodule
-""")
-        result = self.select(3, source, out)
-        self.assertEqual(len(result["final_cells"]), 3)
-        self.assertEqual({c["type"] for c in result["final_cells"]}, {"$_DFF_N_"})
-        exported, _, mod = self.export("vector-state", 3, source, out)
-        self.assertTrue(exported["validation"]["selected_state_init_preserved"])
-        init = {bit: n["attributes"]["init"] for n in mod["netnames"].values()
-                if "init" in n["attributes"] for bit in n["bits"]}
-        self.assertEqual(sorted(init.values()), ["0", "1", "1"])
 
     def test_basic_optimization_constant_replacement_has_evidence(self):
         source, out = self.experiment("constant", """module demo(output reg y);
@@ -183,16 +157,16 @@ endmodule
         # Default ABC may process disconnected logic in the same invocation.
         # The recorded region still contains both, but output-cone candidates separate them.
         self.assertEqual(len(result["final_cells"]), 1)
-        self.assertEqual({c["precision"] for c in result["final_cells"]}, {"abc_output_cone_candidate"})
+        self.assertEqual({c["precision"] for c in result["final_cells"]}, {"abc_internal_cut"})
         self.assertFalse(result["end_to_end_exact"])
         self.assertTrue(result["abc_regions"])
 
     def test_abc_reverse_query_keeps_all_region_sources(self):
-        forward = self.select(5)
+        forward = self.select(4)
         ref = forward["final_cells"][0]["ref"]
         reverse = query(parser().parse_args(["query", str(self.out), "--object", ref]))
         self.assertEqual([r["ref"] for r in reverse["final_cells"]], [ref])
-        self.assertTrue({5, 7} <= {s["line"] for s in reverse["sources"]})
+        self.assertTrue({4, 6} <= {s["line"] for s in reverse["sources"]})
         self.assertEqual(reverse["association_precision"], ["abc_output_cone_candidate"])
 
     def test_forged_abc_members_precision_and_connection_revision_rejected(self):

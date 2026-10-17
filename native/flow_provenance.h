@@ -30,11 +30,6 @@ struct CellScope {
     std::map<RTLIL::SigBit, std::vector<std::pair<std::string, int>>> output_positions;
     dict<std::string, RTLIL::SigSpec> original_outputs;
     std::string mapping_input;
-    // opt_dff: actual Q identity and successful D mux bypasses in this rewrite.
-    std::string ff_input;
-    RTLIL::SigSpec ff_q, ff_d;
-    std::vector<std::vector<int>> ff_absorptions;
-    bool ff_supported = true;
     std::vector<std::pair<RTLIL::Cell*, int>> targets;
     Scope scope;
     std::vector<std::string> previous_inputs;
@@ -80,10 +75,6 @@ void created(RTLIL::Cell *cell);
 void removed(RTLIL::Cell *cell);
 void merge(RTLIL::Cell *keep, RTLIL::Cell *remove);
 void contribute(RTLIL::Cell *target, RTLIL::Cell *donor, const std::string &operation);
-void contribute_bit(RTLIL::Cell *target, RTLIL::Cell *donor, RTLIL::SigBit q,
-                    RTLIL::SigBit before, RTLIL::SigBit after, int donor_offset, const std::string &mode);
-void contribute_active(RTLIL::Cell *donor, const std::string &operation);
-void polarity_contribution(RTLIL::Cell *target, const RTLIL::SigSpec &signal, const SigMap &map);
 void assignment(RTLIL::Module *module, const RTLIL::SigSpec &lhs, const RTLIL::SigSpec &rhs, const Origins &ids,
                 const std::string &precision = "bit_range", const std::string &cloned_from = "");
 void connected(RTLIL::Module *module, const RTLIL::SigSig &conn);
@@ -93,12 +84,9 @@ void parameter_module_cloned(RTLIL::Module *original, RTLIL::Module *copy);
 void module_removed(RTLIL::Module *module);
 void module_renamed(RTLIL::Module *module);
 void process_removed(RTLIL::Process *proc);
-void clock_sources(RTLIL::Process *proc, const Origins &ids);
-void initialization(RTLIL::Process *proc, const RTLIL::SigSpec &lhs, const RTLIL::SigSpec &value);
 void action(RTLIL::Process *proc, const RTLIL::SigSpec &lhs, const Origins &ids);
 void temporary(RTLIL::Process *proc, const RTLIL::SigSpec &original, const RTLIL::SigSpec &generated);
 Origins process_sources(RTLIL::Process *proc, const RTLIL::SigSpec &signal);
-Origins state_sources(RTLIL::Process *proc, const RTLIL::SigSpec &signal);
 // Semantic process values travel alongside the actual lowering algorithm.
 using ProcessRefs = std::set<std::string>;
 using ProcessValue = std::vector<ProcessRefs>;
@@ -132,14 +120,8 @@ void process_dead_case(RTLIL::CaseRule *cs, const std::string &reason = "proc_rm
 void process_output(RTLIL::Process *proc, const RTLIL::SigSpec &sig, const ProcessValue &value);
 ProcessValue process_join(const ProcessValue &a, const ProcessValue &b, const ProcessRefs &control = {});
 void process_augment(RTLIL::Cell *cell, const ProcessRefs &refs);
-ProcessRefs process_state(RTLIL::Process *proc, const RTLIL::SigSpec &sig);
-ProcessRefs process_reset_controls(RTLIL::Process *proc);
-std::string process_state_precision(RTLIL::Process *proc);
 void process_connection(RTLIL::Process *proc, const RTLIL::SigSpec &lhs, const RTLIL::SigSpec &rhs);
 void process_clone(RTLIL::Process *from, RTLIL::Process *to);
-void process_reset_bind(RTLIL::Process *proc, RTLIL::SyncRule *sync, const RTLIL::SigSpec &target, const ProcessValue &values);
-void process_reset_consume(RTLIL::Module *module, RTLIL::CaseRule *cs, const RTLIL::SigSig &action,
-                          const RTLIL::SigSpec &sig, ProcessValue &values, bool unknown);
 void process_flush();
 void process_reset();
 void step_begin(const std::vector<std::string> &args, RTLIL::Design *design);

@@ -45,3 +45,13 @@ def identifier(value):
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", value):
         raise TraceError(f"expected a simple Verilog identifier: {value!r}")
     return value
+
+
+def require_combinational(module):
+    """Fail closed at run/load/export boundaries, including inferred state."""
+    for name, cell in module['cells'].items():
+        kind = cell['type'].lower().lstrip('$_')
+        require(not kind.startswith(('dff', 'adff', 'aldff', 'sdff', 'dlatch', 'adlatch', 'sr', 'ff', 'mem')),
+                f'Combinational-only flow rejects state cell {name} ({cell["type"]})')
+    require(all('init' not in n.get('attributes', {}) for n in module.get('netnames', {}).values()),
+            'Combinational-only flow rejects initialization attributes')

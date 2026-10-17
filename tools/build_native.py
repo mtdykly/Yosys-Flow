@@ -15,6 +15,7 @@ import tempfile
 import urllib.request
 
 from instrument_native import instrument
+from build_abc import build as build_abc
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,7 +29,7 @@ def main():
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--cmake", help="CMake >= 3.28；可使用仓库本地安装")
     parser.add_argument("--jobs", type=int, default=4)
-    parser.add_argument("--abc", default=shutil.which("yosys-abc"))
+    parser.add_argument("--abc", help="已插桩的 ABC；默认构建固定版本内部记录器")
     args = parser.parse_args()
     if args.jobs < 1:
         parser.error("--jobs must be positive")
@@ -75,9 +76,9 @@ def main():
             changed = ["kernel/flow_provenance.cc", "kernel/flow_provenance.h", "kernel/process_provenance.inc", "kernel/CMakeLists.txt",
                        "kernel/register.cc", "kernel/rtlil.cc", "frontends/ast/ast.cc", "frontends/ast/ast.h",
                        "frontends/ast/flow_sources.inc", "frontends/ast/genrtlil.cc", "passes/proc/proc_mux.cc",
-                       "passes/proc/proc_dff.cc", "passes/proc/proc_dlatch.cc", "passes/proc/proc_init.cc", "passes/opt/opt_merge.cc",
-                       "passes/opt/opt_expr.cc", "passes/opt/opt_dff.cc", "passes/opt/opt_muxtree.cc", "passes/opt/opt_reduce.cc", "passes/opt/opt_clean/wires.cc",
-                       "passes/techmap/techmap.cc", "passes/techmap/alumacc.cc", "passes/techmap/abc.cc", "passes/hierarchy/hierarchy.cc", "passes/proc/proc_arst.cc", "passes/proc/proc_prune.cc", "passes/proc/proc_clean.cc", "passes/proc/proc_rmdead.cc"]
+                       "passes/proc/proc_dff.cc", "passes/proc/proc_dlatch.cc", "passes/opt/opt_merge.cc",
+                       "passes/opt/opt_expr.cc", "passes/opt/opt_muxtree.cc", "passes/opt/opt_reduce.cc", "passes/opt/opt_clean/wires.cc",
+                       "passes/techmap/techmap.cc", "passes/techmap/alumacc.cc", "passes/techmap/abc.cc", "passes/hierarchy/hierarchy.cc", "passes/proc/proc_prune.cc", "passes/proc/proc_clean.cc", "passes/proc/proc_rmdead.cc"]
             previous = {"fingerprint": fingerprint, "files": {p: sha(source / p) for p in changed}}
             stamp.write_text(json.dumps(previous, indent=2) + "\n")
     for name, expected in previous["files"].items():
@@ -86,7 +87,7 @@ def main():
     if args.prepare_only:
         return
     if not args.abc:
-        parser.error("provide --abc /path/to/yosys-abc")
+        args.abc = str(build_abc(args.jobs))
     local_cmake = base / "python/cmake/data/bin/cmake"
     cmake = args.cmake or (str(local_cmake) if local_cmake.is_file() else "cmake")
     version = subprocess.check_output([cmake, "--version"], text=True)

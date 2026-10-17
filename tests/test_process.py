@@ -123,39 +123,6 @@ endmodule
         self.assertEqual([c["ref"] for c in a["final_cells"]], [c["ref"] for c in b["final_cells"]])
         self.assertTrue(self.export(fixture, 3, "default")[0]["validation"]["exported_verilog_equivalent_to_cell_slice"])
 
-    def test_plain_ff_overwrite_and_init_reach_final_state(self):
-        fixture = self.experiment("""module demo(input clk,a,b, output reg q);
-initial q = 1'b1;
-always @(posedge clk) begin
-  q <= a;
-  q <= b;
-end
-endmodule
-""", "synth")
-        dead, live = self.select(fixture, 4), self.select(fixture, 5)
-        self.assertFalse(dead["final_cells"])
-        self.assertTrue(dead["process_discards"])
-        self.assertEqual([c["type"] for c in live["final_cells"]], ["$_DFF_P_"])
-        self.assertEqual([c["precision"] for c in live["final_cells"]], ["process_action"])
-        self.assertTrue(self.select(fixture, 2)["final_cells"])
-        result, report = self.export(fixture, 5, "ff")
-        self.assertTrue(result["validation"]["selected_state_init_preserved"])
-        self.assertTrue(result["validation"]["sequential_equivalence"])
-        self.assertTrue(any("initialization" in n.get("roles", {}) for n in report["process_proof_nodes"]))
-
-    def test_overwritten_initialization_does_not_reach_state(self):
-        fixture = self.experiment("""module demo(input clk,d, output reg q);
-initial begin
-  q = 0;
-  q = 1;
-end
-always @(posedge clk) q <= d;
-endmodule
-""", "synth")
-        self.assertFalse(self.select(fixture, 3)["final_cells"])
-        self.assertTrue(self.select(fixture, 3)["process_discards"])
-        self.assertEqual([c["type"] for c in self.select(fixture, 4)["final_cells"]], ["$_DFF_P_"])
-        self.assertTrue(self.export(fixture, 4, "init")[0]["validation"]["selected_state_init_preserved"])
 
     def test_independent_bit_conditions_do_not_cross_select(self):
         fixture = self.experiment("""module demo(input s,t,a,b,c,d, output reg [1:0] y);
@@ -215,7 +182,7 @@ endmodule
 """, "synth")
         result = self.select(fixture, 4)
         self.assertTrue(result["final_cells"])
-        self.assertEqual({c["precision"] for c in result["final_cells"]}, {"abc_output_cone_candidate"})
+        self.assertEqual({c["precision"] for c in result["final_cells"]}, {"abc_output_cone_candidate", "abc_internal_cut"})
         self.assertFalse(result["end_to_end_exact"])
         self.assertTrue(any(e["capture"] == "proc_mux" for e in result["edges"]))
         self.assertTrue(result["process_actions"])
@@ -251,22 +218,6 @@ endmodule
         subprocess.run(["yosys", "-Q", "-T", "-s", str(script)], check=True, capture_output=True, text=True)
         self.assertEqual(json.loads(netlist.read_text())["modules"], json.loads(baseline.read_text())["modules"])
 
-    def test_async_candidate_proof_cannot_be_upgraded_to_action_precision(self):
-        fixture = self.experiment("""module demo(input clk,rst,d, output reg q);
-always @(posedge clk or posedge rst)
-  if (rst) q <= 0; else q <= d;
-endmodule
-""")
-        _, trace, _ = load_run(fixture[1])
-        rows = copy.deepcopy(trace.records)
-        node = next(r for r in rows if r["record_type"] == "process_node" and r["operation"] == "reset_value")
-        node["operation"] = "async_target_candidate"
-        node["roles"] = {"candidate": node["origins"]}
-        node["inputs"] = []
-        path = self.base / "upgraded-proof.jsonl"
-        path.write_text("".join(json.dumps(row)+"\n" for row in rows))
-        with self.assertRaisesRegex(TraceError, "process binding incorrectly claims action precision"):
-            NativeTrace(path)
 
     def test_tampered_process_proof_is_rejected(self):
         fixture = self.experiment("""module demo(input s,a,b, output reg y);

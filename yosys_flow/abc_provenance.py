@@ -65,10 +65,10 @@ def cones(trace, region):
     return before, after, None
 
 
-def refine(trace):
+def refine(trace, internal=None):
+    internal = internal or {}
     replacements = {}
     trace.abc_associations = []
-    trace.ff_projection_evidence = {}
     trace.abc_fallbacks = []
     for region in trace.regions:
         if 'input_nodes' not in region: continue
@@ -81,63 +81,57 @@ def refine(trace):
             boundary = row.get('abc_boundary', -1)
             outputs = {boundary} if boundary in before else after.get(row.get('abc_node'), set())
             members = set().union(*(before[i] for i in outputs)) if outputs and not fallback else set()
+            captured = internal.get(region['invocation_id'], {})
+            mapped = row.get('abc_node', '')
+            if not mapped and boundary >= 0:
+                for name, node in trace.abc_imports.get(region['invocation_id'], {}).items():
+                    if node['ports'].get('\\Y') == [{'wire': f'\\ys__n{boundary}', 'offset': 0}]:
+                        mapped = name
+                        break
+            cut = captured.get(mapped)
+            if cut:
+                members = set(cut['inputs'])
             if not members:
                 continue  # Keep original region candidate, never invent an empty proof.
             evidence = {'ref': row['ref'], 'invocation_id': region['invocation_id'],
-                        'mapped_node': row.get('abc_node', ''), 'output_boundaries': sorted(outputs),
+                        'mapped_node': mapped, 'output_boundaries': sorted(outputs),
                         'inputs': sorted(members), 'precision': 'abc_output_cone_candidate',
                         'method': 'preserved_output_boundary_cones', 'internal_rewrite_provenance': False}
+            if cut:
+                evidence.update(cut)
+                evidence['internal_rewrite_provenance'] = False  # functional cut proof, not complete lineage
             trace.abc_associations.append(evidence)
-            replacements[row['ref']] = (members, row['seq'], 'abc_output_cone')
-    # opt_dff slices carry only the parent bits and muxes actually consumed.
-    for row in trace.ff_bit_maps:
-        if row['applied']:
-            proofs = trace.objects[row['ref']]['output_proofs']
-            trace.ff_projection_evidence[row['ref']] = trace.objects[row['ref']].get('state_proof_events', [])
-            replacements[row['ref']] = (set().union(*(set(p) for p in proofs)), row['seq'], 'opt_dff_state_bits')
-    # Direct one-bit FF mappings may use the recorded Q-bit action proof.
-    # This does not infer per-bit arithmetic internals from output connectivity.
-    for row in trace.techmap_bits:
-        parent, child = trace.objects[row['input']], trace.objects[row['ref']]
-        links = row['links']
-        if (len(links) == 1 and links[0]['source_port'] == '\\Q' and links[0]['port'] == '\\Q'
-                and parent.get('output_proofs') and child['state']['type'].startswith(('$_DFF', '$_SDFF'))
-                and len(child['state']['connections']['\\Q']) == 1):
-            i = links[0]['source_offset']
-            if (links[0]['source_signal'] != links[0]['target_signal'] or
-                    parent['state']['connections'].get('\\D', [])[i:i+1] != child['state']['connections'].get('\\D')):
-                continue
-            # Replace the child's creation relation, before subsequent versions.
-            create = next(r for r in trace.records if r['record_type']=='cell_create' and r['ref'].split('@')[0] == row['ref'].split('@')[0])
-            replacements[create['ref']] = (set(parent['output_proofs'][i]), create['seq'], 'techmap_state_bit')
-            trace.ff_projection_evidence[create['ref']] = parent.get('state_proof_events', [])
+            replacements[row['ref']] = (members, row['seq'], cut['precision'] if cut else 'abc_output_cone')
     if not replacements: return
     trace.edges = [e for e in trace.edges if e['to'] not in replacements]
     for ref, (inputs, sequence, capture) in replacements.items():
         trace.edges.extend({'from': i, 'to': ref, 'event_id': sequence, 'capture': capture,
-                            'precision': 'abc_output_cone_candidate' if capture == 'abc_output_cone' else 'process_action'} for i in sorted(inputs))
+                            'precision': 'abc_output_cone_candidate' if capture == 'abc_output_cone' else capture} for i in sorted(inputs))
     trace.edges.sort(key=lambda e: e['event_id'])
     groups = {}
     for edge in trace.edges: groups.setdefault(edge['to'], []).append(edge)
     origins = {sid: {sid} for sid in trace.sources}
     precisions = {sid: 'cell' for sid in trace.sources}
-    rank = {'cell': 0, 'bit_range': 0, 'process_action': 1, 'cell_group_candidate': 2,
-            'process_signal_candidate': 3, 'abc_output_cone_candidate': 4, 'abc_region_candidate': 5,
+    rank = {'cell': 0, 'bit_range': 0, 'process_action': 1, 'abc_internal_cut': 2,
+            'abc_internal_joint_cut': 3, 'cell_group_candidate': 4, 'process_signal_candidate': 5, 'abc_output_cone_candidate': 6, 'abc_region_candidate': 7,
             'process_pending': -1}
     objects = {**trace.objects, **trace.assignments, **trace.process_nodes}
     for ref, edges in groups.items():
         # Sources with no incoming edges (pending cells, empty constant routes).
         sources = set().union(*(origins.get(e['from'], set()) for e in edges))
         obj = objects.get(ref)
-        raw = obj['precision'] if obj else 'cell'
+        raw = obj.get('recorded_precision', obj['precision']) if obj else 'cell'
         p = max((precisions.get(e['from'], 'cell') for e in edges), key=rank.__getitem__)
-        if ref in replacements and any(e['capture']=='abc_output_cone' for e in edges): p = max((p, 'abc_output_cone_candidate'), key=rank.__getitem__)
+        if ref in replacements and any(e['capture']=='abc_internal_joint_cut' for e in edges): p = max((p, 'abc_internal_joint_cut'), key=rank.__getitem__)
+        elif ref in replacements and any(e['capture']=='abc_internal_cut' for e in edges): p = max((p, 'abc_internal_cut'), key=rank.__getitem__)
+        elif ref in replacements and any(e['capture']=='abc_output_cone' for e in edges): p = max((p, 'abc_output_cone_candidate'), key=rank.__getitem__)
         elif obj and obj.get('abc_invocation') and obj['record_type'] in {'cell_create', 'assignment'} and ref not in replacements:
             p = max((p, 'abc_region_candidate'), key=rank.__getitem__)
         elif raw not in {'abc_region_candidate', 'process_pending'}: p = max((raw, p), key=rank.__getitem__)
         origins[ref], precisions[ref] = sources, p
         if obj:
-            obj['recorded_origins'] = obj['origins']
+            obj.setdefault('recorded_origins', obj['origins'])
+            obj.setdefault('recorded_precision', obj['precision'])
             obj['origins'] = sorted(sources)
             obj['precision'] = p
         for e in edges: e['precision'] = p

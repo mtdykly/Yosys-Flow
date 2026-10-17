@@ -9,9 +9,11 @@ from .extract import extract
 
 
 def parser():
-    cli = argparse.ArgumentParser(description="Yosys JSONL 来源追踪与子网表导出")
+    cli = argparse.ArgumentParser(description="组合 RTL 的 Yosys 默认 synth 来源追踪与子网表导出")
+    # 添加子命令
     commands = cli.add_subparsers(dest="command", required=True)
-    execute = commands.add_parser("run", help="默认 synth 综合、来源记录、原版对照和等价检查")
+    # 定义 run 命令及其基本参数
+    execute = commands.add_parser("run", help="仅组合 RTL：默认 synth、来源记录、原版对照和等价检查")
     execute.add_argument("--source", action="append", required=True, help="RTL 源文件，可重复")
     execute.add_argument("--top", required=True)
     execute.add_argument("--out", required=True, help="新的运行目录，不覆盖已有结果")
@@ -29,7 +31,7 @@ def parser():
                             ("extract", "导出来源关联的 cell 子网表及边界、来源说明")]:
         inspect = commands.add_parser(name, help=help_text)
         inspect.add_argument("directory")
-        group = inspect.add_mutually_exclusive_group(required=True)
+        group = inspect.add_mutually_exclusive_group(required=True) # 创建“互斥参数组”
         group.add_argument("--source")
         group.add_argument("--object", help="原生对象引用，如 native:cell_17@1 或 native:connection_18")
         inspect.add_argument("--line", type=int)

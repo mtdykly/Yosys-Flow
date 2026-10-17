@@ -11,15 +11,12 @@ static std::map<std::string, ProcessNode> process_nodes;
 static dict<const void*, dict<RTLIL::SigBit, ProcessRefs>> case_values;
 static dict<RTLIL::CaseRule*, ProcessRefs> branch_values;
 static dict<RTLIL::Process*, dict<RTLIL::SigBit, std::string>> process_slots;
-static dict<RTLIL::Process*, dict<RTLIL::SigBit, ProcessRefs>> action_bits;
 static dict<RTLIL::Process*, dict<RTLIL::SigBit, RTLIL::SigBit>> process_roots;
 struct ProcessBinding { ProcessRefs inputs; std::string operation, precision; };
 static dict<RTLIL::Cell*, ProcessBinding> process_bindings;
-static dict<RTLIL::SigBit, ProcessRefs> state_bit_proofs;
 static ProcessRefs process_active;
 static std::string process_operation, process_precision;
 static int process_id = 0;
-static dict<RTLIL::Process*, dict<RTLIL::SyncRule*, dict<RTLIL::SigBit, ProcessRefs>>> reset_values;
 
 ProcessRefs process_union(ProcessRefs a, const ProcessRefs &b) { a.insert(b.begin(), b.end()); return a; }
 ProcessRefs process_union(const ProcessValue &value) {
@@ -91,11 +88,10 @@ ProcessValue process_action(RTLIL::Process *proc, RTLIL::CaseRule *cs,
                               {"target", ids(target_sources)}}}, {"enclosing_controls", ids(control)}});
         value[i].insert(r); bits.push_back(r);
         case_values[&cs->actions][lhs[i]] = value[i];
-        action_bits[proc][original(proc, lhs[i])].insert(r);
         process_emit(value[i]);
     }
     auto fallback = origins; fallback.insert(control.begin(), control.end());
-    action(proc, target, fallback); // Retained as conservative async/reset fallback.
+    action(proc, target, fallback); // Original action context; precise bindings use the action-bit proof.
     emit({{"record_type", "process_action_detail"}, {"ref", action_ref}, {"process", proc->name.str()},
         {"module", proc->module->name.str()}, {"lhs", signal(lhs)}, {"rhs", signal(rhs)},
         {"target", signal(target)}, {"bits", bits}, {"origins", ids(origins)}, {"enclosing_controls", ids(control)}});
@@ -210,63 +206,6 @@ static void process_retired(RTLIL::Cell *cell) {
 void process_augment(RTLIL::Cell *cell, const ProcessRefs &refs) {
     if (process_bindings.count(cell)) process_bindings.at(cell).inputs = process_union(process_bindings.at(cell).inputs, refs);
 }
-void process_reset_consume(RTLIL::Module *module, RTLIL::CaseRule *cs, const RTLIL::SigSig &action,
-    const RTLIL::SigSpec &sig, ProcessValue &values, bool unknown) {
-    if (!tracks(module)) return;
-    process_consume(module, cs, action, sig, values);
-    for (int i = 0; i < sig.size(); ++i) if (action.first.to_sigbit_pool().count(sig[i])) {
-        if (unknown) values[i] = {process_node({}, {}, "untracked_action", {}, false)};
-        else values[i] = process_union(values[i], process_branch(cs));
-    }
-}
-void process_reset_bind(RTLIL::Process *proc, RTLIL::SyncRule *sync, const RTLIL::SigSpec &target, const ProcessValue &values) {
-    if (!tracks(proc->module)) return;
-    log_assert(target.size() == GetSize(values));
-    for (int i = 0; i < target.size(); ++i) {
-        auto r = process_node(values[i], {}, "reset_value", {{"target", signal(target[i])}, {"reset_signal", signal(sync->signal)}});
-        reset_values[proc][sync][target[i]] = {r};
-    }
-}
-ProcessRefs process_reset_controls(RTLIL::Process *proc) {
-    if (!tracks(proc->module)) return {};
-    auto origins = clocks.at(proc, {});
-    return {process_node({}, origins, "state_event", {{"roles", J::object{{"clock_or_reset", ids(origins)}}}})};
-}
-std::string process_state_precision(RTLIL::Process *proc) {
-    for (auto sync : proc->syncs) if (sync->type == RTLIL::ST0 || sync->type == RTLIL::ST1)
-        for (auto &a : sync->actions) for (auto bit : a.first)
-            if (!reset_values.at(proc, {}).at(sync, {}).count(bit)) return "process_signal_candidate";
-    return "process_action";
-}
-ProcessRefs process_state(RTLIL::Process *proc, const RTLIL::SigSpec &sig) {
-    ProcessRefs refs;
-    if (!tracks(proc->module)) return refs;
-    if (sig.size() > 1) {
-        for (auto bit : sig) refs = process_union(refs, process_state(proc, bit));
-        return refs;
-    }
-    bool async = false;
-    for (auto sync : proc->syncs) async |= sync->type == RTLIL::ST0 || sync->type == RTLIL::ST1;
-    if (process_state_precision(proc) == "process_signal_candidate") {
-        gap("partial_process_async_reset");
-        for (auto bit : sig) refs = process_union(refs, action_bits.at(proc, {}).at(original(proc, bit), {}));
-        auto fallback = process_sources(proc, sig);
-        refs.insert(process_node({}, fallback, "async_target_candidate", {{"roles", J::object{{"candidate", ids(fallback)}}}}));
-    } else {
-        for (auto sync : proc->syncs) for (auto &a : sync->actions)
-            for (int i = 0; i < a.first.size(); ++i) if (sig.to_sigbit_pool().count(a.first[i])) {
-                auto value = (sync->type == RTLIL::ST0 || sync->type == RTLIL::ST1) ?
-                    reset_values.at(proc, {}).at(sync, {}).at(a.first[i], {}) : process_union(process_values(proc, a.second[i]));
-                refs = process_union(refs, value);
-            }
-    }
-    if (clocks.count(proc)) refs.insert(process_node({}, clocks.at(proc), "state_event", {{"roles", J::object{{async ? "clock_or_reset" : "clock", ids(clocks.at(proc))}}}}));
-    Origins init;
-    for (auto bit : sig) if (initial_sources.count(bit)) init.insert(initial_sources.at(bit).begin(), initial_sources.at(bit).end());
-    if (!init.empty()) refs.insert(process_node({}, init, "initialization", {{"roles", J::object{{"initialization", ids(init)}}}}));
-    if (sig.size() == 1) state_bit_proofs[sig[0]] = refs;
-    return refs;
-}
 void process_connection(RTLIL::Process *proc, const RTLIL::SigSpec &lhs, const RTLIL::SigSpec &rhs) {
     if (!tracks(proc->module)) return;
     auto values = process_values(proc, rhs);
@@ -303,8 +242,6 @@ void process_clone(RTLIL::Process *from, RTLIL::Process *to) {
     for (const auto &s : slots) { auto bit = s.first; bit.wire = to->module->wire(bit.wire->name); process_slots[to][bit] = s.second; }
     auto roots = process_roots.at(from, {});
     for (const auto &s : roots) { auto a = s.first, b = s.second; a.wire = to->module->wire(a.wire->name); b.wire = to->module->wire(b.wire->name); process_roots[to][a] = b; }
-    auto bits = action_bits.at(from, {});
-    for (const auto &s : bits) { auto bit = s.first; bit.wire = to->module->wire(bit.wire->name); action_bits[to][bit] = s.second; }
 }
 void process_flush() {
     for (auto &item : process_bindings) {
@@ -317,29 +254,11 @@ void process_flush() {
         auto old = ref(info);
         ++info.version; info.origins = origins; info.precision = binding.precision;
         for (const auto &r : binding.inputs) if (!process_nodes.at(r).complete) info.precision = "process_signal_candidate";
-        J::array output_proofs;
-        if (binding.operation == "proc_dff" && cell->hasPort(ID::Q)) for (auto bit : cell->getPort(ID::Q)) {
-            auto inputs = state_bit_proofs.at(bit, {});
-            // A generated auxiliary cell may share the process scope without
-            // corresponding to a state bit; only publish known Q proofs.
-            if (inputs.empty()) { output_proofs.clear(); break; }
-            process_emit(inputs);
-            output_proofs.push_back(J::array(inputs.begin(), inputs.end()));
-        }
-        emit({{"output_proofs", output_proofs}, {"record_type", "process_binding"}, {"input", old}, {"ref", ref(info)},
+        emit({{"record_type", "process_binding"}, {"input", old}, {"ref", ref(info)},
             {"inputs", J::array(binding.inputs.begin(), binding.inputs.end())},
             {"origins", ids(info.origins)}, {"precision", info.precision}, {"operation", binding.operation}});
     }
     process_bindings.clear();
-}
-static Origins process_initialization_sources(RTLIL::Process *proc, RTLIL::SigBit bit) {
-    auto roots = process_roots.at(proc, {});
-    if (roots.count(bit)) {
-        auto r = process_slot(proc, roots.at(bit));
-        if (process_nodes.at(r).bound) return process_emit(ProcessRefs{r});
-    }
-    gap("partial_process_initialization");
-    return process_sources(proc, bit);
 }
 static void process_temporary(RTLIL::Process *proc, const RTLIL::SigSpec &from, const RTLIL::SigSpec &to) {
     for (int i = 0; i < from.size(); ++i) if (from[i].wire && to[i].wire) {
@@ -348,9 +267,9 @@ static void process_temporary(RTLIL::Process *proc, const RTLIL::SigSpec &from, 
     }
 }
 static void process_release(RTLIL::Process *proc) {
-    reset_values.erase(proc); process_slots.erase(proc); action_bits.erase(proc); process_roots.erase(proc);
+    process_slots.erase(proc); process_roots.erase(proc);
 }
 void process_reset() {
-    state_bit_proofs.clear(); reset_values.clear(); process_nodes.clear(); case_values.clear(); branch_values.clear(); process_slots.clear(); action_bits.clear();
+    process_nodes.clear(); case_values.clear(); branch_values.clear(); process_slots.clear();
     process_roots.clear(); process_bindings.clear(); process_active.clear(); process_operation.clear(); process_precision.clear(); process_id = 0;
 }

@@ -5,12 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "yosys-flow"
 version = "0.1.0"
-description = "Instrumented Yosys transformation provenance in JSONL"
+description = "Yosys provenance, region contracts and local replacement experiments"
 requires-python = ">=3.10"
 dependencies = []
 
 [project.scripts]
 yosys-flow = "yosys_flow.cli:main"
+yosys-incremental = "incremental.__main__:main"
 
-[tool.setuptools.packages.find]
-include = ["yosys_flow*"]
+[tool.setuptools]
+packages = ["yosys_flow", "incremental"]
+package-dir = {"yosys_flow" = "provenance/yosys_flow", "incremental" = "incremental"}
+
+[tool.setuptools.package-data]
+incremental = ["examples/four_lanes/*.v"]

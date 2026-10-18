@@ -39,6 +39,10 @@ class CliTests(unittest.TestCase):
             for command in (
                 ["validate", str(directory)],
                 ["query", str(directory), "--source", "old.v", "--line", "2"],
+                ["diagnose", str(directory), "--source", "old.v", "--line", "2"],
+                ["contract", str(directory), "--source", "old.v", "--line", "2", "--out", str(directory / "region.json")],
+                ["contract-validate", str(directory), str(directory / "region.json")],
+                ["contract-merge", str(directory), "a.json", "b.json", "--out", str(directory / "union.json")],
                 ["extract", str(directory), "--source", "old.v", "--line", "2", "--out", str(directory / "selected.v")],
             ):
                 with self.subTest(command=command), redirect_stderr(io.StringIO()) as output:

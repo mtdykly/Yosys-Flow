@@ -8,9 +8,10 @@ import json
 import shlex
 
 from .common import require
+from .boolean import BDD, Function, ProofBudgetExceeded
 
 ABC_COMMIT = 'e026ed5380f3bdc3beea2ff9ffc23236fc549d5b'
-MAX_INPUTS = 10
+TRUTH_TABLE_INPUT_LIMIT = 10
 NETWORKS = {'network', 'mapping_network', 'mapped_gia', 'mapped_ntk',
             'netlist_source', 'netlist_target', 'export_network'}
 DEFAULT_COMMANDS = ['read_blif', 'read_library', 'strash', '&get', '&fraig', '&put',
@@ -25,10 +26,20 @@ def variables(count):
     return [sum(1 << row for row in range(1 << count) if row & (1 << i)) for i in range(count)]
 
 
+def cut_domain(count, reference=None, bdds=None):
+    """Independent local variables, separate from region input functions."""
+    bdd = reference.manager if isinstance(reference, Function) else None
+    if bdd is None and count > TRUTH_TABLE_INPUT_LIMIT:
+        bdd = BDD()
+        if bdds is not None: bdds.append(bdd)
+    if bdd is not None: return bdd.variables(count), bdd.one
+    return variables(count), (1 << (1 << count)) - 1
+
+
 def evaluate(node, args, mask):
     op = node['op']
     if op == 'one': return mask
-    if op == 'zero': return 0
+    if op == 'zero': return mask ^ mask
     if op == 'buf': return args[0]
     if op == 'and': return args[0] & args[1]
     if op == 'xor': return args[0] ^ args[1]
@@ -36,8 +47,8 @@ def evaluate(node, args, mask):
     if op == 'mux': return (args[2] & args[0]) | ((mask ^ args[2]) & args[1])
     if op != 'sop': raise Unsupported('unsupported_internal_node:' + op)
     cubes = [line.split() for line in node['sop'].splitlines() if line.strip()]
-    if not cubes: return 0
-    result, phase = 0, None
+    if not cubes: return mask ^ mask
+    result, phase = mask ^ mask, None
     for cube in cubes:
         pattern, output = cube if len(cube) == 2 else ('', cube[0])
         require(len(pattern) == len(args) and set(pattern) <= {'0', '1', '-'} and output in {'0', '1'}, 'invalid ABC internal SOP')
@@ -64,10 +75,16 @@ class Network:
             if n['op'] in arities: require(len(n['fanins']) == arities[n['op']], 'ABC internal arity mismatch')
         self.names = record.get('pi_names', [self.nodes[i].get('name', '') for i in self.pis])
 
-    def truth(self, inputs=None):
-        if len(self.pis) > MAX_INPUTS: raise Unsupported('input_limit_exceeded')
-        mask = (1 << (1 << len(self.pis))) - 1
-        values = dict(zip(self.pis, inputs if inputs is not None else variables(len(self.pis))))
+    def truth(self, inputs=None, *, bdd=None):
+        if inputs and isinstance(inputs[0], Function):
+            bdd = inputs[0].manager
+        if bdd is None and len(self.pis) > TRUTH_TABLE_INPUT_LIMIT:
+            bdd = BDD()
+        mask = bdd.one if bdd is not None else (1 << (1 << len(self.pis))) - 1
+        if inputs is None:
+            inputs = bdd.variables(len(self.pis)) if bdd is not None else variables(len(self.pis))
+        require(len(inputs) == len(self.pis), 'ABC input function count mismatch')
+        values = dict(zip(self.pis, inputs))
         active = set()
         def visit(i):
             if i in values: return values[i]
@@ -221,12 +238,15 @@ def read_evidence(path, script):
         'entry_copies': sum(r['kind']=='entry_copy' for r in rows),
         'history_copies': sum(r['kind']=='history_copy' for r in rows), 'mapped_cuts': len(cuts),
         'commands': [c[0] for c in commands], 'internal_hook_coverage': 'partial',
-        'complete_rewrite_history': False, 'proof_input_limit': MAX_INPUTS}
+        'complete_rewrite_history': False, 'truth_table_input_limit': TRUTH_TABLE_INPUT_LIMIT}
 
 
 def analyze(path, script, region, imports, input_blif=None):
     rows, nets, cuts, report = read_evidence(path, script)
     proof, fallback = {}, None
+    bdd = None
+    local_bdds, local_failures = [], []
+    report['function_proof'] = {'backend': 'not_started'}
     report['verified_aig_replacements'] = 0
     report['verified_equivalences'] = 0
     report['verified_history_copies'] = 0
@@ -235,7 +255,10 @@ def analyze(path, script, region, imports, input_blif=None):
         if report['commands'] != DEFAULT_COMMANDS: raise Unsupported('unsupported_abc_script')
         stages = [n for n in nets.values() if n.record['kind'] == 'network']
         first = stages[0]
-        if len(first.pis) > MAX_INPUTS: raise Unsupported('input_limit_exceeded')
+        bdd = BDD() if len(first.pis) > TRUTH_TABLE_INPUT_LIMIT else None
+        report['region_input_count'] = len(first.pis)
+        report['function_proof'] = {'backend': 'robdd' if bdd is not None else 'truth_table'}
+        input_variables = bdd.variables(len(first.pis)) if bdd is not None else variables(len(first.pis))
         require(set(first.names) == {f'ys__n{i}' for i in region['input_ports']}, 'ABC internal input boundary mismatch')
         input_names = first.names
         outputs = {f'ys__n{i}' for i in region['output_ports']}
@@ -248,7 +271,7 @@ def analyze(path, script, region, imports, input_blif=None):
             if not all(net.names) and net.record['kind'] in {'netlist_target', 'export_network'}:
                 net.names = [next((n.get('name') for n in net.nodes.values() if n['fanins']==[2*i] and n.get('name') in input_names), '') for i in net.pis]
             if all(net.names) and set(net.names) == set(input_names):
-                ordered = [variables(len(input_names))[input_names.index(n)] for n in net.names]
+                ordered = [input_variables[input_names.index(n)] for n in net.names]
             elif net.record['kind'] == 'mapped_ntk':
                 conversion = next((r for r in rows if r['kind']=='gia_to_ntk' and r['after']==seq), None)
                 if conversion is None: raise Unsupported('missing_input_conversion')
@@ -258,7 +281,7 @@ def analyze(path, script, region, imports, input_blif=None):
                 require(set(pi_links)==set(net.pis) and all(a%2==0 and a//2 in source.pis for a in pi_links.values()), 'invalid ABC input conversion')
                 ordered=[source_values[pi_links[i]//2] for i in net.pis]
             else: raise Unsupported('unbound_internal_interface')
-            evaluated[seq] = net.truth(ordered)
+            evaluated[seq] = net.truth(ordered, bdd=bdd)
         initial, mask = evaluated[first.record['seq']]
         initial_outputs = {first.nodes[i].get('name'): initial[i] for i in first.pos}
         require(set(initial_outputs) == outputs, 'ABC internal output boundary mismatch')
@@ -272,17 +295,17 @@ def analyze(path, script, region, imports, input_blif=None):
         for row in rows:
             if row['kind'] in {'aig_replace', 'proved_equivalence'}:
                 net = nets[row['snapshot']] if 'snapshot' in row else Network(row)
-                vals, local_mask = net.truth()
+                vals, local_mask = net.truth(bdd=bdd)
                 require(vals[row['old']] == (vals[row['new_literal']//2] ^ (local_mask if row['new_literal']&1 else 0)),
                         'ABC internal replacement/equivalence changes function')
                 key = 'verified_aig_replacements' if row['kind']=='aig_replace' else 'verified_equivalences'
                 report[key] += 1
             elif row['kind'] in {'history_copy', 'entry_copy'}:
                 before, after = nets[row['before']], nets[row['after']]
-                av, local_mask = before.truth()
+                av, local_mask = before.truth(bdd=bdd)
                 pi_links = {b//2: a for a,b in row['links'] if a in before.pis and not b&1 and b//2 in after.pis}
                 require(set(pi_links)==set(after.pis) and len(pi_links)==len(before.pis), 'ABC history copy input correspondence changed')
-                bv, _ = after.truth([av[pi_links[i]] for i in after.pis])
+                bv, _ = after.truth([av[pi_links[i]] for i in after.pis], bdd=bdd)
                 require(all(av[a] == (bv[b//2] ^ (local_mask if b&1 else 0)) for a,b in row['links']),
                         'ABC history copy changes function')
                 report['verified_entry_copies' if row['kind']=='entry_copy' else 'verified_history_copies'] += 1
@@ -368,7 +391,8 @@ def analyze(path, script, region, imports, input_blif=None):
             for root, cell in original.items():
                 if initial[root] not in {fv[target], mask^fv[target]}: continue
                 polarity = int(initial[root] != fv[target])
-                match = prove_cut(first, root, initial, input_functions, gate, polarity, mask)
+                match = prove_cut(first, root, initial, input_functions, gate, polarity, mask,
+                                  local_bdds=local_bdds, failures=local_failures)
                 if match is None: continue
                 covered, boundaries = match
                 members = sorted({original[i] for i in covered if i in original})
@@ -388,17 +412,23 @@ def analyze(path, script, region, imports, input_blif=None):
                     'precision':'abc_internal_cut','complete_rewrite_history':False}
         from .abc_joint import joint_cuts, equivalence_cuts
         joint = joint_cuts(first, final, original, initial, fv, mask, gate_by_name,
-                           proof, mapping_by_name, witnesses)
+                           proof, mapping_by_name, witnesses, local_bdds=local_bdds, failures=local_failures)
         for item in joint.values():
             item['conversion_events'] = [gm['seq'], nm['seq'], *clone_events]
         proof.update(joint)
         equivalent = equivalence_cuts(first,final,original,initial,fv,mask,gate_by_name,
-                                      proof,mapping_by_name,witnesses,lineage)
+                                      proof,mapping_by_name,witnesses,lineage,
+                                      local_bdds=local_bdds, failures=local_failures)
         for item in equivalent.values():
             item['conversion_events'] = [gm['seq'],nm['seq'],*clone_events]
         proof.update(equivalent)
-    except Unsupported as exc:
+    except (Unsupported, ProofBudgetExceeded) as exc:
         proof, fallback = {}, str(exc)
+    if bdd is not None:
+        report['function_proof'] = bdd.statistics()
+    report['function_proof']['status'] = 'verified' if fallback is None else 'incomplete'
+    report['local_function_resources'] = [manager.statistics() for manager in local_bdds]
+    report['local_proof_failures'] = local_failures
     report['proved_import_nodes']=sum(p['precision']=='abc_internal_cut' for p in proof.values())
     report['joint_proved_import_nodes']=sum(p['precision']=='abc_internal_joint_cut' for p in proof.values())
     report['joint_groups']=len({g['group_id'] for p in proof.values() for g in p.get('joint_groups', [])})
@@ -408,11 +438,10 @@ def analyze(path, script, region, imports, input_blif=None):
     return proof, report
 
 
-def prove_cut(net, root, functions, boundary_functions, gate, polarity, global_mask, local_truth=None):
+def prove_cut(net, root, functions, boundary_functions, gate, polarity, global_mask, local_truth=None,
+              *, local_bdds=None, failures=None):
     """Compare under INDEPENDENT cut inputs, not just reachable PI assignments."""
-    if len(boundary_functions)>MAX_INPUTS: return None
-    local_mask=(1 << (1 << len(boundary_functions)))-1
-    values=variables(len(boundary_functions)); covered=set(); boundaries=[]; memo={}; active=set()
+    covered=set(); boundaries=[]; memo={}; active=set()
     def visit(i):
         if i in memo: return memo[i]
         if i != root:
@@ -430,10 +459,15 @@ def prove_cut(net, root, functions, boundary_functions, gate, polarity, global_m
         value=evaluate(n,args,local_mask)
         active.remove(i); memo[i]=value; return value
     try:
+        values, local_mask = cut_domain(len(boundary_functions), local_truth, local_bdds)
         expected=visit(root) ^ (local_mask if polarity else 0)
         if expected!=(evaluate(gate,values,local_mask) if local_truth is None else local_truth): return None
         return covered, boundaries
     except Unsupported:
+        return None
+    except ProofBudgetExceeded as exc:
+        if failures is not None:
+            failures.append({'entry_root': root, 'boundary_input_count': len(boundary_functions), 'reason': str(exc)})
         return None
 
 

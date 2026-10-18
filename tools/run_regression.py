@@ -58,8 +58,11 @@ def main():
               'errors': [{'test': test.id(), 'traceback': tb} for test, tb in result.errors],
               'skipped': [{'test': test.id(), 'reason': why} for test, why in result.skipped],
               'acceptance_layers': {
-                  'record_consistency': ['test_native', 'test_synth', 'test_cli'],
-                  'source_selection': ['test_process', 'test_selection', 'test_abc_internal', 'test_abc_factoring'],
+                  'record_consistency': ['test_native', 'test_synth', 'test_cli', 'test_hierarchy'],
+                  'source_selection': ['test_process', 'test_selection', 'test_abc_internal', 'test_abc_factoring',
+                                       'test_boolean', 'test_abc_scale', 'test_diagnostics', 'test_contracts'],
+                  'region_contracts': ['test_contracts', 'test_hierarchy'],
+                  'hierarchical_instances': ['test_hierarchy'],
                   'export_correctness': ['test_export'],
                   'input_contract': ['test_combinational']},
               'note': 'Suite-to-layer mapping; passing tests does not prove complete provenance coverage.'}

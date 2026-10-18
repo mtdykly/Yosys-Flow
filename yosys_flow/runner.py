@@ -10,14 +10,14 @@ def run(args):
     return run_native(args)
 
 
-def load_run(directory):
+def load_run(directory, timings=None):
     directory = Path(directory).resolve()
     manifest = json.loads((directory / "manifest.json").read_text())
     require(manifest.get("schema_version") != 1,
             "M0 / JSONL v1 support has been retired. Historical results are unchanged; "
             "use a historical Git revision to read them, or create a new native synth run.")
     require(manifest.get("schema_version") == 2, "unsupported run schema; expected native JSONL v2")
-    return load_native(directory, manifest)
+    return load_native(directory, manifest, timings=timings)
 
 
 def query(args):

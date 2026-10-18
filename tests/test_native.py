@@ -169,9 +169,8 @@ endmodule
         header.write_text("`define VALUE 1'b0\n")
         self.assertIn(str(header), self.select(3, source, out)["changed_or_missing_base_inputs"])
 
-    def test_unsupported_hierarchy_latch_memory_fail_closed(self):
+    def test_unsupported_latch_memory_fail_closed(self):
         for name, rtl in (
-            ("hierarchy", "module child(input a,output y);assign y=a;endmodule\nmodule demo(input a,output y);child c(a,y);endmodule"),
             ("latch", "module demo(input en,d,output reg q);always @* if(en) q=d;endmodule"),
             ("memory", "module demo(input clk,a,d,output y);reg mem[0:1];always @(posedge clk) mem[a]<=d;assign y=mem[a];endmodule"),
         ):

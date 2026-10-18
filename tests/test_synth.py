@@ -141,7 +141,16 @@ endmodule
         for line in (3, 4):
             result = self.select(line, source, out)
             self.assertTrue(result["final_cells"])
-            self.assertEqual({c["precision"] for c in result["final_cells"]}, {"abc_output_cone_candidate"})
+            # The 12-input region is now function-checked symbolically. Some
+            # local cuts are proved, while the remaining rewrites stay candidates.
+            self.assertEqual({c["precision"] for c in result["final_cells"]},
+                             {"abc_internal_cut", "abc_output_cone_candidate"})
+            self.assertTrue(result['cut_proven_refs'])
+            self.assertTrue(result['candidate_cell_refs'])
+            self.assertTrue(set(result['cut_proven_refs']).isdisjoint(result['candidate_cell_refs']))
+            self.assertEqual(result['abc_internal'][0]['function_proof']['status'],'verified')
+            self.assertEqual(result['abc_internal'][0]['function_proof']['backend'],'robdd')
+            self.assertFalse(result['end_to_end_exact'])
             self.assertTrue({"alumacc", "techmap", "abc_output_cone"} <= {e["capture"] for e in result["edges"]})
         exported, _, mod = self.export("arithmetic", 3, source, out)
         self.assertGreater(len(mod["cells"]), 1)

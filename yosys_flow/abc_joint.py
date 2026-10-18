@@ -4,11 +4,31 @@ A vanished statement boundary cannot justify assigning individual rewritten gate
 exclusively to that statement. A proved group keeps the union of its interior
 sources and excludes the surviving boundary's upstream sources.
 """
-from .abc_internal import MAX_INPUTS, Unsupported, evaluate, prove_cut, variables
+from .abc_internal import Unsupported, cut_domain, evaluate, prove_cut
+from .boolean import ProofBudgetExceeded
+
+
+def boundary_truth(net, root, boundary, local_bdds, failures):
+    """Evaluate a group under independent inputs, with its own proof budget."""
+    try:
+        variables, mask = cut_domain(len(boundary), bdds=local_bdds)
+        values = dict(zip(boundary, variables))
+        def visit(i):
+            if i not in values:
+                node = net.nodes[i]
+                if node['op'] == 'pi': raise Unsupported('unbound_joint_input')
+                args = [visit(lit//2) ^ (mask if lit&1 else 0) for lit in node['fanins']]
+                values[i] = evaluate(node, args, mask)
+            return values[i]
+        return visit(root)
+    except ProofBudgetExceeded as exc:
+        if failures is not None:
+            failures.append({'export_root': root, 'boundary_input_count': len(boundary), 'reason': str(exc)})
+        return None
 
 
 def joint_cuts(first, final, original, initial, final_values, mask, gate_by_name,
-               single_proofs, mapping_events, witnesses):
+               single_proofs, mapping_events, witnesses, *, local_bdds=None, failures=None):
     proved_gates = {gate_by_name[name] for name in single_proofs}
     name_by_gate = {gate: name for name, gate in gate_by_name.items()}
     groups = []
@@ -31,22 +51,13 @@ def joint_cuts(first, final, original, initial, final_values, mask, gate_by_name
         # A useful joint group is smaller than a whole output cone: retain at
         # least one independently proved internal boundary, and no proved gate
         # in its interior. Never absorb another output just because it shares PIs.
-        if len(inside) < 2 or not boundary.intersection(proved_gates) or len(boundary) > MAX_INPUTS:
+        if len(inside) < 2 or not boundary.intersection(proved_gates):
             continue
         names = sorted(name_by_gate[i] for i in inside)
         if any(not mapping_events.get(n) for n in names): continue
         boundary = sorted(boundary)
-        local_vars = variables(len(boundary))
-        local_mask = (1 << (1 << len(boundary))) - 1
-        values = dict(zip(boundary, local_vars))
-        def visit(i):
-            if i not in values:
-                node = final.nodes[i]
-                if node['op']=='pi': raise Unsupported('unbound_joint_input')
-                args = [visit(lit//2) ^ (local_mask if lit&1 else 0) for lit in node['fanins']]
-                values[i] = evaluate(node, args, local_mask)
-            return values[i]
-        truth = visit(target)
+        truth = boundary_truth(final, target, boundary, local_bdds, failures)
+        if truth is None: continue
         matches = []
         for root in original:
             if initial[root] not in {final_values[target], mask^final_values[target]}: continue
@@ -54,7 +65,7 @@ def joint_cuts(first, final, original, initial, final_values, mask, gate_by_name
             if not stages: continue
             polarity = int(initial[root] != final_values[target])
             match = prove_cut(first, root, initial, [final_values[i] for i in boundary],
-                              None, polarity, mask, local_truth=truth)
+                              None, polarity, mask, local_truth=truth, local_bdds=local_bdds, failures=failures)
             if match is None: continue
             covered, boundaries = match
             members = sorted({original[i] for i in covered if i in original})
@@ -82,7 +93,8 @@ def joint_cuts(first, final, original, initial, final_values, mask, gate_by_name
 
 
 def equivalence_cuts(first, final, original, initial, final_values, mask,
-                     gate_by_name, single_proofs, mapping_events, witnesses, lineage):
+                     gate_by_name, single_proofs, mapping_events, witnesses, lineage,
+                     *, local_bdds=None, failures=None):
     """Prove the shared implementation of roots joined by an actual fraig merge.
 
 Unlike the retained-boundary rule, a proved equivalent root pair supplies the
@@ -123,27 +135,19 @@ only one spelling is part of the shared implementation, not a cut input.
                 if node.get('gate'): inside.add(i)
                 for lit in node['fanins']: collect(lit//2)
             collect(target)
-            if not inside or not inside <= name_by_gate.keys() or len(boundary)>MAX_INPUTS: continue
+            if not inside or not inside <= name_by_gate.keys(): continue
             names = sorted(name_by_gate[i] for i in inside)
             if any(not mapping_events.get(n) for n in names): continue
             boundary = sorted(boundary)
-            local_mask = (1 << (1 << len(boundary))) - 1
-            values = dict(zip(boundary, variables(len(boundary))))
-            def visit(i):
-                if i not in values:
-                    node = final.nodes[i]
-                    if node['op']=='pi': raise Unsupported('unbound_equivalence_cut_input')
-                    args = [visit(lit//2) ^ (local_mask if lit&1 else 0) for lit in node['fanins']]
-                    values[i] = evaluate(node,args,local_mask)
-                return values[i]
-            truth = visit(target)
+            truth = boundary_truth(final, target, boundary, local_bdds, failures)
+            if truth is None: continue
             matches = []
             for root in roots:
                 stages = witnesses(root)
                 if not stages: break
                 polarity = int(initial[root]!=final_values[target])
                 match = prove_cut(first,root,initial,[final_values[i] for i in boundary],
-                                  None,polarity,mask,local_truth=truth)
+                                  None,polarity,mask,local_truth=truth, local_bdds=local_bdds, failures=failures)
                 if match is None: break
                 covered,boundaries = match
                 members = sorted({original[i] for i in covered if i in original})

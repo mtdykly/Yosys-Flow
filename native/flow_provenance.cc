@@ -42,6 +42,12 @@ static std::vector<ConnectionInfo> connections;
 static dict<RTLIL::Process*, dict<RTLIL::SigBit, Origins>> actions;
 static dict<RTLIL::Process*, dict<RTLIL::SigBit, RTLIL::SigBit>> temporaries;
 static std::set<std::string> gaps;
+static std::map<int, J::object> source_rows;
+static std::string cloning_source, flatten_context;
+static std::vector<int> cloning_offsets;
+static std::map<int, int> flatten_sources;
+static std::string flatten_parent;
+static J::array flatten_path;
 static void process_created(RTLIL::Cell *cell);
 static void process_retired(RTLIL::Cell *cell);
 static void process_release(RTLIL::Process *proc);
@@ -76,9 +82,24 @@ static J::object state(RTLIL::Cell *cell) {
     J::object ports, params, attrs, directions;
     for (auto &it : cell->connections()) {
         ports[it.first.str()] = signal(it.second);
-        directions[it.first.str()] = cell->input(it.first) ? "input" : cell->output(it.first) ? "output" : "unknown";
+        auto child = root_design ? root_design->module(cell->type) : nullptr;
+        auto wire = child ? child->wire(it.first) : nullptr;
+        directions[it.first.str()] = wire ? (wire->port_input && wire->port_output ? "inout" : wire->port_input ? "input" : wire->port_output ? "output" : "unknown") :
+            cell->input(it.first) ? "input" : cell->output(it.first) ? "output" : "unknown";
     }
-    for (auto &it : cell->parameters) params[it.first.str()] = it.second.as_string();
+    for (auto &it : cell->parameters) {
+        std::string value = it.second.as_string();
+        if ((it.second.flags & RTLIL::ConstFlags::CONST_FLAG_STRING) != 0) {
+            value = it.second.decode_string();
+            int mode = 0;
+            for (char c : value) {
+                if (mode == 0) { if (c == ' ') mode = 1; else if (c != '0' && c != '1' && c != 'x' && c != 'z') mode = 2; }
+                else if (mode == 1 && c != ' ') mode = 2;
+            }
+            if (mode < 2) value += " ";
+        }
+        params[it.first.str()] = value;
+    }
     // Source text is already represented by source records. Parameters are
     // compared bit-for-bit; full attributes are checked by the baseline JSON.
     return {{"module", cell->module->name.str()}, {"name", cell->name.str()}, {"type", cell->type.str()},
@@ -88,8 +109,9 @@ int source(const std::string &module, const std::string &file, int line, int col
            int end_line, int end_column, const std::string &kind) {
     if (!enabled()) return 0;
     int id = ++source_id;
-    emit({{"record_type", "source"}, {"id", id}, {"module", module}, {"file", file},
-          {"line", line}, {"column", column}, {"end_line", end_line}, {"end_column", end_column}, {"kind", kind}});
+    source_rows[id] = {{"record_type", "source"}, {"id", id}, {"module", module}, {"file", file},
+          {"line", line}, {"column", column}, {"end_line", end_line}, {"end_column", end_column}, {"kind", kind}};
+    emit(source_rows[id]);
     return id;
 }
 void gap(const std::string &reason) {
@@ -226,6 +248,7 @@ void created(RTLIL::Cell *cell) {
     if (cell->is_builtin_ff()) log_error("Combinational-only flow rejects state cell %s (%s).\n", log_id(cell), log_id(cell->type));
     cells[cell] = {++object_id, 0, active, precision, ""};
     emit({{"record_type", "cell_create"}, {"ref", ref(cells.at(cell))}, {"origins", ids(active)},
+          {"cloned_from", cloning_source}, {"flatten_event", cloning_source.empty() ? "" : flatten_context},
           {"precision", precision}, {"module", cell->module->name.str()}, {"name", cell->name.str()},
           {"inputs", active_inputs}, {"operation", operation}, {"abc_invocation", active_region}, {"abc_node", abc_node}, {"abc_boundary", abc_boundary}});
     if (cell_scope) cell_scope->generated.emplace_back(cell, cells.at(cell).id);
@@ -288,6 +311,8 @@ void assignment(RTLIL::Module *module, const RTLIL::SigSpec &lhs, const RTLIL::S
     connections.push_back(info);
     emit({{"record_type", "assignment"}, {"ref", info.ref},
           {"module", module->name.str()}, {"lhs", signal(lhs)}, {"rhs", signal(rhs)},
+          {"flatten_event", cloning_source.empty() ? "" : flatten_context},
+          {"source_offsets", cloning_offsets},
           {"cloned_from", cloned_from}, {"origins", ids(origins)}, {"precision", p}, {"inputs", active_inputs}, {"operation", operation}, {"abc_invocation", active_region}, {"abc_node", abc_node}, {"abc_boundary", abc_boundary}});
 }
 void connected(RTLIL::Module *module, const RTLIL::SigSig &conn) {
@@ -428,6 +453,7 @@ Origins process_sources(RTLIL::Process *proc, const RTLIL::SigSpec &sig) {
     return result;
 }
 #include "process_provenance.inc"
+#include "hierarchy_provenance.inc"
 
 static void checkpoint(RTLIL::Design *design, bool final) {
     J::array snapshot;
@@ -448,7 +474,7 @@ void step_begin(const std::vector<std::string> &args, RTLIL::Design *design) {
     int parent = steps.empty() ? 0 : steps.back();
     steps.push_back(++step_id); passes.push_back(args[0]);
     emit({{"record_type", "step_begin"}, {"parent_step_id", parent}, {"pass", args[0]}, {"args", args}});
-    static const std::set<std::string> supported = {"read_verilog", "hierarchy", "proc", "proc_clean", "proc_rmdead",
+    static const std::set<std::string> supported = {"read_verilog", "hierarchy", "flatten", "flow_hierarchy", "proc", "proc_clean", "proc_rmdead",
         "proc_prune", "proc_init", "proc_arst", "proc_rom", "proc_mux", "proc_dlatch", "proc_dff", "proc_memwr",
         "opt_merge", "opt_clean", "opt_dff", "techmap", "abc", "write_json", "write_rtlil", "write_verilog", "check", "stat", "synth", "opt"};
     static const std::set<std::string> partial = {"opt_expr", "opt_muxtree", "opt_reduce", "alumacc"};
@@ -469,6 +495,7 @@ struct Start : Pass {
             log_cmd_error("flow_start FILE RUN_ID requires an empty design and inactive recorder.\n");
         sequence = source_id = object_id = step_id = 0;
         cells.clear(); actions.clear(); temporaries.clear(); gaps.clear(); active.clear(); steps.clear(); passes.clear();
+        source_rows.clear(); cloning_source.clear(); flatten_context.clear(); flatten_sources.clear();
         process_reset();
         root_design = design; pending_modules.clear(); connections.clear(); active_inputs.clear(); active_outputs.clear(); operation.clear(); capturing_region = nullptr;
         abc_id = 0; active_region.clear(); abc_node.clear(); abc_boundary = -1; captured_outputs = RTLIL::SigSpec(); cell_scope = nullptr;

@@ -22,7 +22,7 @@ def instrument(root):
             raise ValueError(f"Native instrumentation anchor changed: {name}: {old!r}")
         path.write_text(text.replace(old, new))
 
-    for name in ("flow_provenance.h", "flow_provenance.cc", "process_provenance.inc"):
+    for name in ("flow_provenance.h", "flow_provenance.cc", "process_provenance.inc", "hierarchy_provenance.inc"):
         shutil.copyfile(ROOT / "native" / name, root / "kernel" / name)
     shutil.copyfile(ROOT / "native/ast_sources.inc", root / "frontends/ast/flow_sources.inc")
     edit("kernel/CMakeLists.txt", "\tbinding.cc", "\tflow_provenance.cc\n\tflow_provenance.h\n\tbinding.cc")
@@ -30,7 +30,7 @@ def instrument(root):
                  "frontends/ast/genrtlil.cc", "passes/proc/proc_mux.cc",
                  "passes/proc/proc_dff.cc", "passes/proc/proc_dlatch.cc", "passes/opt/opt_merge.cc",
                  "passes/opt/opt_expr.cc", "passes/opt/opt_muxtree.cc", "passes/opt/opt_reduce.cc", "passes/opt/opt_clean/wires.cc",
-                 "passes/techmap/techmap.cc", "passes/techmap/alumacc.cc", "passes/techmap/abc.cc", "passes/hierarchy/hierarchy.cc", "passes/proc/proc_prune.cc", "passes/proc/proc_clean.cc", "passes/proc/proc_rmdead.cc"):
+                 "passes/techmap/techmap.cc", "passes/techmap/alumacc.cc", "passes/techmap/abc.cc", "passes/hierarchy/hierarchy.cc", "passes/hierarchy/flatten.cc", "passes/proc/proc_prune.cc", "passes/proc/proc_clean.cc", "passes/proc/proc_rmdead.cc"):
         path = root / file
         originals.setdefault(file, path.read_text())
         path.write_text('#include "kernel/flow_provenance.h"\n' + path.read_text())
@@ -222,6 +222,11 @@ def instrument(root):
         edit("passes/opt/opt_reduce.cc", "\tvoid " + name + "(RTLIL::Cell *cell)\n\t{",
              "\tvoid " + name + "(RTLIL::Cell *cell)\n\t{\n\t\tFlowProvenance::CellScope flow_scope(cell, \"opt_reduce\");")
 
+
+    file = "passes/hierarchy/flatten.cc"
+    edit(file, "\t\tfor (auto tpl_cell : tpl->cells()) {", "\t\tFlowProvenance::flatten_begin(cell, tpl, wire_map);\n\t\tfor (auto tpl_cell : tpl->cells()) {\n\t\t\tFlowProvenance::FlattenScope flow_copy(tpl_cell);")
+    edit(file, "\t\t\tnew_cell->rewrite_sigspecs(rewriter);", "\t\t\tnew_cell->rewrite_sigspecs(rewriter);\n\t\t\tFlowProvenance::flatten_copied(new_cell);")
+    edit(file, "\t\tRTLIL::Cell *scopeinfo = nullptr;", "\t\tFlowProvenance::flatten_connections(tpl, module, wire_map);\n\t\tRTLIL::Cell *scopeinfo = nullptr;")
 
     file = root / "passes/hierarchy/hierarchy.cc"
     text = file.read_text()

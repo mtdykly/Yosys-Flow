@@ -255,12 +255,13 @@ endmodule
                     (target/filename).write_text(''.join(json.dumps(r)+'\n' for r in rows))
                     with self.assertRaises(TraceError): trace.compare_abc_artifacts(target)
 
-    def test_large_input_region_reports_limit_and_preserves_candidates(self):
+    def test_large_input_region_checks_functions_without_claiming_every_cut(self):
         result=self.select('large',2)
         self.assertTrue(result['final_cells'])
-        self.assertEqual({c['precision'] for c in result['final_cells']},{'abc_output_cone_candidate'})
-        self.assertEqual(result['abc_internal'][0]['fallback_reason'],'input_limit_exceeded')
-        self.assertFalse(result['cut_proven_refs'])
+        self.assertIsNone(result['abc_internal'][0]['fallback_reason'])
+        self.assertEqual(result['abc_internal'][0]['function_proof']['backend'],'robdd')
+        self.assertEqual(result['abc_internal'][0]['function_proof']['status'],'verified')
+        self.assertFalse(result['end_to_end_exact'])
 
     def test_internal_trace_corruption_is_rejected(self):
         _,out=self.fixtures['chain']

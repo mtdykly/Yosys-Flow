@@ -47,9 +47,10 @@ def identifier(value):
     return value
 
 
-def require_combinational(module):
+def require_combinational(module, module_types=()):
     """Fail closed at run/load/export boundaries, including inferred state."""
     for name, cell in module['cells'].items():
+        if cell['type'] in module_types: continue
         kind = cell['type'].lower().lstrip('$_')
         require(not kind.startswith(('dff', 'adff', 'aldff', 'sdff', 'dlatch', 'adlatch', 'sr', 'ff', 'mem')),
                 f'Combinational-only flow rejects state cell {name} ({cell["type"]})')

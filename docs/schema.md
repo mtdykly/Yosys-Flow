@@ -50,6 +50,10 @@ cell 引用形如 `native:cell_17@2`，连接引用形如 `native:connection_18`
 
 `hierarchy` 把参数派生模块复制为实际顶层时，在复制位置传递 cell、连接及过程目标来源。cell 使用 `operation=hierarchy_parameter_clone` 与原对象版本建立关系；连接通过 `cloned_from` 指向原连接，读取器检查其来源、精度及位宽一致。复制对应关系来自实际模块复制操作，不是在最终网表中匹配名字猜测来源。
 
+普通层次增加 `hierarchy_snapshot`，保存已展开模块、参数、实例对象版本和端口逐位绑定。`flatten_instance` 保存实际父实例、模板及 wire map；复制的 source/cell/assignment 使用 `cloned_from`、`flatten_event`，source 另含 `context_module`、相对 `instance_path`，assignment 含 `source_offsets`。重放验证来源、实例及复制的连接一致性。`$scopeinfo` 仍在原始生命周期记录和综合产物中，但不作为电气门选入区域。
+
+保留层次的查询使用 `electrical_instance_expansion_v1` 视图：定义对象引用加 `#<实例路径>`，源码 ID 在运行内按实例确定性分配，保留 `definition_source_id`；cell 保留 `definition_ref/module/name`。这些是离线派生身份，不冒充新增综合事件。契约 `hierarchy` 字段说明实例上下文，边界别名的 `definition` 映射回原模块局部信号。新运行的实例视图经整份设计等价校验；查询/契约读取时不启动工具。完整规则见 [hierarchy.md](hierarchy.md)。
+
 新检查点保存所有连接的修订号；读取器仍支持旧原生 v2 检查点缺少此字段的情形。最终活动连接必须能在 `after.json` 中解析且两端别名相同，退休连接不再解析已删除模块或 wire。
 
 ## ABC 证据
@@ -71,6 +75,10 @@ schema 3 新增以下记录和约束：
 
 `abc_internal` 报告验证与回退详情，包括 `verified_entry_copies`、`entry_lineage.scope=entry_to_fraig`、`mapped_clones`、`equivalence_groups`；旧格式缺少入口链时 `entry_lineage.available=false`，不补造路径。超过证明规模等早期回退可能尚未建立 `entry_lineage`，应结合 `fallback_reason` 读取。`abc_associations` 附单门证明事件编号或 `joint_groups` 的原始成员、组内门、边界、真实映射事件和阶段功能见证。以实际 fraig 等价根为依据的组另含 `basis=recorded_fraig_equivalence` 和 `entry_lineage`，后者保存两个入口根的复制路径、等价事件、sweep 事件及汇合 literal。它只证明入口到 fraig 的连续关系；最终门组仍按局部功能对应验证，不表示下游完整因果历史。详见 [abc-internals.md](abc-internals.md)。
 
+派生报告不再使用旧 `proof_input_limit=10` 表示区域限制，改为 `truth_table_input_limit=10`（超过时选择符号后端）及 `region_input_count`。`function_proof.backend` 为 `truth_table`、`robdd` 或尚未启动的 `not_started`；`status=verified` 仅表示相关区域功能校验已完成，不表示每个门的来源已证明。ROBDD 报告 `nodes`、`apply_steps`、`cached_operations`、`node_limit`、`work_limit`。`local_function_resources` 是独立切点符号尝试的资源统计，不是成功证明清单；`local_proof_failures` 包含失败尝试的 `entry_root` 或 `export_root`、`boundary_input_count`、`reason`。
+
+区域预算不足以 `fallback_reason=bdd_node_limit_exceeded/bdd_work_limit_exceeded` 回退；局部尝试预算不足不清空其他证明。实际函数不一致仍为验证错误。以上均为读取记录时计算的报告字段，原生/ABC 日志 schema 不变；同一份归档记录可用新验证器重新查询，旧的已保存查询 JSON 不会自动重写。
+
 内部日志、实际输入 BLIF、输出 BLIF 和脚本加入 manifest SHA256 清单，输入边界还要与真实 BLIF 端口一致。工具摘要、实际输入和映射资源摘要保存在 manifest。区域内每条语句关联全部输出门仍只能算候选，不能替代 ABC 内部逐节点变换证据。
 
 ## 三层验证与导出报告
@@ -84,3 +92,19 @@ schema 3 新增以下记录和约束：
 `.provenance.json` 记录运行身份、最终网表摘要、选择条件、来源事件、精度、边界、ABC 证据摘要及导出检查。`boundary` 中 `original_bit` 是原 JSON 电气信号 ID；`aliases` 带 wire 名、LSB-first offset 和原声明下标；`drivers/users` 与 `external_drivers/external_users` 区分全体和集合外端点。内部选中 cell 之间的连接不因来源赋值记录被额外提升为边界端口。
 
 `mode=source_association`、`upstream_cone_included=false` 表示没有递归加入上游逻辑。`last_recorded_pass` 保存本次真实终点；`safe_for_incremental_reuse=false` 继续保留。导出格式等价不证明来源精确，也不证明可安全替换逻辑。
+
+## 派生区域诊断与计时
+
+`diagnose` 输出独立的 `report_type=region_diagnostics`、`schema_version=1` JSON；该版本号属于诊断报告，不是已退役的 M0 运行日志格式。它引用原运行 `run_id` 和最终网表摘要，保留选择、边界、候选及证明信息，并额外检查所选 cell 的电气切割和已记录门组的最终成员是否完整。诊断不修改原生 JSONL，也不启动综合；`replacement_assessment.status=not_proven` 不构成安全替换授权。字段见 [abc-diagnostics.md](abc-diagnostics.md)。
+
+运行 manifest 的 `timings_seconds.record_validation` 测量运行中记录重放与网表/ABC 验证。读取器可另返回哈希、重放及 ABC 验证耗时，诊断和基线将其写入派生报告，原 manifest 不被更改。旧运行没有新增计时字段时仍可查询和诊断。
+
+## 派生区域契约
+
+契约为 `report_type=region_contract`、`schema_version=1`、`proof_rule=recorded_region_contract_v1`，与原生日志版本独立。`contract_id` 是去掉该字段后的规范 JSON SHA-256；`baseline` 绑定运行 ID、manifest、产物及输入摘要。`derivation.kind=selection` 保存查询条件，`union` 内嵌父契约；验证器递归重放父来源，重新生成成员、边界、函数和义务，不能只检查哈希。
+
+`request` 保存原查询集合，`region` 保存实际成员，`expansion` 明确报告已记录门组扩展。`outputs` 覆盖每个边界输出；`function.encoding=robdd_v1` 使用 0/1 终端和带 `input_port/low/high` 的节点，变量为独立边界输入。`verification.all_output_functions.scope` 为 `replayed_final_objects_to_final_netlist_at_independent_boundary`，不能解释为原始 RTL 的完整语义证明。来源边、ABC 局部证明、候选和缺口保存在 `provenance`；各输出引用其贡献对象及证据。
+
+`verification.status` 为 `verified_old_region` 或 `partial_old_region`，分别表示已声明的旧区域条件通过或存在明确阻碍；两者均不授予未来编辑安全性。`contract-validate` 的 `valid=true` 表示契约声明与归档记录相符，不意味着 partial 已升级。`safe_for_incremental_reuse=false`、`end_to_end_exact=false` 和源码完整性未证明标志继续保留。
+
+合并保存重叠成员、旧端口到新边界或内部信号的对应，以及复用的来源证据引用。父边界上的函数证明不能自动用于新边界，必须重新验证全部输出。`extract --contract` 在原 `.provenance.json` 中增加 `mode=region_contract`、`contract_id` 和 `contract_verification`；输出仍来自同一次运行的实际成员。完整字段、命令及限制见 [region-contracts.md](region-contracts.md)。

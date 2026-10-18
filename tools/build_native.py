@@ -73,7 +73,7 @@ def main():
                     destination.mkdir(parents=True, exist_ok=True)
                 elif not destination.is_file() or sha(path) != sha(destination):
                     shutil.copy2(path, destination)
-            changed = ["kernel/flow_provenance.cc", "kernel/flow_provenance.h", "kernel/process_provenance.inc", "kernel/CMakeLists.txt",
+            changed = ["kernel/flow_provenance.cc", "kernel/flow_provenance.h", "kernel/process_provenance.inc", "kernel/hierarchy_provenance.inc", "passes/hierarchy/flatten.cc", "kernel/CMakeLists.txt",
                        "kernel/register.cc", "kernel/rtlil.cc", "frontends/ast/ast.cc", "frontends/ast/ast.h",
                        "frontends/ast/flow_sources.inc", "frontends/ast/genrtlil.cc", "passes/proc/proc_mux.cc",
                        "passes/proc/proc_dff.cc", "passes/proc/proc_dlatch.cc", "passes/opt/opt_merge.cc",

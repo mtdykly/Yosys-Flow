@@ -81,6 +81,7 @@ def slice_module(module, selected_names, module_name, selected_connections=()):
             source_index = net.get("offset", 0) + (len(net["bits"]) - 1 - offset if net.get("upto") else offset)
             aliases[bit].append({"name": name, "offset": offset, "source_index": source_index,
                                  "hide_name": bool(net.get("hide_name", 0)), "attributes": deepcopy(net.get("attributes", {}))})
+            if 'definition' in net: aliases[bit][-1]['definition']=deepcopy(net['definition'])
     for bit in used:
         require(bit not in ambiguous, f"inout boundary at net bit {bit} is not supported")
         require(len(drivers[bit]) == 1, f"net bit {bit} has {len(drivers[bit])} drivers; cannot extract an unambiguous boundary")
@@ -122,6 +123,10 @@ def slice_module(module, selected_names, module_name, selected_connections=()):
                          "reason": "selected_source_connection", "connection_ref": row["ref"],
                          "connection_offset": original_offset, "original_lhs": original_lhs,
                          "aliases": aliases[bit], "drivers": drivers[bit], "users": users[bit]})
+        binding = module.get('_connection_users',{}).get((row['ref'],original_offset))
+        if binding is not None:
+            boundary[-1]['external_users'] = binding
+            boundary[-1]['consumer_binding'] = 'recorded_instance_output_port'
     # No optimization here: keep original names, types, parameters, directions,
     # attributes, connection ordering, and literal constants byte-for-value.
     cells = {name: deepcopy(module["cells"][name]) for name in sorted(selected)}
@@ -140,9 +145,19 @@ def extract(args):
         require(not path.exists() and not path.is_symlink(), f"refusing to overwrite {path}")
         token(path.name)
 
-    manifest, trace, _ = load_run(args.directory)
+    contract_document = None
+    if getattr(args,'contract',None):
+        require(all(getattr(args,k,None) is None for k in ('line','end_line','column','end_column','instance')),
+                'source/instance selectors cannot be combined with --contract')
+        from .contracts import ContractContext, export_selection
+        context = ContractContext(args.directory)
+        contract_document = context.validate(json.loads(Path(args.contract).read_text()))
+        manifest,trace = context.manifest,context.trace
+        selection = export_selection(context,contract_document)
+    else:
+        manifest, trace, _ = load_run(args.directory)
+        selection = query_loaded(args, manifest, trace)
     last_pass = manifest["endpoint"]
-    selection = query_loaded(args, manifest, trace)
     connections = selection.get("final_connections", [])
     require(selection["final_cells"] or connections,
             f"no mapped final cells or connections to extract (resolution={selection['resolution']}); "
@@ -154,7 +169,7 @@ def extract(args):
     design = json.loads(after.read_text())
     require(digest(after) == manifest["artifacts"]["after.json"]["sha256"], "after.json changed during selection")
     chosen_names = [unescape(cell["name"]) for cell in selection["final_cells"]]
-    netlist, boundary = slice_module(design["modules"][original_module], chosen_names, module_name, connections)
+    netlist, boundary = slice_module(trace.design, chosen_names, module_name, connections)
     has_pmux = any(c["type"] == "$pmux" for c in netlist["modules"][module_name]["cells"].values())
 
     yosys = shutil.which(args.yosys)
@@ -199,6 +214,8 @@ def extract(args):
             "schema_version": manifest["schema_version"], "status": "complete", "run_id": manifest["run_id"],
             "mode": "source_association", "upstream_cone_included": False,
             "original_module": original_module, "module": module_name,
+            "netlist_view":trace.view_rule, "instance_catalog":trace.instance_catalog,
+            "recorded_flatten_events":list(trace.flatten_events.values()),
             "netlist_stage": "recorded_flow_end", "last_recorded_pass": last_pass,
             "after_json_sha256": manifest["artifacts"]["after.json"]["sha256"],
             "selector": {key: getattr(args, key, None) for key in
@@ -229,6 +246,10 @@ def extract(args):
         report["techmap_bit_maps"] = selection.get("techmap_bit_maps", [])
         report["abc_evidence_artifacts"] = {name: manifest["artifacts"][name]
             for region in report["abc_regions"] for name in region.get("artifacts", {}).values()}
+        if contract_document:
+            report['mode'] = 'region_contract'
+            report['contract_id'] = contract_document['contract_id']
+            report['contract_verification'] = contract_document['verification']
         if has_pmux:
             report["pmux_semantics"] = {"multiple_active_selects": "undefined", "undefined_values_modelled": True, "verilog_option": "-noparallelcase"}
         write_json(staged[".provenance.json"], report)

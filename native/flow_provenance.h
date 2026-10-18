@@ -81,6 +81,15 @@ void connected(RTLIL::Module *module, const RTLIL::SigSig &conn);
 void remap_connections(RTLIL::Module *module, const SigMap &map);
 void wires_removed(RTLIL::Module *module, const pool<RTLIL::Wire*> &wires);
 void parameter_module_cloned(RTLIL::Module *original, RTLIL::Module *copy);
+void flatten_begin(RTLIL::Cell *instance, RTLIL::Module *child, const dict<RTLIL::Wire*, RTLIL::Wire*> &wires);
+struct FlattenScope {
+    Scope scope;
+    std::string previous;
+    FlattenScope(RTLIL::Cell *original);
+    ~FlattenScope();
+};
+void flatten_copied(RTLIL::Cell *cell);
+void flatten_connections(RTLIL::Module *child, RTLIL::Module *parent, const dict<RTLIL::Wire*, RTLIL::Wire*> &wires);
 void module_removed(RTLIL::Module *module);
 void module_renamed(RTLIL::Module *module);
 void process_removed(RTLIL::Process *proc);

@@ -112,9 +112,43 @@ def script_commands(script):
     return result
 
 
+def validate_cleanup(row, before, after):
+    """Check the actual DupMarked map, including dead objects and edge phase.
+
+    Structural replay uses independent fanins at each gate. This remains
+    checkable even if the full-region function proof exceeds its BDD budget.
+    """
+    mapping = dict(row['links']); deleted = row.get('deleted', [])
+    require(len(deleted)==len(set(deleted)) and set(mapping).isdisjoint(deleted) and
+            set(mapping)|set(deleted)==set(before.nodes), 'ABC cleanup lost/duplicated object disposition')
+    require(len(mapping)==len(after.nodes) and {lit//2 for lit in mapping.values()}==set(after.nodes),
+            'ABC cleanup destination is not a complete object copy')
+    require(mapping.get(0)==0 and before.nodes[0]['op']==after.nodes[0]['op']=='zero',
+            'ABC cleanup constant mapping changed')
+    for ports in ('pis','pos'):
+        require([mapping.get(i) for i in getattr(before,ports)]==[2*i for i in getattr(after,ports)],
+                'ABC cleanup port mapping changed')
+    for source, target in mapping.items():
+        a,b=before.nodes[source],after.nodes[target//2]
+        require(a['op']==b['op'], 'ABC cleanup changed object kind')
+        require(all(f//2 in mapping for f in a['fanins']), 'ABC cleanup deleted a retained fanin')
+        af=[mapping[f//2]^(f&1) for f in a['fanins']]
+        bf=b['fanins']
+        leaves=sorted({f//2 for f in af+bf})
+        require(len(leaves)<=6, 'ABC cleanup invalid local fanins')
+        vals=dict(zip(leaves,variables(len(leaves))))
+        mask=(1<<(1<<len(leaves)))-1
+        if a['op']=='pi':
+            require(not target&1, 'ABC cleanup PI polarity changed')
+            continue
+        av=evaluate(a,[vals[f//2]^(mask if f&1 else 0) for f in af],mask)
+        bv=evaluate(b,[vals[f//2]^(mask if f&1 else 0) for f in bf],mask)
+        require(av==bv^(mask if target&1 else 0), 'ABC cleanup mapping changes local function/polarity')
+
+
 def read_evidence(path, script):
     rows = [json.loads(line) for line in path.read_text().splitlines()]
-    require(bool(rows) and rows[0]['kind'] == 'begin' and rows[0].get('schema') in {1, 2, 3} and
+    require(bool(rows) and rows[0]['kind'] == 'begin' and rows[0].get('schema') in {1, 2, 3, 4} and
             rows[0].get('abc_commit') == ABC_COMMIT, 'unsupported ABC internal trace')
     require(rows[-1]['kind'] == 'end' and rows[-1].get('status') == 0, 'incomplete ABC internal trace')
     networks, commands, cuts = {}, [], []
@@ -197,13 +231,17 @@ def read_evidence(path, script):
             before, after = networks[row['before']], networks[row['after']]
             require(all(n.record['kind']=='history_network' and n.record['command_id']==command_id for n in (before, after)),
                     'ABC history copy has wrong snapshot scope')
-            require({'fraig_sweep_copy': '&fraig', 'dch_choice_copy': '&dch'}.get(row.get('reason')) == current[0],
+            require({'fraig_sweep_copy': '&fraig', 'fraig_cleanup_copy':'&fraig', 'dch_choice_copy': '&dch'}.get(row.get('reason')) == current[0],
                     'ABC history copy has wrong reason/command')
             require(len({a for a,b in row['links']}) == len(row['links']) and
                     all(a in before.nodes and isinstance(b,int) and b>=0 and b//2 in after.nodes for a,b in row['links']),
                     'ABC history copy has invalid object links')
             expected_sources = set(before.nodes) - (set(before.pos) if row['reason']=='dch_choice_copy' else set())
-            require({a for a,b in row['links']} == expected_sources, 'ABC history copy lost object links')
+            if row['reason']=='fraig_cleanup_copy':
+                require(rows[0]['schema']>=4, 'ABC cleanup requires schema v4')
+                validate_cleanup(row,before,after)
+            else:
+                require({a for a,b in row['links']} == expected_sources, 'ABC history copy lost object links')
         elif kind == 'command_end':
             require(current is not None and row['status'] == 0, 'ABC internal command failed')
             if rows[0]['schema'] >= 2:
@@ -231,12 +269,24 @@ def read_evidence(path, script):
         require(count == (0 if command[0] in {'read_library','write_blif'} else 1), 'ABC command network snapshot missing')
     require(current is None and commands == script_commands(script), 'ABC internal commands differ from executed script')
     require(sum(n.record['kind'] == 'export_network' for n in networks.values()) == 1, 'ABC exported internal network missing')
+    if rows[0]['schema']>=4:
+        from .abc_lineage import shape
+        sweeps=[r for r in rows if r.get('reason')=='fraig_sweep_copy']
+        cleanups=[r for r in rows if r.get('reason')=='fraig_cleanup_copy']
+        require(len(cleanups)==len(sweeps), 'ABC sweep/cleanup event count mismatch')
+        for sweep,cleanup in zip(sweeps,cleanups):
+            require(sweep['command_id']==cleanup['command_id'] and sweep['after']==cleanup['before'],
+                    'ABC sweep/cleanup chain is disconnected')
+            final=next(n for n in networks.values() if n.record['kind']=='network' and n.record['command_id']==cleanup['command_id'])
+            require(shape(networks[cleanup['after']])==shape(final), 'ABC cleanup differs from fraig command result')
     return rows, networks, cuts, {'schema': rows[0]['schema'], 'abc_commit': ABC_COMMIT, 'command_count': len(commands),
         'network_count': len(networks), 'aig_replacements': rewrites,
         'equivalence_events': dict(Counter(r['reason'] for r in rows if r['kind']=='proved_equivalence')),
         'mapped_clones': sum(r['kind']=='mapped_clone' for r in rows),
         'entry_copies': sum(r['kind']=='entry_copy' for r in rows),
         'history_copies': sum(r['kind']=='history_copy' for r in rows), 'mapped_cuts': len(cuts),
+        'cleanup_copies': sum(r.get('reason')=='fraig_cleanup_copy' for r in rows),
+        'cleanup_deleted_objects': sum(len(r['deleted']) for r in rows if r.get('reason')=='fraig_cleanup_copy'),
         'commands': [c[0] for c in commands], 'internal_hook_coverage': 'partial',
         'complete_rewrite_history': False, 'truth_table_input_limit': TRUTH_TABLE_INPUT_LIMIT}
 
@@ -246,6 +296,8 @@ def analyze(path, script, region, imports, input_blif=None):
     proof, fallback = {}, None
     bdd = None
     local_bdds, local_failures = [], []
+    witness_failures, unproved_reasons = {}, {}
+    phase = 'input_binding'
     report['function_proof'] = {'backend': 'not_started'}
     report['verified_aig_replacements'] = 0
     report['verified_equivalences'] = 0
@@ -259,12 +311,27 @@ def analyze(path, script, region, imports, input_blif=None):
         report['region_input_count'] = len(first.pis)
         report['function_proof'] = {'backend': 'robdd' if bdd is not None else 'truth_table'}
         input_variables = bdd.variables(len(first.pis)) if bdd is not None else variables(len(first.pis))
+        # Order corresponding operand bits together. This is only a bijective
+        # variable permutation: PI identities still come from recorded names
+        # and conversion links, never from this heuristic.
+        if bdd is not None:
+            def signal_order(index):
+                name = first.names[index]
+                sid = int(name.removeprefix('ys__n'))
+                signal = region['signals'][sid]
+                return (signal.get('offset',0),signal.get('wire',''),index) if isinstance(signal,dict) else (0,str(signal),index)
+            order = sorted(range(len(first.pis)),key=signal_order)
+            ranks = {index:rank for rank,index in enumerate(order)}
+            input_variables = [input_variables[ranks[i]] for i in range(len(first.pis))]
+            report['input_variable_order'] = {'rule':'recorded_signal_bit_offset_then_wire',
+                'pi_names':[first.names[i] for i in order]}
         require(set(first.names) == {f'ys__n{i}' for i in region['input_ports']}, 'ABC internal input boundary mismatch')
         input_names = first.names
         outputs = {f'ys__n{i}' for i in region['output_ports']}
         # Bind interfaces by captured names and actual conversion links. Never
         # infer a PI identity from functional similarity or object allocation IDs.
         evaluated = {}
+        phase = 'region_functions'
         for seq, net in nets.items():
             if net.record['kind']=='history_network': continue
             if len(net.pis) != len(input_names): raise Unsupported('internal_interface_changed')
@@ -292,23 +359,25 @@ def analyze(path, script, region, imports, input_blif=None):
                 require({n: vals[i] for n,i in zip(names,net.pos)} == initial_outputs, 'ABC internal stage changes output function')
             else:
                 raise Unsupported('unbound_internal_outputs')
+        phase = 'recorded_relation_functions'
         for row in rows:
             if row['kind'] in {'aig_replace', 'proved_equivalence'}:
                 net = nets[row['snapshot']] if 'snapshot' in row else Network(row)
-                vals, local_mask = net.truth(bdd=bdd)
+                vals, local_mask = net.truth(input_variables if len(net.pis)==len(input_variables) else None,bdd=bdd)
                 require(vals[row['old']] == (vals[row['new_literal']//2] ^ (local_mask if row['new_literal']&1 else 0)),
                         'ABC internal replacement/equivalence changes function')
                 key = 'verified_aig_replacements' if row['kind']=='aig_replace' else 'verified_equivalences'
                 report[key] += 1
             elif row['kind'] in {'history_copy', 'entry_copy'}:
                 before, after = nets[row['before']], nets[row['after']]
-                av, local_mask = before.truth(bdd=bdd)
+                av, local_mask = before.truth(input_variables if len(before.pis)==len(input_variables) else None,bdd=bdd)
                 pi_links = {b//2: a for a,b in row['links'] if a in before.pis and not b&1 and b//2 in after.pis}
                 require(set(pi_links)==set(after.pis) and len(pi_links)==len(before.pis), 'ABC history copy input correspondence changed')
                 bv, _ = after.truth([av[pi_links[i]] for i in after.pis], bdd=bdd)
                 require(all(av[a] == (bv[b//2] ^ (local_mask if b&1 else 0)) for a,b in row['links']),
                         'ABC history copy changes function')
                 report['verified_entry_copies' if row['kind']=='entry_copy' else 'verified_history_copies'] += 1
+        phase = 'source_copy_lineage'
         from .abc_lineage import entry_lineage
         lineage = entry_lineage(rows, nets)
         report['entry_lineage'] = lineage['summary']
@@ -364,10 +433,15 @@ def analyze(path, script, region, imports, input_blif=None):
             for stage in stages:
                 vals, _ = evaluated[stage.record['seq']]
                 nodes = [i for i,v in vals.items() if v in {initial[root], mask^initial[root]}]
-                if not nodes: return []
+                if not nodes:
+                    witness_failures[root] = {'reason':'stage_function_witness_missing','entry_root':root,
+                        'snapshot':stage.record['seq'],'command_id':stage.record['command_id'],
+                        'command':report['commands'][stage.record['command_id']-1]}
+                    return []
                 result.append({'snapshot': stage.record['seq'], 'nodes': nodes})
             return result
         gate_by_name, mapping_by_name = {}, {}
+        phase = 'local_correspondence'
         for name, imported in imports.items():
             out = imported['ports'].get('\\Y', [])
             if len(out)!=1 or not isinstance(out[0],dict): continue
@@ -387,21 +461,26 @@ def analyze(path, script, region, imports, input_blif=None):
                 require(value==fv[target] and Counter(leaves)==Counter(input_functions), 'ABC chosen cut differs from exported gate')
                 mapping.append(cut['seq'])
             gate_by_name[name], mapping_by_name[name] = target, mapping
-            matches = []
+            matches = []; reasons = []; matched_function = False
             for root, cell in original.items():
                 if initial[root] not in {fv[target], mask^fv[target]}: continue
+                matched_function = True
                 polarity = int(initial[root] != fv[target])
                 match = prove_cut(first, root, initial, input_functions, gate, polarity, mask,
                                   local_bdds=local_bdds, failures=local_failures)
-                if match is None: continue
+                if match is None:
+                    reasons.append({'reason':'independent_cut_not_proven','entry_root':root})
+                    continue
                 covered, boundaries = match
                 members = sorted({original[i] for i in covered if i in original})
                 if not members: continue
                 # Every matched internal root must have a functional witness at
                 # each actual command result. This is correspondence, not lineage.
                 stage_witnesses = witnesses(root)
-                if not stage_witnesses: continue
-                if not mapping: continue
+                if not stage_witnesses:
+                    reasons.append(witness_failures[root]); continue
+                if not mapping:
+                    reasons.append({'reason':'selected_mapping_relation_missing','entry_root':root}); continue
                 matches.append({'entry_root':root,'input_cells':members,'output_inverted':bool(polarity),
                     'boundary_matches':boundaries,'stage_witnesses':stage_witnesses,'mapping_events':mapping})
             if matches:
@@ -410,6 +489,9 @@ def analyze(path, script, region, imports, input_blif=None):
                     'conversion_events':[gm['seq'],nm['seq'],*clone_events],
                     'method':'internal_stage_witnesses_and_verified_local_cut',
                     'precision':'abc_internal_cut','complete_rewrite_history':False}
+            else:
+                unproved_reasons[name] = reasons or [{'reason':'no_entry_root_function_match' if not matched_function
+                                                      else 'no_recorded_source_members'}]
         from .abc_joint import joint_cuts, equivalence_cuts
         joint = joint_cuts(first, final, original, initial, fv, mask, gate_by_name,
                            proof, mapping_by_name, witnesses, local_bdds=local_bdds, failures=local_failures)
@@ -424,17 +506,29 @@ def analyze(path, script, region, imports, input_blif=None):
         proof.update(equivalent)
     except (Unsupported, ProofBudgetExceeded) as exc:
         proof, fallback = {}, str(exc)
+        category = 'proof_budget_exhausted' if isinstance(exc,ProofBudgetExceeded) else (
+            'source_conversion_relation_missing' if 'conversion' in str(exc) or 'interface' in str(exc)
+            else 'unsupported_proof_strategy')
+        unproved_reasons = {name:[{'reason':category,'detail':str(exc),'phase':phase}] for name in imports}
     if bdd is not None:
         report['function_proof'] = bdd.statistics()
     report['function_proof']['status'] = 'verified' if fallback is None else 'incomplete'
     report['local_function_resources'] = [manager.statistics() for manager in local_bdds]
-    report['local_proof_failures'] = local_failures
+    # A rejected exploratory cut can be superseded by a successful joint cut;
+    # keep these separate from resource failures and final unproved objects.
+    report['local_proof_failures'] = [r for r in local_failures if r.get('category')!='independent_cut_not_proven']
+    report['local_match_rejections'] = [r for r in local_failures if r.get('category')=='independent_cut_not_proven']
+    report['stage_witness_failures'] = list(witness_failures.values())
     report['proved_import_nodes']=sum(p['precision']=='abc_internal_cut' for p in proof.values())
     report['joint_proved_import_nodes']=sum(p['precision']=='abc_internal_joint_cut' for p in proof.values())
     report['joint_groups']=len({g['group_id'] for p in proof.values() for g in p.get('joint_groups', [])})
     report['equivalence_groups']=len({g['group_id'] for p in proof.values() for g in p.get('joint_groups',[]) if g.get('basis')=='recorded_fraig_equivalence'})
     report['unproved_import_nodes']=sorted(set(imports)-set(proof))
+    report['unproved_import_reasons']={n:unproved_reasons.get(n,[{'reason':'no_local_proof'}])
+                                      for n in report['unproved_import_nodes']}
     report['fallback_reason']=fallback
+    report['failure_category']=category if fallback is not None else None
+    report['failure_phase']=phase if fallback is not None else None
     return proof, report
 
 
@@ -461,9 +555,13 @@ def prove_cut(net, root, functions, boundary_functions, gate, polarity, global_m
     try:
         values, local_mask = cut_domain(len(boundary_functions), local_truth, local_bdds)
         expected=visit(root) ^ (local_mask if polarity else 0)
-        if expected!=(evaluate(gate,values,local_mask) if local_truth is None else local_truth): return None
+        if expected!=(evaluate(gate,values,local_mask) if local_truth is None else local_truth):
+            raise Unsupported('independent_boundary_function_mismatch')
         return covered, boundaries
-    except Unsupported:
+    except Unsupported as exc:
+        if failures is not None:
+            failures.append({'entry_root':root,'boundary_input_count':len(boundary_functions),
+                             'reason':str(exc),'category':'independent_cut_not_proven'})
         return None
     except ProofBudgetExceeded as exc:
         if failures is not None:

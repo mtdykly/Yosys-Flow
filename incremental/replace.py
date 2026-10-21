@@ -13,8 +13,9 @@ import time
 from yosys_flow.common import PIN, TraceError, digest, identifier, require, require_combinational, token, unescape, write_json
 from yosys_flow.contracts import ContractContext
 from yosys_flow.hierarchy import electrical_design
-from yosys_flow.region_functions import Circuit, UnsupportedFunction
+from yosys_flow.region_functions import Circuit, UnsupportedFunction, ordered_inputs
 from yosys_flow.boolean import BDD, ProofBudgetExceeded
+from .failures import classify
 
 
 def all_bits(module):
@@ -113,7 +114,10 @@ def splice(module, contract, patch, bindings):
     bound = validate_bindings(contract, patch, bindings)
     old_driven = {b for n in selected for p,bs in module['cells'][n]['connections'].items()
                   if module['cells'][n]['port_directions'][p] == 'output' for b in bs}
-    outputs = [b for b in contract['boundary'] if b['direction'] == 'output']
+    all_outputs = [b for b in contract['boundary'] if b['direction'] == 'output']
+    observers = [b for b in all_outputs if b['reason']=='selected_source_connection'
+                 and not b['external_users'] and b['original_bit'] not in old_driven]
+    outputs = [b for b in all_outputs if b not in observers]
     require(all(isinstance(b['original_bit'],int) and b['original_bit'] in old_driven for b in outputs),
             'connection-only outputs require a separate consumer-rebinding implementation')
     require(len({b['original_bit'] for b in outputs}) == len(outputs), 'ambiguous output identities')
@@ -148,6 +152,9 @@ def splice(module, contract, patch, bindings):
     for name,port in patch['ports'].items():
         if port['direction'] != 'output': continue
         for i,b in enumerate(port['bits']):
+            label = bindings['outputs'][name][i]
+            if isinstance(label,dict): label=label['port']
+            if label in {o['port'] for o in observers}: continue
             insert({'hide_name':1,'type':'$_BUF_','parameters':{},'attributes':{},
                     'port_directions':{'A':'input','Y':'output'},
                     'connections':{'A':[mapped(b)],'Y':[bound[name,i][0]]}}, f'output${name}${i}')
@@ -173,6 +180,7 @@ def splice(module, contract, patch, bindings):
         'output_binding_buffers':len(outputs), 'input_polarity_inverters':len(input_inverters), 'result_cells':len(result['cells']),
         'removed_names':sorted(selected), 'reused_names':sorted(outside), 'added_names':new_names,
         'local_cell_map':mapping, 'removed_internal_aliases':removed_aliases,
+        'preserved_observer_outputs':[b['port'] for b in observers],
         'outside_cells_identical':True, 'all_external_consumers_preserved':True,
         'shared_consumer_policy':'all_consumers_follow_the_bound_output; consumer splitting is unsupported'}
 
@@ -180,7 +188,11 @@ def splice(module, contract, patch, bindings):
 def run_yosys(binary, out, name, script):
     (out/(name+'.ys')).write_text(script+'\n')
     start = time.perf_counter()
-    result = subprocess.run([binary,'-Q','-T','-s',name+'.ys'],cwd=out,capture_output=True,text=True,timeout=120)
+    try:
+        result = subprocess.run([binary,'-Q','-T','-s',name+'.ys'],cwd=out,capture_output=True,text=True,timeout=120)
+    except subprocess.TimeoutExpired as exc:
+        (out/(name+'.log')).write_text(str(exc)+'\n'+str(exc.stdout or '')+str(exc.stderr or ''))
+        raise
     (out/(name+'.log')).write_text(result.stdout+result.stderr)
     require(result.returncode == 0, f'{name} failed; see {out/(name+".log")}')
     return time.perf_counter()-start
@@ -203,7 +215,7 @@ def prove_local_outputs(stitched, contract, patch, bindings, added_names):
     """Independent boundary proof: every spliced output implements the patch."""
     bound = validate_bindings(contract,patch,bindings)
     manager = BDD()
-    boundary = [b for b in contract['boundary'] if b['direction'] == 'input']
+    boundary = ordered_inputs(contract['boundary'])
     inputs = dict(zip([b['original_bit'] for b in boundary],manager.variables(len(boundary))))
     local_inputs = {b:inputs[bound[n,i][0]] ^ int(bound[n,i][1]) for n,p in patch['ports'].items() if p['direction']=='input'
                     for i,b in enumerate(p['bits'])}
@@ -223,11 +235,21 @@ def prove_local_outputs(stitched, contract, patch, bindings, added_names):
 
 
 def run(args):
+    started = time.perf_counter()
+    timings = {}
     out = Path(args.out).resolve()
     require(not out.exists(), 'refusing to overwrite experiment directory: '+str(out))
     context = ContractContext(args.base_run)
+    timings['baseline_load_and_evidence_replay_seconds'] = time.perf_counter()-started
+    step = time.perf_counter()
     contract = context.validate(json.loads(Path(args.contract).read_text()))
-    require(not context.input_changes(), 'base inputs changed or missing; use a frozen baseline for this experiment')
+    timings['contract_validation_seconds'] = time.perf_counter()-step
+    archived=getattr(args,'baseline_from_archive',False)
+    if archived:
+        require('frontend.il' in context.manifest['artifacts'], 'automatic replacement requires an archived frontend')
+        require(getattr(args,'new_frontend',None), 'archived replacement requires a frozen new frontend')
+    else:
+        require(not context.input_changes(), 'base inputs changed or missing; use a frozen baseline for this experiment')
     bindings = json.loads(Path(args.bindings).read_text())
     top = identifier(contract['baseline']['module']); local_top = identifier(args.patch_top)
     binary = shutil.which(args.yosys)
@@ -237,6 +259,11 @@ def run(args):
     patch_source = Path(args.patch_rtl).resolve()
     new_sources = [Path(s).resolve() for s in args.new_source]
     source_hashes = {str(p):digest(p) for p in [patch_source,*new_sources]}
+    new_frontend=getattr(args,'new_frontend',None)
+    if new_frontend:source_hashes[str(Path(new_frontend).resolve())]=digest(new_frontend)
+    additional_hashes=getattr(args,'additional_input_hashes',{})
+    require(all(digest(p)==h for p,h in additional_hashes.items()),'new input changed since frontend elaboration')
+    source_hashes.update(additional_hashes)
     out.mkdir(parents=True)
     work = out/'work'; work.mkdir()
     report = {'schema_version':1, 'status':'running', 'base_run':str(context.directory),
@@ -246,26 +273,43 @@ def run(args):
         'source_selection':'old_recorded_region_contract', 'automatic_RTL_diff':False,
         'base_netlist_view':context.trace.view_rule, 'output_representation':'flat_generic_gate_netlist',
         'complete_causal_history':False, 'safe_for_arbitrary_future_edits':False,
-        'new_design_synthesis_used_only_as_validation_oracle':True, 'timings':{}}
+        'new_design_synthesis_used_only_as_validation_oracle':True, 'timings':timings}
+    if archived:
+        report['baseline_input_policy']='archived_hashed_frontend_and_netlist'
+        report['changed_or_missing_old_files']=context.input_changes()
     write_json(out/'contract.json',contract)
     write_json(out/'bindings.json',bindings)
+    stage = 'local_synthesis'
     try:
         base = electrical_design(context.trace,top)
         write_json(work/'base-view.json',base)
+        read_patch='read_rtlil' if getattr(args,'patch_is_rtlil',False) else 'read_verilog -sv'
         report['timings']['local_synth_seconds'] = run_yosys(binary,work,'local-synth',
-            f'read_verilog -sv {token(patch_source)}\nsynth -top {local_top} -flatten\ncheck -assert\nwrite_json local.json\nwrite_verilog -noattr local.v')
+            f'{read_patch} {token(patch_source)}\nsynth -top {local_top} -flatten\ncheck -assert\nwrite_json local.json\nwrite_verilog -noattr local.v')
         patch_design = json.loads((work/'local.json').read_text())
         require(set(patch_design['modules']) == {local_top}, 'local spec must synthesize to one module')
         patch = patch_design['modules'][local_top]
+        metadata = {n:c for n,c in patch['cells'].items() if c['type']=='$scopeinfo'}
+        require(all(not c['connections'] for c in metadata.values()), 'scope metadata unexpectedly has electrical pins')
+        patch = deepcopy(patch)
+        patch['cells'] = {n:c for n,c in patch['cells'].items() if n not in metadata}
+        report['local_non_electrical_scopeinfo'] = sorted(metadata)
+        stage = 'binding_and_splice'; step = time.perf_counter()
         module, stats = splice(base['modules'][top],contract,patch,bindings)
+        timings['binding_validation_and_splice_seconds'] = time.perf_counter()-step
         report['splice'] = stats
+        stage = 'local_output_proof'; step = time.perf_counter()
         report['local_output_proof'] = prove_local_outputs(module,contract,patch,bindings,stats['added_names'])
+        timings['local_output_proof_seconds'] = time.perf_counter()-step
         write_json(work/'candidate.json',{'modules':{top:module}})
-        run_yosys(binary,work,'candidate-check',f'read_json candidate.json\nhierarchy -check -top {top}\ncheck -assert\nscc -expect 0\nwrite_verilog -noattr candidate.v')
+        stage = 'candidate_checks'
+        timings['candidate_check_and_export_seconds'] = run_yosys(binary,work,'candidate-check',f'read_json candidate.json\nhierarchy -check -top {top}\ncheck -assert\nscc -expect 0\nwrite_verilog -noattr candidate.v')
+        timings['replacement_ready_seconds'] = time.perf_counter()-started
         # Build the reference only AFTER the candidate has been produced. It is
         # never read by splice(), and no new full-netlist gates are copied.
-        frontend = '\n'.join(f'read_verilog -sv {token(p)}' for p in new_sources)
+        frontend = 'read_rtlil '+token(new_frontend) if new_frontend else '\n'.join(f'read_verilog -sv {token(p)}' for p in new_sources)
         flatten = ' -flatten' if context.manifest.get('flatten',False) or '-flatten' in context.manifest['endpoint'] else ''
+        stage = 'new_full_reference'
         report['timings']['new_full_synth_seconds'] = run_yosys(binary,work,'new-reference',
             f'{frontend}\nsynth -top {top}{flatten}\ncheck -assert\nwrite_json new-reference.json')
         reference = json.loads((work/'new-reference.json').read_text())
@@ -276,16 +320,21 @@ def run(args):
         for n,p in module['ports'].items():
             q = reference['modules'][top]['ports'][n]
             require(p['direction']==q['direction'] and len(p['bits'])==len(q['bits']), 'new top interface changed')
+        stage = 'whole_design_equivalence'
         report['timings']['whole_equivalence_seconds'] = run_yosys(binary,work,'whole-equivalence',
             equivalence_script('new-reference.json','candidate.json',top))
         # Check the deliverable Verilog, not just the in-memory JSON candidate.
+        stage = 'deliverable_validation'; step = time.perf_counter()
         run_yosys(binary,work,'verilog-readback',
             f'read_verilog candidate.v\nhierarchy -check -top {top}\nproc\ntechmap\ncheck -assert\nwrite_json readback.json')
         run_yosys(binary,work,'verilog-equivalence',equivalence_script('candidate.json','readback.json',top))
+        timings['verilog_roundtrip_seconds'] = time.perf_counter()-step
         require(all(digest(p) == h for p,h in source_hashes.items()), 'experiment source changed while running')
         require(digest(context.directory/'manifest.json') == contract['baseline']['manifest_sha256'], 'baseline changed')
         # Revalidate every archived artifact; never mutate the baseline run.
+        stage = 'baseline_revalidation'; step = time.perf_counter()
         ContractContext(args.base_run).validate(contract)
+        timings['final_baseline_revalidation_seconds'] = time.perf_counter()-step
         for extension in ('json','v'):
             shutil.copyfile(work/('candidate.'+extension),out/('incremental.'+extension))
         report.update(status='passed', checks={'contract_replayed':True,'outside_cells_identical':True,
@@ -293,9 +342,13 @@ def run(args):
             'single_drivers_and_no_cycles':True,'all_top_outputs_match_new_full_synthesis':True,
             'emitted_Verilog_equivalent':True,'baseline_unchanged':True})
         report['artifacts'] = {str(p.relative_to(out)):digest(p) for p in sorted(out.rglob('*')) if p.is_file()}
+        timings['total_checked_experiment_seconds'] = time.perf_counter()-started
+        report['timing_scope'] = {'replacement_ready_seconds':'replay, contract check, binding, local synthesis, splice and candidate checks; excludes caller query/contract generation',
+            'total_checked_experiment_seconds':'includes independent new full synthesis and all validation; not an incremental speedup claim'}
         write_json(out/'report.json',report)
         return report
     except Exception as exc:
-        report.update(status='failed', error=str(exc), published_incremental_netlist=False)
+        timings['failed_elapsed_seconds'] = time.perf_counter()-started
+        report.update(status='failed', error=str(exc), failure=classify(stage,exc), published_incremental_netlist=False)
         write_json(out/'report.json',report)
         raise

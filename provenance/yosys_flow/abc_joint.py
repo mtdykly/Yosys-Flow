@@ -106,6 +106,7 @@ only one spelling is part of the shared implementation, not a cut input.
     proved_gates = {gate_by_name[n] for n,p in single_proofs.items() if p['precision']=='abc_internal_cut'}
     groups = []
     for pair in lineage['pairs']:
+        if pair.get('retired_by_cleanup'): continue
         roots = pair['entry_roots']
         if not all(root in original for root in roots): continue
         require(initial[roots[0]] == (initial[roots[1]] ^ (mask if pair['inverted'] else 0)),

@@ -103,10 +103,21 @@ def encode_function(function, input_ports):
             'support':sorted({n['input_port'] for n in nodes})}
 
 
+def ordered_inputs(boundary):
+    """Interleave actual bus bit positions; never change signal identities."""
+    def key(row):
+        aliases=[a for a in row.get('aliases',[]) if not a.get('hide_name',True)]
+        if aliases:
+            alias=min(aliases,key=lambda a:(a.get('source_index',a['offset']),a['name']))
+            return (alias.get('source_index',alias['offset']),alias['name'],row['port'])
+        return (0,row['port'],row['port'])
+    return sorted((b for b in boundary if b['direction']=='input'),key=key)
+
+
 def verify_outputs(recorded_cells, final_cells, boundary):
     """Check EVERY cut output against final netlist at independent cut inputs."""
     manager = BDD()
-    inputs = [b for b in boundary if b['direction']=='input']
+    inputs = ordered_inputs(boundary)
     variables = {}
     setup_error = None
     try: variables = dict(zip([b['original_bit'] for b in inputs],manager.variables(len(inputs))))

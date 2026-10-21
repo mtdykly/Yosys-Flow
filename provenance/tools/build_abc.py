@@ -64,7 +64,7 @@ def instrument(source):
         ('            pObj->Value = Abc_LitNotCond( pRepr->Value, pObj->fPhase ^ pRepr->fPhase );',
          '            pObj->Value = Abc_LitNotCond( pRepr->Value, pObj->fPhase ^ pRepr->fPhase );\n            Flow_GiaEquivalence(p, pObj, pRepr, "fraig_sat_merge");'),
         ('        *ppNew = Gia_ManCleanup( pMan->pNew );',
-         '        Flow_GiaSweepCopy(p, pMan->pNew);\n        *ppNew = Gia_ManCleanup( pMan->pNew );')):
+         '        Flow_GiaSweepCopy(p, pMan->pNew);\n        *ppNew = Gia_ManCleanup( pMan->pNew );\n        Flow_GiaCleanupCopy(pMan->pNew, *ppNew);')):
         if body.count(old) != 1: raise ValueError('Cec4 hook anchor changed: '+old)
         body = body.replace(old, new)
     p.write_text(text[:begin]+body+text[end:])

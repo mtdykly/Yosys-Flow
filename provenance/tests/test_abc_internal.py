@@ -219,10 +219,10 @@ endmodule
         for reason in ('dch_sat_merge','dch_structural_merge','dch_representative','dch_choice_link'):
             self.assertGreater(dch['equivalence_events'][reason], 0)
         for report in (fraig, dch):
-            self.assertEqual(report['schema'], 3)
+            self.assertEqual(report['schema'], 4)
             self.assertEqual(report['verified_equivalences'], sum(report['equivalence_events'].values()))
             self.assertEqual(report['verified_history_copies'], report['history_copies'])
-            self.assertEqual(report['history_copies'], 2)
+            self.assertEqual(report['history_copies'], 3)
             self.assertFalse(report['complete_rewrite_history'])
 
     def test_corrupt_equivalence_choice_copy_and_history_count_are_rejected(self):

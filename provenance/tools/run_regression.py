@@ -39,8 +39,18 @@ def main():
     suite.addTests(unittest.TestLoader().discover(str(ROOT/'incremental/tests'),top_level_dir=str(ROOT)))
     ids = list(test_ids(suite))
     started = time.perf_counter()
-    with (out/'tests.log').open('w') as log:
-        result = unittest.TextTestRunner(stream=log, verbosity=2).run(suite)
+    # Keep external experiment artifacts alongside the regression report.
+    # unittest on its own still uses temporary directories.
+    destinations={'YOSYS_FLOW_ANUBIS_RESULTS':out/'anubis','YOSYS_FLOW_AUTO_RESULTS':out/'automatic'}
+    previous={key:os.environ.get(key) for key in destinations}
+    for key,path in destinations.items():os.environ[key]=str(path.resolve())
+    try:
+        with (out/'tests.log').open('w') as log:
+            result = unittest.TextTestRunner(stream=log, verbosity=2).run(suite)
+    finally:
+        for key,value in previous.items():
+            if value is None:os.environ.pop(key,None)
+            else:os.environ[key]=value
     complete = bool(ids) and result.wasSuccessful() and not result.skipped
     binaries = {'native': os.environ.get('YOSYS_FLOW_NATIVE', str(ROOT/'build/native/install/bin/yosys')),
                 'stock': shutil.which('yosys'), 'abc': shutil.which('yosys-abc'),
@@ -59,6 +69,8 @@ def main():
               'failures': [{'test': test.id(), 'traceback': tb} for test, tb in result.failures],
               'errors': [{'test': test.id(), 'traceback': tb} for test, tb in result.errors],
               'skipped': [{'test': test.id(), 'reason': why} for test, why in result.skipped],
+              'anubis_experiment_report': str((out/'anubis/report.json').resolve()),
+              'automatic_experiment_directory': str((out/'automatic').resolve()),
               'acceptance_layers': {
                   'record_consistency': ['test_native', 'test_synth', 'test_cli', 'test_hierarchy'],
                   'source_selection': ['test_process', 'test_selection', 'test_abc_internal', 'test_abc_factoring',
@@ -66,6 +78,8 @@ def main():
                   'region_contracts': ['test_contracts', 'test_hierarchy'],
                   'hierarchical_instances': ['test_hierarchy'],
                   'local_replacement_experiment': ['incremental.tests.test_replacement'],
+                  'anubis_external_edits': ['incremental.tests.test_anubis'],
+                  'automatic_difference_extraction_and_binding': ['incremental.tests.test_automatic'],
                   'export_correctness': ['test_export'],
                   'input_contract': ['test_combinational']},
               'note': 'Suite-to-layer mapping; passing tests does not prove complete provenance coverage.'}

@@ -37,6 +37,33 @@ def example():
 
 
 class SpliceTests(unittest.TestCase):
+    def test_connection_only_old_region_cannot_introduce_new_gates(self):
+        module,contract,bindings=example()
+        contract['region']['cells']=[]
+        with self.assertRaisesRegex(TraceError,'requires selected final gates'):
+            replace.splice(module,contract,module,bindings)
+
+    def test_observer_alias_is_preserved_and_cannot_silently_change(self):
+        module,contract,bindings=example()
+        observer={'port':'observe_a','direction':'output','original_bit':2,
+                  'reason':'selected_source_connection','external_users':[]}
+        contract['boundary'].append(observer)
+        bindings['outputs']['observe_a']=['observe_a']
+        patch=deepcopy(module);patch['ports']['observe_a']={'direction':'output','bits':[2]}
+        candidate,stats=replace.splice(module,contract,patch,bindings)
+        self.assertEqual(stats['output_binding_buffers'],2)
+        self.assertEqual(stats['preserved_observer_outputs'],['observe_a'])
+        self.assertTrue(replace.prove_local_outputs(candidate,contract,patch,bindings,stats['added_names'])['all_outputs_verified'])
+        patch['ports']['observe_a']['bits']=[3]
+        candidate,stats=replace.splice(module,contract,patch,bindings)
+        with self.assertRaisesRegex(TraceError,'differs from local specification'):
+            replace.prove_local_outputs(candidate,contract,patch,bindings,stats['added_names'])
+        # A real external consumer converts this into an unsupported driver
+        # rebinding problem, even if it shares the same original input alias.
+        observer['external_users']=[{'kind':'module_port','name':'z','offset':0}]
+        with self.assertRaisesRegex(TraceError,'consumer-rebinding'):
+            replace.splice(module,contract,patch,bindings)
+
     def test_constants_passthrough_and_merged_local_outputs_keep_distinct_old_wires(self):
         module,contract,bindings = example()
         for pair in ([2,'0'],[2,2],['1','1']):

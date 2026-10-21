@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/masc-ucsc/anubis",
+  "commit": "93088bd3c05407ccd871e8d5067d024f812aeeaa",
+  "files": {
+    "LICENSE": "704cebf79052113f84f051f61be8f622556ca54600a1f744910e2f67155746c5",
+    "README.md": "a6493c84ee9f4519fdb08e5b7888d397083652b421426fe2e05803a65dea576b",
+    "dlx/dislaimer": "9adec473e64e19c0a97f44039bbb24612c9748e5a10bf90d7d6122bfa43e7fc0",
+    "dlx/dlx_defs.v": "d05a0e7d8b5eccb50399d64d0ed8eef0501e739a1b56af759895599b78cb172e",
+    "dlx/bypass_ex.v": "e344e8743f53fa153990b85b00b3a6f3c951e9e6a17a6f4a628d9758afc30d58",
+    "dlx/quick_compare.v": "8720d546fbd6aa5e170ba150b841b8345027c389c2b0fa3988f35d609512374d",
+    "dlx/alu_control.v": "602f5394e024a3b57db5fec77b81d55e4845ff095e4dd58fd9f98e670e2ad332",
+    "dlx/wb_control.v": "0c147c095aeec2bd120d46ce15f38ecb2a189d6f493f3cde48e3f137cf97d152",
+    "dlx/alu.v": "3b1e90057766dc59f90c42b0aa58552d4efe49f190faef52224edad2b19a00ff",
+    "dlx/bypass_id.v": "9e95418de55125478d7b0ed2a7dcfe2992d59397c8ccfcc9e0d32a3daba46ce6"
+  }
+}

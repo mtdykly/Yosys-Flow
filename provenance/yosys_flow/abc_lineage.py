@@ -41,6 +41,8 @@ def entry_lineage(rows, nets):
     sweep = sweep[0]
     require(shape(entry)==shape(nets[sweep['before']]), 'ABC fraig copy source differs from entry manager')
     result_map = dict(sweep['links'])
+    cleanup = next((r for r in rows if r.get('reason')=='fraig_cleanup_copy' and r['before']==sweep['after']),None)
+    cleanup_map = dict(cleanup['links']) if cleanup else None
     pairs = []
     for event in rows:
         if event['kind']!='proved_equivalence' or 'entry_snapshot' not in event: continue
@@ -56,10 +58,15 @@ def entry_lineage(rows, nets):
                 la = result_map[links[a]//2] ^ (links[a]&1)
                 lb = result_map[links[b]//2] ^ (links[b]&1)
                 require(la==(lb^phase), 'ABC proved equivalence was not adopted by sweep copy')
+                cleaned = (cleanup_map[la//2]^(la&1)) if cleanup_map is not None and la//2 in cleanup_map else None
                 pairs.append({'entry_roots':[a,b], 'inverted':bool(phase), 'equivalence_event':event['seq'],
                               'sweep_copy_event':sweep['seq'], 'entry_snapshot':first.record['seq'],
                               'gia_snapshot':gia_snapshot, 'paths':[paths[a],paths[b]],
-                              'merged_literal':la})
+                              'merged_literal':la, **({'cleanup_copy_event':cleanup['seq'],
+                              'cleaned_literal':cleaned,'retired_by_cleanup':cleaned is None} if cleanup else {})})
     summary.update(available=True, copy_events=[r['seq'] for r in copies],
                    mapped_entry_objects=len(links), merged_root_pairs=len(pairs))
+    if cleanup:
+        summary.update(scope='entry_to_fraig_cleanup', cleanup_copy_event=cleanup['seq'],
+                       cleanup_deleted_objects=len(cleanup['deleted']))
     return {'summary':summary, 'pairs':pairs}

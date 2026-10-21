@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 from .common import digest, require, unescape
 from .diagnostics import endpoints, group_closure, audit_cut
-from .extract import slice_module
+from .extract import slice_module, extend_inputs
 from .native import resolve_bit
 from .region_functions import verify_outputs
 from .runner import load_run, query_loaded
@@ -123,6 +123,7 @@ class ContractContext:
     def build(self, derivation, depth=0):
         require(depth<=16, 'contract parent nesting limit exceeded')
         parents = []
+        additional_inputs = []
         kind = derivation.get('kind')
         if kind=='selection':
             require(set(derivation)=={'kind','selector'}, 'invalid selection derivation')
@@ -142,6 +143,15 @@ class ContractContext:
             connections = {c['ref'] for p in parents for c in p['region']['connections']}
             source_ids = {r for p in parents for r in p['request']['source_ids']}
             starting = {c['ref'] for p in parents for c in p['region']['cells']}
+            additional_inputs = [b['original_bit'] for p in parents for b in p['boundary'] if b['reason']=='new_edit_dependency']
+        elif kind=='extend_inputs':
+            require(set(derivation)=={'kind','parent','input_bits'} and isinstance(derivation['input_bits'],list)
+                    and all(type(b) is int for b in derivation['input_bits']), 'invalid edit input extension')
+            require(derivation['input_bits']==sorted(set(derivation['input_bits'])), 'edit input extension must be sorted and unique')
+            parent=self.validate(derivation['parent'],depth+1);parents=[parent]
+            requested=set(parent['request']['cell_refs']);connections={c['ref'] for c in parent['region']['connections']}
+            source_ids=set(parent['request']['source_ids']);starting={c['ref'] for c in parent['region']['cells']}
+            additional_inputs=derivation['input_bits']+[b['original_bit'] for b in parent['boundary'] if b['reason']=='new_edit_dependency']
         else:
             require(False, 'unknown contract derivation')
         require(starting or connections, 'no mapped final objects for a region contract; this does not prove no RTL effect')
@@ -152,6 +162,13 @@ class ContractContext:
         connection_rows = [self.connection(ref) for ref in sorted(connections)]
         names = [unescape(c['name']) for c in cells]
         sliced,boundary = slice_module(self.module,names,'region',connection_rows)
+        if kind=='union':
+            # An extra input inherited from a parent ceases to be external
+            # when its driver is included by another parent.
+            driven={b for name in names for port,bits in self.module['cells'][name]['connections'].items()
+                    if self.module['cells'][name]['port_directions'][port]=='output' for b in bits}
+            additional_inputs=[b for b in additional_inputs if b not in driven]
+        extend_inputs(self.module,names,sliced,boundary,additional_inputs)
         # Constants are VALUES, not identities. Only the captured LHS can bind
         # a constant connection to a top port; never collect all equal literals.
         unresolved_connections = []

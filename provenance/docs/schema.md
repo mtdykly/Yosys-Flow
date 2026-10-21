@@ -64,7 +64,7 @@ cell 引用形如 `native:cell_17@2`，连接引用形如 `native:connection_18`
 
 `techmap_bit_map` 引用真实派生父对象及子对象，端口位范围和双方信号必须与捕获状态一致。组合单元的输出位对应不等于算术内部门的位级来源，查询仍保留实际父对象来源。
 
-新日志声明 `abc_internal_v3`、`abc_region.internal_trace_schema=3`，额外归档 `input.blif.flow.jsonl`。这是 ABC 内部格式的版本；外层原生 JSONL 仍为 v2。内部日志头必须与声明一致；旧 `abc_internal_v1` / schema 1、`abc_internal_v2` / schema 2 仍可读取。事件包含命令、网络快照、AIG 替换、Nf 选中 cut 和实际对象转换；schema 2 增加 `proved_equivalence`、`history_copy`、独立作用域的 `history_network` 和每命令事件计数。等价只记录成功采用的结构/SAT 合并及代表/choice，仿真候选不算证明。
+新日志声明 `abc_internal_v4`、`abc_region.internal_trace_schema=4`，额外归档 `input.blif.flow.jsonl`。这是 ABC 内部格式的版本；外层原生 JSONL 仍为 v2。内部日志头必须与声明一致；旧 schema 1/2/3 及相应 feature 声明仍可读取。事件包含命令、网络快照、AIG 替换、Nf 选中 cut 和实际对象转换；schema 2 增加 `proved_equivalence`、`history_copy`、独立作用域的 `history_network` 和每命令事件计数。等价只记录成功采用的结构/SAT 合并及代表/choice，仿真候选不算证明。
 
 schema 3 新增以下记录和约束：
 
@@ -73,11 +73,15 @@ schema 3 新增以下记录和约束：
 - `mapped_clone`：保存 `snapshot`、`old`、`new`，记录 `&put` 中实际复制的同极性输出门。`gia_to_ntk.clones` 保存 `[原门 ID, 副本 ID, 复制事件 seq]`，读取器检查两边记录完整、结构相同及转换前没有变化，再将选中 cut 关联到副本。
 - `command_end.entry_copies` / `mapped_clones`：分别校验该命令的实际记录数量。
 
-`abc_internal` 报告验证与回退详情，包括 `verified_entry_copies`、`entry_lineage.scope=entry_to_fraig`、`mapped_clones`、`equivalence_groups`；旧格式缺少入口链时 `entry_lineage.available=false`，不补造路径。超过证明规模等早期回退可能尚未建立 `entry_lineage`，应结合 `fallback_reason` 读取。`abc_associations` 附单门证明事件编号或 `joint_groups` 的原始成员、组内门、边界、真实映射事件和阶段功能见证。以实际 fraig 等价根为依据的组另含 `basis=recorded_fraig_equivalence` 和 `entry_lineage`，后者保存两个入口根的复制路径、等价事件、sweep 事件及汇合 literal。它只证明入口到 fraig 的连续关系；最终门组仍按局部功能对应验证，不表示下游完整因果历史。详见 [abc-internals.md](abc-internals.md)。
+schema 4 的 `history_copy.reason=fraig_cleanup_copy` 连接 sweep 的后快照与清理后的 GIA；`links` 是实际存活对象到目标 literal 的映射，`deleted` 是实际未复制对象。两者必须完整划分旧对象集，目标映射覆盖全部新对象，常量、端口和每个节点的独立扇入函数均校验。清理结果还必须匹配同一 `&fraig` 的命令结束网络；没有这条记录的 schema 4 日志不能通过。`cleanup_copies`、`cleanup_deleted_objects` 报告数量。
+
+`abc_internal` 报告验证与回退详情，包括 `verified_entry_copies`、`entry_lineage.scope=entry_to_fraig_cleanup`（schema 3 为 `entry_to_fraig`）、`mapped_clones`、`equivalence_groups`；旧格式缺少入口链时 `entry_lineage.available=false`，不补造路径。超过证明规模等早期回退可能尚未建立 `entry_lineage`，应结合 `fallback_reason` 读取。`abc_associations` 附单门证明事件编号或 `joint_groups` 的原始成员、组内门、边界、真实映射事件和阶段功能见证。以实际 fraig 等价根为依据的组另含 `basis=recorded_fraig_equivalence` 和 `entry_lineage`，后者保存两个入口根的复制路径、等价事件、sweep 事件及汇合 literal；schema 4 另保存清理事件及清理后 literal/删除状态。被清理删除的根不作为存活等价组锚点。最终门组仍按局部功能对应验证，不表示下游完整因果历史。详见 [abc-internals.md](abc-internals.md)。
 
 派生报告不再使用旧 `proof_input_limit=10` 表示区域限制，改为 `truth_table_input_limit=10`（超过时选择符号后端）及 `region_input_count`。`function_proof.backend` 为 `truth_table`、`robdd` 或尚未启动的 `not_started`；`status=verified` 仅表示相关区域功能校验已完成，不表示每个门的来源已证明。ROBDD 报告 `nodes`、`apply_steps`、`cached_operations`、`node_limit`、`work_limit`。`local_function_resources` 是独立切点符号尝试的资源统计，不是成功证明清单；`local_proof_failures` 包含失败尝试的 `entry_root` 或 `export_root`、`boundary_input_count`、`reason`。
 
 区域预算不足以 `fallback_reason=bdd_node_limit_exceeded/bdd_work_limit_exceeded` 回退；局部尝试预算不足不清空其他证明。实际函数不一致仍为验证错误。以上均为读取记录时计算的报告字段，原生/ABC 日志 schema 不变；同一份归档记录可用新验证器重新查询，旧的已保存查询 JSON 不会自动重写。
+
+新增诊断同样属于派生字段：`failure_category` / `failure_phase` 标注全区域回退类别及阶段，`stage_witness_failures` 指明未找到函数见证的命令/快照，`unproved_import_reasons` 仅列最终未证明对象，`local_match_rejections` 记录可能被后续门组证明替代的独立切点尝试。`input_variable_order` 公开 BDD 位交错顺序；它是排序策略而非信号身份。切换该策略可能改变契约中的 BDD 编码和内容 ID，旧运行应重新生成契约并验证。
 
 内部日志、实际输入 BLIF、输出 BLIF 和脚本加入 manifest SHA256 清单，输入边界还要与真实 BLIF 端口一致。工具摘要、实际输入和映射资源摘要保存在 manifest。区域内每条语句关联全部输出门仍只能算候选，不能替代 ABC 内部逐节点变换证据。
 
@@ -102,6 +106,8 @@ schema 3 新增以下记录和约束：
 ## 派生区域契约
 
 契约为 `report_type=region_contract`、`schema_version=1`、`proof_rule=recorded_region_contract_v1`，与原生日志版本独立。`contract_id` 是去掉该字段后的规范 JSON SHA-256；`baseline` 绑定运行 ID、manifest、产物及输入摘要。`derivation.kind=selection` 保存查询条件，`union` 内嵌父契约；验证器递归重放父来源，重新生成成员、边界、函数和义务，不能只检查哈希。
+
+自动增量流程另生成 `derivation.kind=extend_inputs`，字段为 `parent` 和排序去重的 `input_bits`，表示新版所需的额外旧外部信号。必须有唯一外部驱动，边界行以 `reason=new_edit_dependency` 标识；成员及来源不变，全部输出重新认证。导出保留扩展输入；合并选入其驱动后把该输入内部化。旧 selection/union 契约的含义不变；旧版验证器会拒绝不认识的派生类型。
 
 `request` 保存原查询集合，`region` 保存实际成员，`expansion` 明确报告已记录门组扩展。`outputs` 覆盖每个边界输出；`function.encoding=robdd_v1` 使用 0/1 终端和带 `input_port/low/high` 的节点，变量为独立边界输入。`verification.all_output_functions.scope` 为 `replayed_final_objects_to_final_netlist_at_independent_boundary`，不能解释为原始 RTL 的完整语义证明。来源边、ABC 局部证明、候选和缺口保存在 `provenance`；各输出引用其贡献对象及证据。
 

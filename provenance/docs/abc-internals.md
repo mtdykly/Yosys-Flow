@@ -11,7 +11,7 @@
 | `CmdCommandDispatch` | 实际命令开始/结束、返回状态、命令完成时的 ABC 网络或 GIA 网络 |
 | `Abc_NtkStrash` / `Abc_CommandAbc9Get` | 入口逻辑网到 strash 的实际 `pCopy`、清理后存活对象、NTK→AIG 的实际 `pCopy` 和 AIG→GIA 的 `iData`；保留 literal 极性 |
 | `Aig_ObjReplace` | 真正替换之前的旧根、新根及极性和当时的 AIG；没有改写 ABC 的决策 |
-| `Cec4_ManPerformSweeping`（默认 `&fraig -x`） | 结构合并、SAT 已证明且实际采用的代表替代；清理前的真实 `Value` 复制表 |
+| `Cec4_ManPerformSweeping`（默认 `&fraig -x`） | 结构合并、SAT 已证明且实际采用的代表替代；sweep 的真实 `Value` 复制表，以及紧随其后的 `Gia_ManCleanup` 存活对象映射、极性、常量和删除集合 |
 | `Dch_ManSweepNode` | 已证明的结构/SAT 等价代表关系；不把仿真候选当成证明 |
 | `Dch_DeriveChoiceAigNode` / `Dch_DeriveChoiceAigInt` | 实际设置的代表、实际加入的 choice 链接、真实 `pData` 复制表 |
 | `Nf_ManDeriveMapping` | 最终选中的映射根、输入叶、各自极性与库门编号；不把所有枚举过的 cut 当成实际结果 |
@@ -22,7 +22,7 @@
 
 记录器仅在 `YOSYS_FLOW_ABC_TRACE` 开启时写文件；运行器只为插桩运行开启。它不修改节点的 `pCopy`、`Value`、遍历标记或名字，不增加 keep。每个网络快照有自己的编号，节点 ID 只能在对应快照中解释，不能跨网络按相同整数 ID 认定身份。
 
-当前 ABC 内部日志为 schema 3；读取器仍支持原 schema 1/2。新日志中每条替代/等价关系引用自己所属的网络快照，复制事件明确区分两个网络和 literal 极性。schema 3 增加 `entry_copy` 和 `mapped_clone`，命令结束分别记录数量。读取器检查事件计数、孤立快照、实际函数、输入对应、入口复制链连续性和已采用合并；旧格式没有入口链时，不推断或补造这类证据。
+当前 ABC 内部日志为 schema 4；读取器仍支持原 schema 1/2/3。新日志中每条替代/等价关系引用自己所属的网络快照，复制事件明确区分两个网络和 literal 极性。schema 3 增加 `entry_copy` 和 `mapped_clone`；schema 4 增加 `fraig_cleanup_copy`，使用紧接 sweep 的清理真实映射，要求存活/删除对象完整划分，映射到所有清理结果对象，并逐门校验局部函数及端口极性。清理前快照直接复用 sweep 的后快照，清理后快照必须与该 `&fraig` 命令结果一致。读取器检查事件计数、孤立快照、实际函数、输入对应、入口复制链连续性和已采用合并；旧格式没有相应链路时，不推断或补造证据。
 
 每次调用归档 `input.blif.flow.jsonl`，连同输入/输出 BLIF 和原执行脚本一起加入运行产物哈希。内部日志缺失、截断、非法引用、接口或函数不一致会拒绝验证。命令快照是审计证据；它本身不是实际节点替换历史。
 
@@ -34,7 +34,7 @@
 
 1. 实际命令与归档脚本一致，内部网络对象和引用合法。
 2. 入口节点与输入 BLIF 的局部函数和连接一致，阶段接口及输出函数一致。
-   schema 3 另重放入口的实际复制表，将原逻辑根绑定到 fraig 输入节点；成功等价关系还须在真实 sweep 复制表中汇合。仅函数相同但未采用的临时节点不能替代该关系。
+   schema 3 起另重放入口的实际复制表，将原逻辑根绑定到 fraig 输入节点；成功等价关系还须在真实 sweep 复制表中汇合。schema 4 继续组合清理映射，被清理删除的汇合点不作为等价门组的存活锚点。仅函数相同但未采用的临时节点不能替代该关系。
 3. 真实的 GIA → ABC 门 → netlist 对象转换在函数和极性上保持一致。
 4. 待匹配的原逻辑根在各命令结果中有功能见证；见证仅说明函数存在，不将两个节点认定为同一对象。
 5. 最终门确实来自记录的 Nf 选中 cut；它的实际输入对应原网络切点。
@@ -67,11 +67,13 @@ python3 -m yosys_flow extract runs/abc-chain --source provenance/examples/chain.
 
 ## 符号功能校验与独立切点预算
 
-`provenance/yosys_flow/boolean.py` 实现约简有序二叉决策图（ROBDD），以规范化布尔函数判断相等和反相，不采用随机仿真或相似度。超过 10 输入时，不生成 `2^N` 位真值向量。跨阶段变量仍按归档的 PI 名称、实际转换/复制表绑定；对象 ID 相同不构成输入身份依据。历史快照内的关系使用其独立 PI 顺序，复制双方通过真实链接对齐。
+`provenance/yosys_flow/boolean.py` 实现约简有序二叉决策图（ROBDD），以规范化布尔函数判断相等和反相，不采用随机仿真或相似度。超过 10 输入时，不生成 `2^N` 位真值向量。跨阶段变量仍按归档的 PI 名称、实际转换/复制表绑定；对象 ID 相同不构成输入身份依据。BDD 变量按记录的总线位位置交错，避免把整个操作数 A 排在 B 前面造成已知指数膨胀；名字只影响启发式排序，不作为身份依据。历史关系使用相同变量排列，复制双方通过真实链接对齐。契约边界也按可见别名的位位置交错；算法升级可能改变旧契约的函数编码，旧运行可离线重建并验证新契约，不能自动沿用旧契约 ID。
 
 门组边界超过 10 输入时也改用符号计算。其变量代表**相互独立的边界信号**，与区域主输入函数分属不同的 BDD 管理器。原逻辑必须在该独立域内与导出门组相等；例如互斥信号的 OR/XOR 虽然在原设计可达输入下相同，独立边界下不等，仍会拒绝该切点。保留内部边界、实际映射证据和阶段见证等原有要求不变。
 
 每个符号管理器最多创建 100,000 个非终端节点，最多执行 1,000,000 次未缓存的 Shannon 展开；这是确定性的资源预算，不是运行时间承诺。`function_proof` 报告区域后端、状态、节点、计算量和预算；`local_function_resources` 报告独立切点尝试的资源，`local_proof_failures` 记录未完成的目标和原因。
+
+`local_match_rejections` 单独记录尝试过但不匹配的独立切点；随后门组证明可能成功，因此不能把尝试被拒绝等同于最终对象未证明。`unproved_import_reasons` 只列最终仍未证明的对象，区分 `stage_function_witness_missing`、`independent_cut_not_proven`、缺失映射和无入口函数匹配。`stage_witness_failures` 指明首次失去函数见证的命令、快照和原根。全区域回退另报告 `failure_category` 和 `failure_phase`，区分预算、来源转换及不支持的证明策略。此分类不能把见证缺失直接等同于缺少实际转换钩子。
 
 - 区域级校验耗尽预算时，`fallback_reason` 为 `bdd_node_limit_exceeded` 或 `bdd_work_limit_exceeded`，本区域保留候选，不能发布依赖未完成校验的证明。
 - 单个局部切点耗尽预算时，记录该尝试并跳过它，保留其他已完成证明；未证明对象的保守候选仍可能使某些查询扩大。
@@ -128,7 +130,7 @@ assign independent = d ^ e;   // 第 4 行
 
 新增证明分为两段，明确区分证据强度：
 
-1. `abc_lineage.py` 重放 BLIF → strash → 清理后存活对象 → AIG → GIA 的真实复制表，组合所有反相标记。把原表达式根绑定到实际 `fraig_sat_merge` / `fraig_structural_merge`，并要求真实 `fraig_sweep_copy` 将两者映射到同一个 literal（含极性）。这一段是连续对象关系，报告 `scope=entry_to_fraig`。
+1. `abc_lineage.py` 重放 BLIF → strash → 清理后存活对象 → AIG → GIA 的真实复制表，组合所有反相标记。把原表达式根绑定到实际 `fraig_sat_merge` / `fraig_structural_merge`，并要求真实 `fraig_sweep_copy` 将两者映射到同一个 literal（含极性）。schema 4 再组合 `fraig_cleanup_copy`，记录存活 literal 或明确删除，报告 `scope=entry_to_fraig_cleanup`；旧 schema 3 仍只报告 `entry_to_fraig`。
 2. `abc_joint.py` 验证这些原根到最终门组的局部功能对应。边界只允许区域输入，或两个原始锥中都存在且已证明保留的内部函数。只在其中一种写法出现的因子留在组内；每个最终门必须有实际选中 cut 和转换证据，两个原根均须通过独立边界函数及阶段见证检查。此段仍不是完整下游因果历史。
 
 门组的 `basis=recorded_fraig_equivalence`，`entry_lineage` 保存原始根、四步复制路径、等价事件、sweep 事件及汇合 literal。共享来源取并集，使用 `abc_internal_joint_cut`、`attribution_scope=joint_group`、`per_gate_source_exact=false`。没有实际合并证据时，不能仅因为两个根函数相同就使用这条规则。
@@ -150,6 +152,8 @@ python3 -m yosys_flow extract runs/factoring-demo --source provenance/examples/f
 
 ## 仍需补充的内部历史
 
-当前不是完整 ABC 重写记录器。入口到 `&fraig -x` 的复制链及 Cec4 成功合并已连接，`&dch` 的成功代表与 choice 构造也有实际记录；fraig 后的清理、`dc2`、`&dch` 等重构及网络转换还没有组成从入口到出口的完整因果边。固定默认脚本调用的是 `dc2`；具体命令序列由归档脚本和读取器共同校验。`Aig_ObjReplace` 捕获的实际替换是其中一类，不能用它代表全部优化。
+当前不是完整 ABC 重写记录器。入口到 `&fraig -x` 的复制链、Cec4 成功合并及紧随 sweep 的清理已连接，`&dch` 的成功代表与 choice 构造也有实际记录；之后的网络转换、`dc2`、`&dch` 等重构还没有组成从入口到出口的完整因果边。固定默认脚本调用的是 `dc2`；具体命令序列由归档脚本和读取器共同校验。`Aig_ObjReplace` 捕获的实际替换是其中一类，不能用它代表全部优化。
+
+[ANUBIS 验收](../../benchmarks/anubis/README.md)使用真实比较器/译码器触发清理删除，检查映射、极性、常量、删除清单和链路损坏。该测试同时暴露展平后阶段函数见证缺失：即使新增清理关系有效，也不会把这类候选升级为已证明来源。
 
 因此 `internal_rewrite_provenance=false` / `complete_rewrite_history=false` 继续表示完整历史未建立。近期以可靠的区域对应为验收目标：先复现失败案例或不能连续校验的断点，再按需连接清理/转换关系；每个新增钩子都须有相应选择或证据验收。允许门组整体对应，完整历史与组内逐门独占归属不作为层次扩展的前置门槛。证明规模和日志成本同步评估，候选要保留范围依据及原因。不能仅因为导出等价或局部切点成立，就宣称原 RTL 到最终网表全路径精确，更不能推导修改后可安全替换。

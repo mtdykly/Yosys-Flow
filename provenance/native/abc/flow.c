@@ -13,6 +13,8 @@ static unsigned flow_relations, flow_copies, flow_rewrites, flow_entry_copies;
  * cleared after fraig, before any manager address can be reused by later work. */
 static Abc_Ntk_t *flow_entry_ntk, *flow_strash_ntk;
 static Gia_Man_t *flow_entry_gia;
+static Gia_Man_t *flow_cleanup_from;
+static unsigned flow_cleanup_snapshot;
 static unsigned flow_entry_snapshot, flow_strash_snapshot, flow_gia_snapshot;
 static int flow_is_strash, flow_is_get, flow_is_put;
 static unsigned flow_clone_count;
@@ -103,7 +105,7 @@ static unsigned flow_gia(Gia_Man_t *p, const char *kind) {
     fputc(']',flow_file); flow_end(); return seq;
 }
 void Flow_CommandBefore(Abc_Frame_t *p, int argc, char **argv) {
-    if (argc && !strcmp(argv[0],"version")) printf("Yosys-Flow ABC internal trace v3 (e026ed5380f3bdc3beea2ff9ffc23236fc549d5b)\n");
+    if (argc && !strcmp(argv[0],"version")) printf("Yosys-Flow ABC internal trace v4 (e026ed5380f3bdc3beea2ff9ffc23236fc549d5b)\n");
     if (!flow_file && getenv("YOSYS_FLOW_ABC_TRACE") && argc == 2 && !strcmp(argv[0],"read_blif")) {
         if (snprintf(flow_path,sizeof(flow_path),"%s.flow.jsonl",argv[1]) >= (int)sizeof(flow_path)) exit(2);
         flow_file=fopen(flow_path,"wx");
@@ -111,9 +113,10 @@ void Flow_CommandBefore(Abc_Frame_t *p, int argc, char **argv) {
         flow_seq=flow_command=0;
         flow_entry_ntk=flow_strash_ntk=NULL; flow_entry_gia=NULL;
         flow_entry_snapshot=flow_strash_snapshot=flow_gia_snapshot=0;
-        flow_start("begin"); fputs(",\"schema\":3,\"abc_commit\":\"e026ed5380f3bdc3beea2ff9ffc23236fc549d5b\"",flow_file); flow_end();
+        flow_start("begin"); fputs(",\"schema\":4,\"abc_commit\":\"e026ed5380f3bdc3beea2ff9ffc23236fc549d5b\"",flow_file); flow_end();
     }
     if (!flow_file || !strcmp(argv[0],"echo")) return;
+    flow_cleanup_from=NULL; flow_cleanup_snapshot=0;
     flow_clone_count=0; flow_is_put=!strcmp(argv[0],"&put");
     flow_is_strash=!strcmp(argv[0],"strash"); flow_is_get=!strcmp(argv[0],"&get");
     flow_relations=flow_copies=flow_rewrites=flow_entry_copies=0;
@@ -183,6 +186,7 @@ void Flow_GiaSweepCopy(Gia_Man_t *from, Gia_Man_t *to) {
     unsigned before,after; Gia_Obj_t *o; int i,first=1;
     if (!flow_file) return;
     before=flow_gia(from,"history_network"); after=flow_gia(to,"history_network");
+    flow_cleanup_from=to; flow_cleanup_snapshot=after;
     flow_start("history_copy"); fprintf(flow_file,",\"reason\":\"fraig_sweep_copy\",\"before\":%u,\"after\":%u,\"links\":[",before,after);
     Gia_ManForEachObj(from,o,i) if(o->Value != ~0u) {
         fprintf(flow_file,"%s[%d,%u]",first?"":",",i,o->Value);first=0;
@@ -190,6 +194,28 @@ void Flow_GiaSweepCopy(Gia_Man_t *from, Gia_Man_t *to) {
     fputc(']',flow_file);
     if (from==flow_entry_gia) fprintf(flow_file,",\"entry_snapshot\":%u",flow_gia_snapshot);
     flow_end();
+}
+void Flow_GiaCleanupCopy(Gia_Man_t *from, Gia_Man_t *to) {
+    unsigned after; Gia_Obj_t *o; int i,first=1;
+    if (!flow_file) return;
+    if (from!=flow_cleanup_from || !flow_cleanup_snapshot) {
+        fprintf(stderr,"ABC cleanup provenance has no preceding sweep\n"); exit(2);
+    }
+    after=flow_gia(to,"history_network");
+    flow_start("history_copy");
+    fprintf(flow_file,",\"reason\":\"fraig_cleanup_copy\",\"before\":%u,\"after\":%u,\"links\":[",flow_cleanup_snapshot,after);
+    /* Gia_ManDupMarked initializes Value to ~0u, then writes the actual
+     * destination literal for every retained object, including constant/COs.
+     * Read it before the caller destroys the old manager. */
+    Gia_ManForEachObj(from,o,i) if(o->Value != ~0u) {
+        fprintf(flow_file,"%s[%d,%u]",first?"":",",i,o->Value); first=0;
+    }
+    fputs("],\"deleted\":[",flow_file); first=1;
+    Gia_ManForEachObj(from,o,i) if(o->Value == ~0u) {
+        fprintf(flow_file,"%s%d",first?"":",",i); first=0;
+    }
+    fputc(']',flow_file); flow_end();
+    flow_cleanup_from=NULL; flow_cleanup_snapshot=0;
 }
 void Flow_DchChoiceCopy(Aig_Man_t *from, Aig_Man_t *to) {
     unsigned before,after; Aig_Obj_t *o; int i,first=1;

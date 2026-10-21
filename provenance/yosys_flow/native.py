@@ -334,8 +334,10 @@ class NativeTrace:
                 nodes[row["node"]] = row
                 self.events.append(row)
             elif kind == "abc_region":
-                require(row.get("internal_trace_schema") in {None, 1, 2, 3}, "unsupported ABC internal trace schema")
-                if "abc_internal_v3" in self.records[0].get("features", []):
+                require(row.get("internal_trace_schema") in {None, 1, 2, 3, 4}, "unsupported ABC internal trace schema")
+                if "abc_internal_v4" in self.records[0].get("features", []):
+                    require(row.get("internal_trace_schema") == 4, "missing declared ABC internal v4 evidence")
+                elif "abc_internal_v3" in self.records[0].get("features", []):
                     require(row.get("internal_trace_schema") == 3, "missing declared ABC internal v3 evidence")
                 elif "abc_internal_v2" in self.records[0].get("features", []):
                     require(row.get("internal_trace_schema") == 2, "missing declared ABC internal v2 evidence")
@@ -356,7 +358,7 @@ class NativeTrace:
                         require(len(row[key]) == len(set(row[key])) and
                                 all(isinstance(i, int) and 0 <= i < len(row["signals"]) for i in row[key]), "invalid ABC boundary index")
                     expected_artifacts = {"input.blif", "output.blif", "script"}
-                    if row.get("internal_trace_schema") in {1, 2, 3}: expected_artifacts.add("input.blif.flow.jsonl")
+                    if row.get("internal_trace_schema") in {1, 2, 3, 4}: expected_artifacts.add("input.blif.flow.jsonl")
                     require(set(row["artifacts"]) == expected_artifacts and
                             all(Path(p).name == p for p in row["artifacts"].values()), "invalid ABC artifact paths")
                     invocations[iid] = row
@@ -413,7 +415,7 @@ class NativeTrace:
             require(all(p.is_file() and p.stat().st_size > 0 for p in files.values()), "missing ABC evidence artifact")
             from .abc_provenance import validate_artifacts
             validate_artifacts(self, region, files)
-            if region.get("internal_trace_schema") in {1, 2, 3}:
+            if region.get("internal_trace_schema") in {1, 2, 3, 4}:
                 from .abc_internal import analyze
                 proof, summary = analyze(files["input.blif.flow.jsonl"], files["script"].read_text(), region,
                                          self.abc_imports.get(region["invocation_id"], {}), files["input.blif"].read_text())

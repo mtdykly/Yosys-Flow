@@ -12,6 +12,7 @@ void Flow_AigReplace(Aig_Man_t *, Aig_Obj_t *, Aig_Obj_t *);
 void Flow_GiaEquivalence(Gia_Man_t *, Gia_Obj_t *, Gia_Obj_t *, const char *);
 void Flow_AigEquivalence(Aig_Man_t *, Aig_Obj_t *, Aig_Obj_t *, const char *);
 void Flow_GiaSweepCopy(Gia_Man_t *, Gia_Man_t *);
+void Flow_GiaCleanupCopy(Gia_Man_t *, Gia_Man_t *);
 void Flow_DchChoiceCopy(Aig_Man_t *, Aig_Man_t *);
 void Flow_StrashCopy(Abc_Ntk_t *, Abc_Ntk_t *);
 void Flow_GetCopy(Abc_Ntk_t *, Aig_Man_t *, Gia_Man_t *);

@@ -14,6 +14,35 @@ from .common import PIN, TraceError, digest, identifier, require, require_combin
 from .runner import load_run, query_loaded
 
 
+def extend_inputs(module, selected_names, netlist, boundary, bits):
+    """Additional OLD external signals required by a concrete new edit.
+
+    This adds no old gates or source claims. Every bit must have one real
+    external driver; downstream feedback is still checked during splicing.
+    """
+    from .diagnostics import endpoints
+    drivers,users=endpoints(module)
+    present={b['original_bit'] for b in boundary if b['direction']=='input'}
+    selected=set(selected_names)
+    target=next(iter(netlist['modules'].values()))
+    for bit in sorted(set(bits)-present):
+        require(type(bit) is int and len(drivers.get(bit,[]))==1,'additional edit input needs one recorded driver')
+        require(all(e['kind']=='module_port' or e['name'] not in selected for e in drivers[bit]),
+                'additional edit input is driven inside selected region')
+        port='in_'+str(bit)
+        require(port not in target['ports'],'additional edit input name collision')
+        aliases=[]
+        for name,net in module['netnames'].items():
+            for offset,b in enumerate(net['bits']):
+                if b==bit: aliases.append({'name':name,'offset':offset,'hide_name':bool(net.get('hide_name',0)),
+                    'source_index':net.get('offset',0)+(len(net['bits'])-1-offset if net.get('upto') else offset)})
+        target['ports'][port]={'direction':'input','bits':[bit]}
+        target['netnames'][port]={'hide_name':0,'bits':[bit],'attributes':{}}
+        boundary.append({'port':port,'direction':'input','original_bit':bit,'reason':'new_edit_dependency',
+            'aliases':aliases,'drivers':drivers[bit],'external_drivers':drivers[bit],
+            'users':users.get(bit,[]),'external_users':[e for e in users.get(bit,[]) if e['kind']=='module_port' or e['name'] not in selected]})
+
+
 def slice_module(module, selected_names, module_name, selected_connections=()):
     """Yosys JSON bit IDs already represent electrical aliases.
 
@@ -170,6 +199,9 @@ def extract(args):
     require(digest(after) == manifest["artifacts"]["after.json"]["sha256"], "after.json changed during selection")
     chosen_names = [unescape(cell["name"]) for cell in selection["final_cells"]]
     netlist, boundary = slice_module(trace.design, chosen_names, module_name, connections)
+    if contract_document:
+        extend_inputs(trace.design,chosen_names,netlist,boundary,
+                      [b['original_bit'] for b in contract_document['boundary'] if b['reason']=='new_edit_dependency'])
     has_pmux = any(c["type"] == "$pmux" for c in netlist["modules"][module_name]["cells"].values())
 
     yosys = shutil.which(args.yosys)

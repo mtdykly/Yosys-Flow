@@ -125,11 +125,16 @@ class ContractContext:
         parents = []
         additional_inputs = []
         kind = derivation.get('kind')
-        if kind=='selection':
+        if kind in {'selection','source_cells'}:
             require(set(derivation)=={'kind','selector'}, 'invalid selection derivation')
             selection = self.query(derivation['selector'])
             requested = {c['ref'] for c in selection['final_cells']}
-            connections = {c['ref'] for c in selection['final_connections']}
+            # An automatic gate replacement asks for source-associated gates.
+            # Source-only observations (e.g. unused constant padding bits) are
+            # not electrical outputs of that gate cut. True gate outputs and
+            # every external consumer still come from slice_module/audit_cut.
+            # Connection-only edits require the separate rebinding fallback.
+            connections = {c['ref'] for c in selection['final_connections']} if kind=='selection' else set()
             source_ids = set(selection['seeds'])
             starting = requested
         elif kind=='union':

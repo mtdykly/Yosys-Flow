@@ -109,6 +109,8 @@ schema 4 的 `history_copy.reason=fraig_cleanup_copy` 连接 sweep 的后快照�
 
 自动增量流程另生成 `derivation.kind=extend_inputs`，字段为 `parent` 和排序去重的 `input_bits`，表示新版所需的额外旧外部信号。必须有唯一外部驱动，边界行以 `reason=new_edit_dependency` 标识；成员及来源不变，全部输出重新认证。导出保留扩展输入；合并选入其驱动后把该输入内部化。旧 selection/union 契约的含义不变；旧版验证器会拒绝不认识的派生类型。
 
+模块内切片另使用 `derivation.kind=source_cells`，字段为 `kind`、`selector`：重放查询的 `final_cells` 与来源 ID，补齐门组，不选 `final_connections`。真实门的所有电气输出与消费者仍独立重算并验证，不声明已经覆盖该源码的连接语义。无门修改需要模块后备或消费者重绑定。该类型与 `extend_inputs` 一样可重放、导出和合并；旧验证器会拒绝它。`incremental/tests/test_statements.py` 验证其成员与外部使用者篡改不能通过重封哈希绕过检查。
+
 `request` 保存原查询集合，`region` 保存实际成员，`expansion` 明确报告已记录门组扩展。`outputs` 覆盖每个边界输出；`function.encoding=robdd_v1` 使用 0/1 终端和带 `input_port/low/high` 的节点，变量为独立边界输入。`verification.all_output_functions.scope` 为 `replayed_final_objects_to_final_netlist_at_independent_boundary`，不能解释为原始 RTL 的完整语义证明。来源边、ABC 局部证明、候选和缺口保存在 `provenance`；各输出引用其贡献对象及证据。
 
 `verification.status` 为 `verified_old_region` 或 `partial_old_region`，分别表示已声明的旧区域条件通过或存在明确阻碍；两者均不授予未来编辑安全性。`contract-validate` 的 `valid=true` 表示契约声明与归档记录相符，不意味着 partial 已升级。`safe_for_incremental_reuse=false`、`end_to_end_exact=false` 和源码完整性未证明标志继续保留。

@@ -1,8 +1,8 @@
 """Derive concrete patches from an archived baseline and complete new RTL.
 
-The first automatic policy selects changed module instances, expands to parents
-when necessary, and never upgrades candidate provenance. New full synthesis is
-only the final oracle. Local specs come from elaborated pre-proc RTLIL.
+Changed pre-proc assignments seed local regions; missing boundaries can expand
+them and module instances remain a fallback. Candidate provenance never becomes
+exact by planning. New full synthesis is only the final validation oracle.
 """
 import json
 from pathlib import Path
@@ -234,7 +234,7 @@ def run(args):
     out=Path(args.out).resolve();require(not out.exists(),'refusing to overwrite '+str(out));out.mkdir(parents=True)
     work=out/'work';work.mkdir();started=time.perf_counter();stage='baseline'
     report={'schema_version':1,'status':'running','automatic_RTL_diff':True,'automatic_patch_and_bindings':True,
-        'granularity':'changed_module_instance_with_parent_expansion','minimal_region_claimed':False,
+        'granularity':'changed_assignments_with_boundary_closure_and_module_fallback','minimal_region_claimed':False,
         'new_full_synthesis_used_only_as_validation_oracle':True,'timings':{},'attempts':[]}
     try:
         context=ContractContext(args.base_run);top=context.baseline['module']
@@ -269,27 +269,35 @@ def run(args):
                 'all_old_cells_reused':True,'emitted_Verilog_equivalent':True,'baseline_unchanged':True})
         else:
             stage='region_and_binding';step=time.perf_counter()
-            for attempt in range(65):
-                row={'scopes':scopes};report['attempts'].append(row)
-                try:
-                    contract,selections=contract_for(context,old,oc,scopes)
-                    row['selections']=selections;row['contract_status']=contract['verification']
-                    needed(contract['verification']['status']=='verified_old_region','old_region_not_proven',str(contract['verification']['blockers']))
-                    contract,patch,bindings,spec=patch_for(context,old,new,oc,nc,coarse,scopes,contract)
-                    context.validate(contract)
-                    write_json(out/'region.contract.json',contract);write_json(out/'bindings.json',bindings)
-                    write_json(out/'patch-specification.json',spec);(out/'patch.il').write_text(patch)
-                    # Verilog is a reviewable form of the automatically selected
-                    # local IR, not a textual slice of incomplete always blocks.
-                    replace.run_yosys(args.yosys,work,'patch-export',
-                        'read_rtlil '+token(out/'patch.il')+'\nhierarchy -check -top __auto_patch\nproc\nwrite_verilog -noattr '+token(out/'patch.v'))
-                    row['status']='ready';break
-                except PlanningBlocked as exc:
-                    row.update(status='blocked',reason=exc.code,detail=exc.detail)
-                    next_scopes=expanded(scopes,top)
-                    if scopes==next_scopes:raise
-                    scopes=next_scopes
-            else:raise PlanningBlocked('expansion_budget','Region expansion limit reached')
+            from . import statements
+            report['statement_plan']={}
+            planned=statements.plan(context,old,new,oc,nc,coarse,scopes,report['statement_plan'],work,args.yosys)
+            if planned:
+                contract,patch,bindings,spec=planned
+                report['selection_strategy']='statement_dependency_slice'
+            else:
+                report['selection_strategy']='module_fallback'
+                for attempt in range(65):
+                    row={'scopes':scopes};report['attempts'].append(row)
+                    try:
+                        contract,selections=contract_for(context,old,oc,scopes)
+                        row['selections']=selections;row['contract_status']=contract['verification']
+                        needed(contract['verification']['status']=='verified_old_region','old_region_not_proven',str(contract['verification']['blockers']))
+                        contract,patch,bindings,spec=patch_for(context,old,new,oc,nc,coarse,scopes,contract)
+                        context.validate(contract)
+                        row['status']='ready';break
+                    except PlanningBlocked as exc:
+                        row.update(status='blocked',reason=exc.code,detail=exc.detail)
+                        next_scopes=expanded(scopes,top)
+                        if scopes==next_scopes:raise
+                        scopes=next_scopes
+                else:raise PlanningBlocked('expansion_budget','Region expansion limit reached')
+            write_json(out/'region.contract.json',contract);write_json(out/'bindings.json',bindings)
+            write_json(out/'patch-specification.json',spec);(out/'patch.il').write_text(patch)
+            # Verilog is a reviewable form of the local semantics, not a text
+            # slice of incomplete always blocks.
+            replace.run_yosys(args.yosys,work,'patch-export',
+                'read_rtlil '+token(out/'patch.il')+'\nhierarchy -check -top __auto_patch\nproc\nwrite_verilog -noattr '+token(out/'patch.v'))
             report['timings']['region_contract_patch_binding_seconds']=time.perf_counter()-step
             stage='replacement'
             report['timings']['automatic_preparation_seconds']=time.perf_counter()-started

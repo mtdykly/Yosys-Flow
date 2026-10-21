@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from incremental import anubis, automatic, rtlil
+from incremental import anubis, automatic, rtlil, statements
 from incremental.__main__ import parser
 from incremental.tests.test_replacement import NATIVE
 from yosys_flow.cli import parser as flow_parser
@@ -70,8 +70,9 @@ class AutomaticTests(unittest.TestCase):
         result,out=self.execute('compare_local9','function-edit')
         self.assertEqual(result['status'],'passed',result.get('failure'))
         self.assertEqual(result['selected_scopes'],['benchmark/u_target'])
-        self.assertEqual(result['splice']['removed_cells'],115)
-        self.assertEqual(result['splice']['reused_cells'],116)
+        self.assertEqual(result['selection_strategy'],'statement_dependency_slice')
+        self.assertLess(result['splice']['removed_cells'],115)  # previous whole-leaf replacement
+        self.assertGreater(result['splice']['reused_cells'],116)
         self.assertTrue(all(result['checks'].values()))
         self.assertEqual(result['changes'][0]['ir_changes'][0]['old'],[['connect','\\B','0']])
         self.assertEqual(result['changes'][0]['ir_changes'][0]['new'],[['connect','\\B','1']])
@@ -87,8 +88,9 @@ class AutomaticTests(unittest.TestCase):
         result,_=self.execute('bypass_noc1','equivalent-edit')
         self.assertEqual(result['status'],'passed',result.get('failure'))
         self.assertEqual(result['selected_scopes'],['benchmark/u_target'])
-        self.assertEqual(result['splice']['removed_cells'],31)
-        self.assertEqual(result['splice']['reused_cells'],32)
+        self.assertEqual(result['selection_strategy'],'statement_dependency_slice')
+        self.assertLess(result['splice']['removed_cells'],31)
+        self.assertGreater(result['splice']['reused_cells'],32)
 
     def test_only_comments_locations_and_module_rename_reuse_every_gate(self):
         fixture,_=self.cases['bypass_noc1']
@@ -110,7 +112,7 @@ class AutomaticTests(unittest.TestCase):
         result,_=self.execute('compare_local9','both-instances',source)
         self.assertEqual(result['status'],'passed',result.get('failure'))
         self.assertEqual(result['selected_scopes'],['benchmark/u_other','benchmark/u_target'])
-        self.assertEqual(result['splice']['reused_cells'],1)  # summary only
+        self.assertGreaterEqual(result['splice']['reused_cells'],1)  # summary, plus any reusable cuts
 
     def test_new_dependency_is_added_and_bound_from_old_top_driver(self):
         fixture,_=self.cases['bypass_noc1']
@@ -152,7 +154,8 @@ class AutomaticTests(unittest.TestCase):
         result,out=self.execute('compare_local9','parameter-edit',fixture/'new.v',baseline)
         self.assertEqual(result['status'],'passed',result.get('failure'))
         self.assertEqual(result['selected_scopes'],['benchmark/u_target'])
-        self.assertIn('cell $paramod',(out/'patch.il').read_text())
+        self.assertTrue(result['changes'][0]['new_module'].startswith('$paramod'))
+        self.assertEqual(result['selection_strategy'],'statement_dependency_slice')
         self.assertTrue(all(result['checks'].values()))
 
     def test_old_files_can_be_deleted_or_edited_after_archiving(self):
@@ -193,13 +196,13 @@ class AutomaticTests(unittest.TestCase):
         self.assertFalse((out/'work/new.frontend.il').exists())
 
     def test_new_frontend_change_between_planning_and_synthesis_is_rejected(self):
-        original=automatic.patch_for
+        original=statements.plan
         def corrupt_after_planning(*args,**kwargs):
             result=original(*args,**kwargs)
             with (self.root/'new-frontend-tampered/work/new.frontend.il').open('a') as f:
                 f.write('# changed after local extraction\n')
             return result
-        with patch.object(automatic,'patch_for',side_effect=corrupt_after_planning):
+        with patch.object(statements,'plan',side_effect=corrupt_after_planning):
             result,out=self.execute('bypass_noc1','new-frontend-tampered')
         self.assertEqual(result['status'],'failed')
         self.assertIn('new input changed since frontend elaboration',result['failure']['detail'])

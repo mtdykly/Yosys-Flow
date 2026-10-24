@@ -1,0 +1,262 @@
+{
+  "schema_version": 1,
+  "source_selection": "All design RTL from locked source_inventory, excluding testbench/SoftFloat files; read -defer then hierarchy -check selects top. Includes retain raw bytes.",
+  "reset_policy": "Only named synchronous resets may be forced for two startup cycles in a proof wrapper. Outputs are observed after release, then inputs/reset arbitrary. Asynchronous reset and clock guards are unchanged.",
+  "contexts": {
+    "alpha_noc0": {
+      "top": "ex_stage",
+      "clock": "CLOCK",
+      "reset": null,
+      "reset_active": 1,
+      "reset_cycles": 2,
+      "profiles": [
+        {
+          "parameters": {},
+          "defines": []
+        }
+      ]
+    },
+    "alpha_noc1": {
+      "top": "id_stage",
+      "clock": "CLOCK",
+      "reset": null,
+      "reset_active": 1,
+      "reset_cycles": 2,
+      "profiles": [
+        {
+          "parameters": {},
+          "defines": []
+        }
+      ]
+    },
+    "alpha_noc2": {
+      "top": "ex_stage",
+      "clock": "CLOCK",
+      "reset": null,
+      "reset_active": 1,
+      "reset_cycles": 2,
+      "profiles": [
+        {
+          "parameters": {},
+          "defines": []
+        }
+      ]
+    },
+    "alpha_noc4": {
+      "top": "pipeline",
+      "clock": "CLOCK",
+      "reset": "RESET",
+      "reset_active": 1,
+      "reset_cycles": 2,
+      "profiles": [
+        {
+          "parameters": {},
+          "defines": []
+        }
+      ]
+    },
+    "alpha_noc5": {
+      "top": "regfile",
+      "clock": "wr_clk",
+      "reset": null,
+      "reset_active": 1,
+      "reset_cycles": 2,
+      "profiles": [
+        {
+          "parameters": {},
+          "defines": []
+        }
+      ]
+    },
+    "dlx_noc3": {
+      "top": "rf_bug",
+      "clock": "CLK",
+      "reset": null,
+      "reset_active": 1,
+      "reset_cycles": 2,
+      "profiles": [
+        {
+          "parameters": {},
+          "defines": []
+        }
+      ]
+    },
+    "fpu_noc5": {
+      "top": "fp_sqrt64",
+      "clock": "clk",
+      "reset": "reset",
+      "reset_active": 1,
+      "reset_cycles": 2,
+      "profiles": [
+        {
+          "parameters": {},
+          "defines": []
+        }
+      ]
+    },
+    "mor1kx_noc0": {
+      "top": "mor1kx_cpu",
+      "clock": "clk",
+      "reset": "rst",
+      "reset_active": 1,
+      "reset_cycles": 2,
+      "profiles": [
+        {
+          "parameters": {},
+          "defines": []
+        }
+      ]
+    },
+    "mor1kx_noc1": {
+      "top": "mor1kx_fetch_espresso",
+      "clock": "clk",
+      "reset": "rst",
+      "reset_active": 1,
+      "reset_cycles": 2,
+      "profiles": [
+        {
+          "parameters": {},
+          "defines": []
+        }
+      ]
+    },
+    "mor1kx_noc2": {
+      "top": "mor1kx_ctrl_cappuccino",
+      "clock": "clk",
+      "reset": "rst",
+      "reset_active": 1,
+      "reset_cycles": 2,
+      "profiles": [
+        {
+          "parameters": {},
+          "defines": []
+        }
+      ]
+    },
+    "mor1kx_noc4": {
+      "top": "mor1kx_dmmu",
+      "clock": "clk",
+      "reset": "rst",
+      "reset_active": 1,
+      "reset_cycles": 2,
+      "profiles": [
+        {
+          "parameters": {},
+          "defines": []
+        }
+      ]
+    },
+    "mor1kx_noc5": {
+      "top": "mor1kx_icache",
+      "clock": "clk",
+      "reset": "rst",
+      "reset_active": 1,
+      "reset_cycles": 2,
+      "profiles": [
+        {
+          "parameters": {},
+          "defines": []
+        }
+      ]
+    },
+    "mor1kx_noc6": {
+      "top": "mor1kx_pic",
+      "clock": "clk",
+      "reset": "rst",
+      "reset_active": 1,
+      "reset_cycles": 2,
+      "profiles": [
+        {
+          "parameters": {},
+          "defines": []
+        }
+      ]
+    },
+    "or1200_noc0": {
+      "top": "or1200_ic_fsm",
+      "clock": "clk",
+      "reset": "rst",
+      "reset_active": 1,
+      "reset_cycles": 2,
+      "profiles": [
+        {
+          "parameters": {},
+          "defines": []
+        }
+      ]
+    },
+    "or1200_noc1": {
+      "top": "or1200_fpu",
+      "clock": "clk",
+      "reset": "rst",
+      "reset_active": 1,
+      "reset_cycles": 2,
+      "profiles": [
+        {
+          "parameters": {},
+          "defines": []
+        }
+      ]
+    },
+    "or1200_noc2": {
+      "top": "or1200_dc_top",
+      "clock": "clk",
+      "reset": "rst",
+      "reset_active": 1,
+      "reset_cycles": 2,
+      "profiles": [
+        {
+          "parameters": {},
+          "defines": []
+        }
+      ],
+      "note": "Use the data-cache top that consumes OR1200_DC_1W_8KB; header is not a standalone design."
+    },
+    "or1200_noc3": {
+      "top": "or1200_cpu",
+      "clock": "clk",
+      "reset": "rst",
+      "reset_active": 1,
+      "reset_cycles": 2,
+      "profiles": [
+        {
+          "parameters": {},
+          "defines": []
+        }
+      ]
+    },
+    "or1200_noc4": {
+      "top": "or1200_pic",
+      "clock": "clk",
+      "reset": "rst",
+      "reset_active": 1,
+      "reset_cycles": 2,
+      "profiles": [
+        {
+          "parameters": {},
+          "defines": []
+        }
+      ]
+    },
+    "or1200_noc5": {
+      "top": "or1200_pm",
+      "clock": "clk",
+      "reset": "rst",
+      "reset_active": 1,
+      "reset_cycles": 2,
+      "profiles": [
+        {
+          "parameters": {},
+          "defines": []
+        },
+        {
+          "parameters": {},
+          "defines": [
+            "OR1200_PM_IMPLEMENTED"
+          ]
+        }
+      ],
+      "note": "Default feature disabled plus an explicit enabled configuration; no source edits or reset conversion."
+    }
+  }
+}

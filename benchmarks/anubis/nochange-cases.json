@@ -1,0 +1,389 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "alpha_noc0",
+      "design": "alpha",
+      "macro": "ANUBIS_NOC_0",
+      "file": "alpha/ex_stage.v",
+      "top": "ex_stage",
+      "execution": "out_of_scope",
+      "scope_note": "Whitespace-only change in combinational execution hierarchy. Containing module has alu/brcond child instances; current precheck only proves leaf pairs. No benchmark-only flattening is claimed as product support.",
+      "parameters": [
+        {}
+      ],
+      "scope_category": "combinational_nonleaf"
+    },
+    {
+      "id": "alpha_noc1",
+      "design": "alpha",
+      "macro": "ANUBIS_NOC_1",
+      "file": "alpha/id_stage.v",
+      "top": "id_stage",
+      "execution": "out_of_scope",
+      "scope_note": "Containing module instantiates a stateful register file.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "alpha_noc2",
+      "design": "alpha",
+      "macro": "ANUBIS_NOC_2",
+      "file": "alpha/ex_stage.v",
+      "top": "ex_stage",
+      "execution": "out_of_scope",
+      "scope_note": "Rename brcond instance in combinational execution hierarchy. Containing module has alu/brcond child instances; current precheck only proves leaf pairs. No benchmark-only flattening is claimed as product support.",
+      "parameters": [
+        {}
+      ],
+      "scope_category": "combinational_nonleaf"
+    },
+    {
+      "id": "alpha_noc3",
+      "design": "alpha",
+      "macro": "ANUBIS_NOC_3",
+      "file": "alpha/wb_stage.v",
+      "top": "wb_stage",
+      "execution": "leaf",
+      "scope_note": "Rename internal combinational wire.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "alpha_noc4",
+      "design": "alpha",
+      "macro": "ANUBIS_NOC_4",
+      "file": "alpha/pipeline.v",
+      "top": "pipeline",
+      "execution": "out_of_scope",
+      "scope_note": "Rename a pipeline register enable in a clocked module.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "alpha_noc5",
+      "design": "alpha",
+      "macro": "ANUBIS_NOC_5",
+      "file": "alpha/regfile.v",
+      "top": "regfile",
+      "execution": "out_of_scope",
+      "scope_note": "Change initialization loop order for register array.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "dlx_noc0",
+      "design": "dlx",
+      "macro": "ANUBIS_NOC_0",
+      "file": "dlx/bypass_id.v",
+      "top": "bypass_id_bug",
+      "execution": "leaf",
+      "scope_note": "Rename internal combinational wire.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "dlx_noc1",
+      "design": "dlx",
+      "macro": "ANUBIS_NOC_1",
+      "file": "dlx/bypass_ex.v",
+      "top": "bypass_ex_bug",
+      "execution": "leaf",
+      "scope_note": "Negate condition and exchange both branches.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "dlx_noc2",
+      "design": "dlx",
+      "macro": "ANUBIS_NOC_2",
+      "file": "dlx/quick_compare.v",
+      "top": "quick_compare_bug",
+      "execution": "leaf",
+      "scope_note": "Comparison rewrite; ORIGINAL undefined default output is retained.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "dlx_noc3",
+      "design": "dlx",
+      "macro": "ANUBIS_NOC_3",
+      "file": "dlx/regfile.v",
+      "top": "rf_bug",
+      "execution": "out_of_scope",
+      "scope_note": "Assignment spelling change inside initialized register file.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "fpu_noc0",
+      "design": "fpu",
+      "macro": "ANUBIS_NOC_0",
+      "file": "fpu/rtl/fp_lead0.v",
+      "top": "fp_lead0",
+      "execution": "leaf",
+      "scope_note": "NOC label is not an equivalence guarantee: normalized output is complemented when Fast=0.",
+      "parameters": [
+        {
+          "Bits": 64,
+          "Fast": 0
+        },
+        {
+          "Bits": 64,
+          "Fast": 1
+        }
+      ]
+    },
+    {
+      "id": "fpu_noc1",
+      "design": "fpu",
+      "macro": "ANUBIS_NOC_1",
+      "file": "fpu/rtl/fp_lead0_p0.v",
+      "top": "fp_lead0_p0",
+      "execution": "leaf",
+      "scope_note": "NOC label is not an equivalence guarantee: inequality changed to equality.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "fpu_noc2",
+      "design": "fpu",
+      "macro": "ANUBIS_NOC_2",
+      "file": "fpu/rtl/fp_shift0.v",
+      "top": "fp_shift0",
+      "execution": "leaf",
+      "scope_note": "NOC label is not an equivalence guarantee: Left generate condition inverted.",
+      "parameters": [
+        {
+          "Left": 0
+        },
+        {
+          "Left": 1
+        }
+      ]
+    },
+    {
+      "id": "fpu_noc3",
+      "design": "fpu",
+      "macro": "ANUBIS_NOC_3",
+      "file": "fpu/rtl/fp_shift1.v",
+      "top": "fp_shift1",
+      "execution": "leaf",
+      "scope_note": "NOC label is not an equivalence guarantee: left shift 32 changed to 30.",
+      "parameters": [
+        {
+          "Left": 0
+        },
+        {
+          "Left": 1
+        }
+      ]
+    },
+    {
+      "id": "fpu_noc4",
+      "design": "fpu",
+      "macro": "ANUBIS_NOC_4",
+      "file": "fpu/rtl/fp_shift1.v",
+      "top": "fp_shift1",
+      "execution": "leaf",
+      "scope_note": "NOC label is not an equivalence guarantee: left shift 40 changed to 20.",
+      "parameters": [
+        {
+          "Left": 0
+        },
+        {
+          "Left": 1
+        }
+      ]
+    },
+    {
+      "id": "fpu_noc5",
+      "design": "fpu",
+      "macro": "ANUBIS_NOC_5",
+      "file": "fpu/rtl/fp_sqrt64.v",
+      "top": "fp_sqrt64",
+      "execution": "out_of_scope",
+      "scope_note": "Combinational expression rewrite inside clocked handshake/stage hierarchy; no state-cut extraction in this experiment.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "fpu_noc6",
+      "design": "fpu",
+      "macro": "ANUBIS_NOC_6",
+      "file": "fpu/rtl/fp_lead0_p1.v",
+      "top": "fp_lead0_p1",
+      "execution": "leaf",
+      "scope_note": "NOC label is not an equivalence guarantee: shift amount slice changed.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "mor1kx_noc0",
+      "design": "mor1kx",
+      "macro": "ANUBIS_NOC_0",
+      "file": "mor1kx/rtl/verilog/mor1kx_cpu.v",
+      "top": "mor1kx_cpu",
+      "execution": "out_of_scope",
+      "scope_note": "Constant spelling change in stateful CPU hierarchy.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "mor1kx_noc1",
+      "design": "mor1kx",
+      "macro": "ANUBIS_NOC_1",
+      "file": "mor1kx/rtl/verilog/mor1kx_fetch_espresso.v",
+      "top": "mor1kx_fetch_espresso",
+      "execution": "out_of_scope",
+      "scope_note": "Comment-only change inside clocked fetch module.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "mor1kx_noc2",
+      "design": "mor1kx",
+      "macro": "ANUBIS_NOC_2",
+      "file": "mor1kx/rtl/verilog/mor1kx_ctrl_cappuccino.v",
+      "top": "mor1kx_ctrl_cappuccino",
+      "execution": "out_of_scope",
+      "scope_note": "Generate-loop rewrite inside clocked controller.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "mor1kx_noc3",
+      "design": "mor1kx",
+      "macro": "ANUBIS_NOC_3",
+      "file": "mor1kx/rtl/verilog/mor1kx_branch_predictor_simple.v",
+      "top": "mor1kx_branch_predictor_simple",
+      "execution": "leaf",
+      "scope_note": "Factor combinational expression into two wires.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "mor1kx_noc4",
+      "design": "mor1kx",
+      "macro": "ANUBIS_NOC_4",
+      "file": "mor1kx/rtl/verilog/mor1kx_dmmu.v",
+      "top": "mor1kx_dmmu",
+      "execution": "out_of_scope",
+      "scope_note": "Rename a signal in stateful MMU and reload control.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "mor1kx_noc5",
+      "design": "mor1kx",
+      "macro": "ANUBIS_NOC_5",
+      "file": "mor1kx/rtl/verilog/mor1kx_icache.v",
+      "top": "mor1kx_icache",
+      "execution": "out_of_scope",
+      "scope_note": "Merge conditions of sequential assignment in cache FSM.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "mor1kx_noc6",
+      "design": "mor1kx",
+      "macro": "ANUBIS_NOC_6",
+      "file": "mor1kx/rtl/verilog/mor1kx_pic.v",
+      "top": "mor1kx_pic",
+      "execution": "out_of_scope",
+      "scope_note": "Comment-only change inside clocked interrupt controller.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "or1200_noc0",
+      "design": "or1200",
+      "macro": "ANUBIS_NOC_0",
+      "file": "or1200/rtl/verilog/or1200_ic_fsm.v",
+      "top": "or1200_ic_fsm",
+      "execution": "out_of_scope",
+      "scope_note": "Comment-only change inside clocked cache FSM.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "or1200_noc1",
+      "design": "or1200",
+      "macro": "ANUBIS_NOC_1",
+      "file": "or1200/rtl/verilog/or1200_fpu.v",
+      "top": "or1200_fpu",
+      "execution": "out_of_scope",
+      "scope_note": "Rename shift-register state in FPU module.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "or1200_noc2",
+      "design": "or1200",
+      "macro": "ANUBIS_NOC_2",
+      "file": "or1200/rtl/verilog/or1200_defines.v",
+      "top": null,
+      "execution": "out_of_scope",
+      "scope_note": "Configuration macro definition in header; requires design context, no standalone leaf.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "or1200_noc3",
+      "design": "or1200",
+      "macro": "ANUBIS_NOC_3",
+      "file": "or1200/rtl/verilog/or1200_cpu.v",
+      "top": "or1200_cpu",
+      "execution": "out_of_scope",
+      "scope_note": "AND with constant one in stateful CPU hierarchy.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "or1200_noc4",
+      "design": "or1200",
+      "macro": "ANUBIS_NOC_4",
+      "file": "or1200/rtl/verilog/or1200_pic.v",
+      "top": "or1200_pic",
+      "execution": "out_of_scope",
+      "scope_note": "Conditional declaration under configuration guard in clocked controller.",
+      "parameters": [
+        {}
+      ]
+    },
+    {
+      "id": "or1200_noc5",
+      "design": "or1200",
+      "macro": "ANUBIS_NOC_5",
+      "file": "or1200/rtl/verilog/or1200_pm.v",
+      "top": "or1200_pm",
+      "execution": "out_of_scope",
+      "scope_note": "Boolean rewrite in clocked power-management module.",
+      "parameters": [
+        {}
+      ]
+    }
+  ]
+}

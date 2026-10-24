@@ -15,8 +15,7 @@ import uuid
 
 from yosys_flow.common import PIN, digest, require, require_combinational, token, unescape, write_json
 from yosys_flow.contracts import ContractContext
-from yosys_flow.hierarchy import electrical_design
-from . import rtlil, replace
+from . import rtlil, replace, equivalence
 from .failures import classify
 
 
@@ -230,6 +229,48 @@ def expanded(scopes,top):
     return sorted(s for s in parents if not any(s.startswith(p+'/') for p in parents if p!=s))
 
 
+def reuse_archived(context,args,out,report,frozen_inputs,had_changes):
+    """All changes have universal leaf proofs in unchanged instance contexts.
+
+    Reuse the original hierarchy and bytes. The saved baseline validation and
+    compositional proof replace a fresh full synth; no internal signal match is
+    assumed and no source precision is upgraded.
+    """
+    require(all(digest(p)==h for p,h in frozen_inputs.items()),'new input or frontend changed during automatic run')
+    if had_changes:
+        precheck=report['equivalence_precheck']
+        require(precheck.get('whole_reuse_context',{}).get('verified') is True,
+                'whole-netlist reuse requires a defined binary context')
+        require(sorted(r['instance'] for r in precheck['checks'])==sorted(r['instance'] for r in report['changes']),
+                'whole-netlist reuse is missing a changed instance proof')
+    for row in report['equivalence_precheck']['checks']:
+        require(row['status']=='equivalent','reuse requires every changed leaf to be proven equivalent')
+        directory=Path(row['proof_directory'])
+        require(digest(directory/'report.json')==row['proof_report_sha256'],'precheck report changed')
+        proof=json.loads((directory/'report.json').read_text())
+        require(all(digest(directory/n)==h for n,h in proof['artifacts'].items()),'precheck evidence changed')
+    require(ContractContext(args.base_run).baseline==context.baseline,'baseline changed during automatic run')
+    validation=json.loads((context.directory/'validation.json').read_text())
+    require(all(validation.get('checks',{}).get(k) is True for k in
+                ('stock_flow_exact_match','stock_to_traced_equivalence','inputs_unchanged')),
+            'whole-netlist reuse requires validated original synthesis')
+    for suffix in ('json','v'):
+        name='after.'+suffix;target=out/'work'/('reused.'+suffix)
+        shutil.copyfile(context.directory/name,target)
+        require(digest(target)==context.baseline['artifacts'][name]['sha256'],'reused netlist differs from archive')
+    require(all(digest(p)==h for p,h in frozen_inputs.items()),'new input or frontend changed during automatic run')
+    for suffix in ('json','v'):(out/'work'/('reused.'+suffix)).replace(out/('incremental.'+suffix))
+    report.update(status='reused_equivalent' if had_changes else 'unchanged',selected_scopes=[],
+        selection_strategy='equivalent_leaf_reuse' if had_changes else 'structural_reuse',
+        new_full_synthesis_executed=False,local_synthesis_executed=False,
+        reuse={'cell_count':len(context.module['cells']),'netlist_view':'original_archived_hierarchy',
+               'proof_basis':'structural_context_and_all_output_leaf_SAT' if had_changes else 'structural_identity',
+               'copied_artifacts':['after.json','after.v']},
+        checks={'all_changes_accounted_for':True,'all_old_cells_reused':True,
+                'archived_netlist_bytes_identical':True,'baseline_reference_validation':True,
+                'baseline_unchanged':True,'new_inputs_unchanged':True})
+
+
 def run(args):
     out=Path(args.out).resolve();require(not out.exists(),'refusing to overwrite '+str(out));out.mkdir(parents=True)
     work=out/'work';work.mkdir();started=time.perf_counter();stage='baseline'
@@ -246,27 +287,22 @@ def run(args):
         stage='new_frontend';step=time.perf_counter()
         new,coarse,new_inputs=prepare(context,args,work)
         report['new_inputs_sha256']=new_inputs;report['new_frontend_sha256']=digest(work/'new.frontend.il')
-        frozen_inputs={**new_inputs,str(work/'new.frontend.il'):report['new_frontend_sha256']}
+        report['new_coarse_sha256']=digest(work/'new.coarse.json')
+        frozen_inputs={**new_inputs,str(work/'new.frontend.il'):report['new_frontend_sha256'],
+                       str(work/'new.coarse.json'):report['new_coarse_sha256']}
         report['timings']['new_frontend_and_scope_check_seconds']=time.perf_counter()-step
         stage='difference';step=time.perf_counter()
         difference,oc,nc=rtlil.compare(old,new,top);write_json(out/'difference.json',difference)
         report['changes']=difference['changes'];report['timings']['IR_difference_seconds']=time.perf_counter()-step
-        scopes=sorted(r['instance'] for r in difference['changes'])
+        stage='equivalence_precheck'
+        report['equivalence_precheck']=equivalence.precheck(old,new,difference,oc,nc,work,args,coarse)
+        report['timings']['equivalence_precheck_seconds']=report['equivalence_precheck']['elapsed_seconds']
+        scopes=sorted(report['equivalence_precheck']['remaining_scopes'])
+        report['remaining_changes']=[r for r in difference['changes'] if r['instance'] in scopes]
         if not scopes:
-            stage='unchanged_verification'
-            write_json(work/'base.json',electrical_design(context.trace,top))
-            replace.run_yosys(args.yosys,work,'unchanged-reference',
-                f'read_rtlil new.frontend.il\nsynth -top {top}'+(' -flatten' if context.manifest['configuration']['flatten'] else '')+'\nwrite_json reference.json')
-            replace.run_yosys(args.yosys,work,'unchanged-equivalence',replace.equivalence_script('base.json','reference.json',top))
-            replace.run_yosys(args.yosys,work,'unchanged-export','read_json base.json\nwrite_verilog -noattr unchanged.v')
-            replace.run_yosys(args.yosys,work,'unchanged-readback',
-                f'read_verilog unchanged.v\nhierarchy -top {top}\nproc\ntechmap\ncheck -assert\nwrite_json readback.json')
-            replace.run_yosys(args.yosys,work,'unchanged-readback-equivalence',replace.equivalence_script('base.json','readback.json',top))
-            require(all(digest(p)==h for p,h in frozen_inputs.items()),'new input or frontend changed during automatic run')
-            require(ContractContext(args.base_run).baseline==context.baseline,'baseline changed during automatic run')
-            shutil.copyfile(work/'base.json',out/'incremental.json');shutil.copyfile(work/'unchanged.v',out/'incremental.v')
-            report.update(status='unchanged',checks={'all_top_outputs_match_new_full_synthesis':True,
-                'all_old_cells_reused':True,'emitted_Verilog_equivalent':True,'baseline_unchanged':True})
+            stage='reuse_verification';step=time.perf_counter()
+            reuse_archived(context,args,out,report,frozen_inputs,bool(difference['changes']))
+            report['timings']['reuse_verification_seconds']=time.perf_counter()-step
         else:
             stage='region_and_binding';step=time.perf_counter()
             from . import statements
@@ -307,6 +343,7 @@ def run(args):
                 new_source=args.new_source,out=str(out/'replacement'),yosys=args.yosys,
                 additional_input_hashes=frozen_inputs))
             report.update(status='passed',selected_scopes=scopes,checks=result['checks'],splice=result['splice'])
+            report.update(new_full_synthesis_executed=True,local_synthesis_executed=True)
             report['timings']['replacement']=result['timings']
             report['timings']['incremental_candidate_ready_seconds']=report['timings']['automatic_preparation_seconds']+result['timings']['replacement_ready_seconds']
             for suffix in ('json','v'):shutil.copyfile(out/'replacement'/('incremental.'+suffix),out/('incremental.'+suffix))

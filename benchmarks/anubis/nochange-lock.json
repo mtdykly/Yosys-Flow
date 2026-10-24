@@ -1,0 +1,654 @@
+{
+  "repository": "https://github.com/masc-ucsc/anubis",
+  "commit": "93088bd3c05407ccd871e8d5067d024f812aeeaa",
+  "archive_sha256": "866755bae404ed3d04a77f6608bad3b85d51980fea12c62b8edf00d4fe458e8f",
+  "scan_scope": [
+    "alpha",
+    "dlx",
+    "fpu",
+    "mor1kx",
+    "or1200"
+  ],
+  "source_inventory": {
+    "alpha/ex_stage.v": "5cc426c2d4382d17afc6e15164c61a646ef8784ce34f022bca2923ef69d3893a",
+    "alpha/id_stage.v": "a7ba7a564b06cb4503de909bbeb4d748e101f8d6f7c2fa7c734230d72092e557",
+    "alpha/if_stage.v": "f94b265b9184b686d3fe122a06b0648636f239d869eccddeef13df927d7db8cf",
+    "alpha/mem_stage.v": "ca8e410b323e764812ae400d0f09cba9c9a2da660ed7be16915c2dd24cfa7630",
+    "alpha/pipeline.v": "2fd6615a79f47483fe632f438257c3bfc11f6b018774a3485d54f42ac2627617",
+    "alpha/regfile.v": "5709f076568b8f1a3db402b134ec6f21371c0e85e0de62791a0fc07ddf531962",
+    "alpha/sys_defs.vh": "1ca6008f47d98d5709df146555c8d134f08905bffabbf16a926b0d22a33dacf1",
+    "alpha/wb_stage.v": "c763107c8c7604226d1880500518028bd0968d71762754d7efe11ddfb28f5f13",
+    "dlx/alu.v": "3b1e90057766dc59f90c42b0aa58552d4efe49f190faef52224edad2b19a00ff",
+    "dlx/alu_control.v": "602f5394e024a3b57db5fec77b81d55e4845ff095e4dd58fd9f98e670e2ad332",
+    "dlx/bypass_ex.v": "e344e8743f53fa153990b85b00b3a6f3c951e9e6a17a6f4a628d9758afc30d58",
+    "dlx/bypass_id.v": "9e95418de55125478d7b0ed2a7dcfe2992d59397c8ccfcc9e0d32a3daba46ce6",
+    "dlx/cpu.v": "4baf293e84b70c7b504b8311750d5b569c8ff378cbd5eb0a7b01a00ce6e51434",
+    "dlx/decode.v": "7633e666ba03df7c4e21f9e931d65bff832afae6988bcea61416f19c58daeb2e",
+    "dlx/dlx_defs.v": "d05a0e7d8b5eccb50399d64d0ed8eef0501e739a1b56af759895599b78cb172e",
+    "dlx/ff.v": "845fdf5c3b39417ae2c7ff09a8d6187a787983c24d43b069c92f7c051055b9bd",
+    "dlx/globals.v": "73132446370df775e9871cd38472509a077d715160092bd16f3294ad2390496b",
+    "dlx/quick_compare.v": "8720d546fbd6aa5e170ba150b841b8345027c389c2b0fa3988f35d609512374d",
+    "dlx/regfile.v": "408d3c60554cdecf18e8454442bf34710e485ab94a60b0f0e87e7807e9a97ad4",
+    "dlx/wb_control.v": "0c147c095aeec2bd120d46ce15f38ecb2a189d6f493f3cde48e3f137cf97d152",
+    "fpu/rtl/dfuncs.h": "ef0c3fb1960c4db2d9f263cf11bf03076df02b52b39c737d310f4a75925214fb",
+    "fpu/rtl/fp_add64.v": "1a67b3b51b2ec302e3a0fd1ea5fd527d5ffe4e60c0c32879ea82d117ba11364b",
+    "fpu/rtl/fp_add64_post_comb.v": "0885d6a01de81d65b2f300db3c99a61b69fcb8cb489ef0be79a392124aa2918f",
+    "fpu/rtl/fp_busy_generator_comb.v": "7cfbf5ec6d42feeb1213c36d2480a9d3912d6303169fbdefba876de10e39c7d7",
+    "fpu/rtl/fp_denorm.v": "f6fe086fbae37599f7e38d08b374e66ed33e1a5e43b034c78c0618f0116cf136",
+    "fpu/rtl/fp_div64.v": "96eec8e2719132aa5169b777ca5f751e970ce6bedda01de26e5f5ec49c468e39",
+    "fpu/rtl/fp_div64_post_comb.v": "4be493a7ccbf3162c6702afff4050fb96974ab84ccf9b70f5e74591d13e0c9b9",
+    "fpu/rtl/fp_div64_to_64.v": "0d3b85cef29056d10a783d21abfc1003274df2c0984647e0e1eacb2e58e3eb0c",
+    "fpu/rtl/fp_divide_result_selector_comb.v": "2b551f7f405b1cff17461f3522619df20d62daa32c5d731ec5611e16da7eb546",
+    "fpu/rtl/fp_divider_selector_comb.v": "a4d63c6b193a718a67266e37d4339ace142982e8a7bc85e310e5c854a7b68b7c",
+    "fpu/rtl/fp_ex.v": "f8109ac051810db78e53b961fe9500f8e2066dd169a1a0264c85bdce5f163b30",
+    "fpu/rtl/fp_lead0.v": "4fbc34ac0f214d18f4cfb93631e85c619f02dc33903ac645c811321f99eb48f7",
+    "fpu/rtl/fp_lead0_p0.v": "5b90448c968f8e295d3cdca338be0a833b37bd44468314e45568e8144ff1562b",
+    "fpu/rtl/fp_lead0_p1.v": "1a53d06d6096c759aa68013593e2dc0911fa5775b031abfc3c60f960df203895",
+    "fpu/rtl/fp_mult64.v": "5a7e987c460236bd0f0cc5373a167156350f5c816838a56079b1612026cedc2c",
+    "fpu/rtl/fp_mult64_post_comb.v": "2e7d31043c7de7e904932ad30e65dce8ff23a40d393cf05516684190882cdc75",
+    "fpu/rtl/fp_normalize.v": "6b9b0e317dc9aae92d24fc6fe21c4cbdd0827b901fa88665b4715da7195d39ee",
+    "fpu/rtl/fp_normalize_fix.v": "4bb53471d5a7a32a4dd9ab2b3f6251d00718b61d8ce6c57afad836312b88b387",
+    "fpu/rtl/fp_normalize_fp.v": "72f6538bc822effcb029c66bb05b433c601fd098de278827c55650d4e2d85557",
+    "fpu/rtl/fp_op_predec.v": "72e3a858fd1e32d0d68b9a3877e5b4c64bcc3240821ad04583db15b1aee94ad1",
+    "fpu/rtl/fp_propagate_div.v": "c13de720ab167b445223345302f577532aa9e40f3f7872301de52f9fad390ea7",
+    "fpu/rtl/fp_propagate_nan_comb.v": "f94e4d748302fabfdf8192c922a26fe91da5d67955b59559c0f80a3b7bbb66e8",
+    "fpu/rtl/fp_result_queue.v": "b46bee6ae767d7eefc5d0761bccdc9ea6078fc137b536f02f93daf14c2efd676",
+    "fpu/rtl/fp_shift0.v": "79dc83a6e9d350beb6e8bcb39ec22388b4706c457b79231b5d3d1ace75bbcb97",
+    "fpu/rtl/fp_shift1.v": "5fd230f72c95ba0e9914efc8243ecbf93e109a996c24316d41d38b7d19ab739d",
+    "fpu/rtl/fp_sqrt64.v": "8bbdc0df0ee2fcb559924d0552ce813bac0a6954d4b6bcc3b225a0766814e322",
+    "fpu/rtl/fp_sqrt64_post_comb.v": "97b7441793818d44e110f89089286567acca46f15297069436ff2cb52769e6ca",
+    "fpu/rtl/fpu.v": "ca954dfe120df2a4334cbcf5f0417570e4d7b277c58b6aa27b32db5485b115d4",
+    "fpu/rtl/register.v": "73a31d8b4b92b438ce8e4368f0c60df9168c18327841a2bbdfbc8f5229c71a4c",
+    "fpu/rtl/scoore_fpu.h": "835486236a198de7a83164ce7c7de0351cb4991f90b6216c7f4b22aeda2768a7",
+    "fpu/rtl/scoore_fpu.v": "c8d47a4121b54031ff74d8f0d21be8e2de3a13394721ac3ff14000dd422c8807",
+    "fpu/rtl/stage.v": "7624b93234f8ad92ea603a05703ca27062b380d17ad9fed6439af9aa47626e2d",
+    "fpu/rtl/stage_flop_retry.v": "50a338e83bf9709a6840356435abdb8da4651252b1d33567f39c6f48caf53edf",
+    "fpu/tests/SoftFloat/bigendian/milieu.h": "1e9772c28ca206b17a205724662c693c500fe6342988f71b7ad9fba6d9d671a0",
+    "fpu/tests/SoftFloat/bigendian/softfloat.h": "b38c1561a3a4f2d02c79846bac34c6fc66b5da51068abe5fed2bc3aaeef80110",
+    "fpu/tests/SoftFloat/littleendian/milieu.h": "58a168aa1475e120af2d5570ac9ac396612a8ab6db7f626648dbb6cf1acaa170",
+    "fpu/tests/SoftFloat/littleendian/softfloat.h": "e9ca1c2d77f77e46952b0cec70fbd0859699f69493815ab91cd286d1644e4d3b",
+    "fpu/tests/fpu_tb.v": "82cbf52c798bf9e02961308ee209bc343863525ef0ff6f19bcb2ce6671a7cde2",
+    "mor1kx/bench/verilog/mor1kx_monitor.v": "74055a16eceb17135ddf70c37bae5355750f310ca07418f9e914be0bcc18b2e0",
+    "mor1kx/bench/verilog/mor1kx_traceport_monitor.v": "b272e5c350813a437636b6c876573a5236442bc0b674a1652aeb5e09122ff109",
+    "mor1kx/rtl/verilog/mor1kx-defines.v": "d0655fb1874d9218333e6b477cb86a02ff66236ca7edfba47bed4bebaf194e24",
+    "mor1kx/rtl/verilog/mor1kx-sprs.v": "8f9534b8dae8a3b533417237de1f235343758f5adbf8303d074bbf2723af4095",
+    "mor1kx/rtl/verilog/mor1kx.v": "08180eaf9628be14b2740e15647704cb7c228a0c53d58cc2338c9353eed1a451",
+    "mor1kx/rtl/verilog/mor1kx_branch_prediction.v": "1b3c05d78fc14beb56af3763ddf8c3824aa2acb226681427d740787a32bdab96",
+    "mor1kx/rtl/verilog/mor1kx_branch_predictor_saturation_counter.v": "97dd9c65dd6c9f8d45f5a94b258e04ff97675df86f4cb51f0052cd9939956b35",
+    "mor1kx/rtl/verilog/mor1kx_branch_predictor_simple.v": "6d1f025d43038daec0460ca047c689a0a95a35e720666810f1ea0ef187ef2413",
+    "mor1kx/rtl/verilog/mor1kx_bus_if_wb32.v": "8028a6415329ccca1506973995ed8e18f9498f3f2100a8e5028ea89a996464e7",
+    "mor1kx/rtl/verilog/mor1kx_cache_lru.v": "2a3a5928794d88ac6a0533f5a82b62a0a89b700bb15e91fb72641da90c586fb6",
+    "mor1kx/rtl/verilog/mor1kx_cfgrs.v": "17bfb332b1cb2dd895c582076be8bf8345febe10bf4e7674e87493d458cc24bc",
+    "mor1kx/rtl/verilog/mor1kx_cpu.v": "ee9f4793a234577f56836debe91f43dbc58eefd87e5e6e62b8f2d2d4ce4729fd",
+    "mor1kx/rtl/verilog/mor1kx_cpu_cappuccino.v": "13f3105270246558314fdb221a9c25e6bea89e141e66d05c2a3ba020d2f17786",
+    "mor1kx/rtl/verilog/mor1kx_cpu_espresso.v": "82bb3ae9b62fc57992fe59316ab22336a0aa4860485cdb97067bf092c454c472",
+    "mor1kx/rtl/verilog/mor1kx_cpu_prontoespresso.v": "df45bb6b11b13f2239dd7cff84629d0c1e3da30a23e00445b9c91e402ab4581c",
+    "mor1kx/rtl/verilog/mor1kx_ctrl_cappuccino.v": "fb723842d9b0aaffe5aa3e32b3bfa77f1923796784943360944bdcf0b855e0ed",
+    "mor1kx/rtl/verilog/mor1kx_ctrl_espresso.v": "2d6bc84ba345c9fc26e2c9d3484fef67649be2b5bfce4b5147920d5d35e70f0e",
+    "mor1kx/rtl/verilog/mor1kx_ctrl_prontoespresso.v": "fcbb47acbe65721699efaf8615e84144fc69ff3f85a3f99fffc58d0026862a1a",
+    "mor1kx/rtl/verilog/mor1kx_dcache.v": "d0a0d3f3c2f151a0434a7059a757154596f0287a8c82edb450f101a4893b193a",
+    "mor1kx/rtl/verilog/mor1kx_decode.v": "00e7e132f48100b4e0cd600985ad4181b6355140030720d1e12cfb764a11112f",
+    "mor1kx/rtl/verilog/mor1kx_decode_execute_cappuccino.v": "2927eba2e87bf7a5570569fe526c79382abceb4a98921e03180a1a4a7293d446",
+    "mor1kx/rtl/verilog/mor1kx_dmmu.v": "4fe42071e48fd47478015fe756bf277314b0e966e10ae43adcee4d46da3c4b5c",
+    "mor1kx/rtl/verilog/mor1kx_execute_alu.v": "6f5698a713345c6a1c5d5721ebec68c0f619ede907f9e8d02459becce13f222d",
+    "mor1kx/rtl/verilog/mor1kx_execute_ctrl_cappuccino.v": "c0a023166822577964eb51ddf83fee0ae063e6ffe9b91825d62de2925c1c175a",
+    "mor1kx/rtl/verilog/mor1kx_fetch_cappuccino.v": "050664925f1804803756f74cce104f59d4acf1525ab3cdb3bd282afe57a4f778",
+    "mor1kx/rtl/verilog/mor1kx_fetch_espresso.v": "3ee902e530e2b55d381d3009b9d99789d412f8eb267ae6b91cc730992004c4de",
+    "mor1kx/rtl/verilog/mor1kx_fetch_prontoespresso.v": "ca2e21ac240a66a42af692bce4114b5cd8be17d5adbacbaf2e69b2e668afc673",
+    "mor1kx/rtl/verilog/mor1kx_fetch_tcm_prontoespresso.v": "63a62cc5da1eb02eb881c06f19f62eb88ce3756b9e2ec34b8a9cc393db47ef09",
+    "mor1kx/rtl/verilog/mor1kx_icache.v": "6c64868f2a3a2ac798d4d4246224d48e5da4b3f62a16143b1e7191c68bdd5a3a",
+    "mor1kx/rtl/verilog/mor1kx_immu.v": "08374f0c716cad78d05af13941091dea68a6fec9b8214513e6c39b323ff97458",
+    "mor1kx/rtl/verilog/mor1kx_lsu_cappuccino.v": "efa2b5de3c73d0ce65564e8061f03b2e8e99c71e83d80c7b9e5d40b9b6fa5330",
+    "mor1kx/rtl/verilog/mor1kx_lsu_espresso.v": "7023eb08f4ffed7746df6afcc1a6f9ef65cb5cfd080a962d150b2325ed0a1156",
+    "mor1kx/rtl/verilog/mor1kx_pic.v": "b4017bb6143899dffdf23fea0f7641ec1665dbd8c23222e8f19f3c8995b8264a",
+    "mor1kx/rtl/verilog/mor1kx_rf_cappuccino.v": "a6e31946457d33f8b2a4b78adaf758ef3c05e216d59a9aa9852a791a6413135c",
+    "mor1kx/rtl/verilog/mor1kx_rf_espresso.v": "710b672a1c3b929841c0b701b62e30dc877b94e1799fae3ce5b3cbd49641c6fc",
+    "mor1kx/rtl/verilog/mor1kx_simple_dpram_sclk.v": "0c2cd3390cbfa3739464b094b183b11a71fb49d8176273662ffd6df948caea6c",
+    "mor1kx/rtl/verilog/mor1kx_store_buffer.v": "415e3f4ab90bd1b9b9b44ff73bbfd5689f6b3c27458a4ea27352457b6ed92284",
+    "mor1kx/rtl/verilog/mor1kx_ticktimer.v": "d168bd40a04967bfa503017de1919043497b6bb07c08f2e3528475112600395b",
+    "mor1kx/rtl/verilog/mor1kx_true_dpram_sclk.v": "94223de3dee0b36eb6799fc645316bdb274c8e64fbdcb44728f0f46cc5e4324b",
+    "mor1kx/rtl/verilog/mor1kx_utils.vh": "e0cd6f04025374dd729bd8b4425fe86c49e30f83b218cba64d629c9b377fc101",
+    "mor1kx/rtl/verilog/mor1kx_wb_mux_cappuccino.v": "8f6fc441c3a48fa2544c2a0c558815a3d655649855c55bbf666265f75c95f048",
+    "mor1kx/rtl/verilog/mor1kx_wb_mux_espresso.v": "6a8c071388f6ed06f7ad63ddbf5bd7e7f1bb38266791414a5594ce07bb107170",
+    "mor1kx/rtl/verilog/pfpu32/pfpu32_addsub.v": "bd620cc2e4ee1bbcebc1827e98466d89e01fab0766cda4c75b48a06634472755",
+    "mor1kx/rtl/verilog/pfpu32/pfpu32_cmp.v": "3839db2bb5b1d375d5938cfe9bf04d5b2d6e01d59f3214e9d506a4ec2a4e73ac",
+    "mor1kx/rtl/verilog/pfpu32/pfpu32_f2i.v": "7b8f0671e6213a9926c7b651478fc7acfff127c388e00c5fa6b85f8f6c18b413",
+    "mor1kx/rtl/verilog/pfpu32/pfpu32_i2f.v": "e056db1b02aa09f3215bf83d4e1049693078941047a68cde6ebcefd4f227eb29",
+    "mor1kx/rtl/verilog/pfpu32/pfpu32_muldiv.v": "9e444eb54227f5271b6a6482750ceeca8d282b492df87dcbe3a2d24a6be203ae",
+    "mor1kx/rtl/verilog/pfpu32/pfpu32_rnd.v": "951311febfd587d3f2c874702be41d2420afc2f2a3c933f2b1cabe536191fbc4",
+    "mor1kx/rtl/verilog/pfpu32/pfpu32_top.v": "d925f21a111579df55bdb08286440a2a4a08a4264b9a74eabb43595a90b68d3e",
+    "or1200/bench/or1200_monitor.v": "4fc9e583c162902c5bc363d2818c4b6aa056bfae09be1792ccc541210435bd0d",
+    "or1200/bench/or1200_monitor_defines.v": "2e98d8897c47f048b0b108400e5f1ccd43b5ec8e6ee33c0357053f0bb01aa62d",
+    "or1200/rtl/verilog/or1200_alu.v": "b7d3994a9aed5bcbbd6b5ccda20d38a2330ec218f4822200cbd5dd97d8f8786e",
+    "or1200/rtl/verilog/or1200_amultp2_32x32.v": "f41fe29cb510a3ded47368ad7dd9a51f8f59d78d8fb562ae6e661aee63763dfa",
+    "or1200/rtl/verilog/or1200_cfgr.v": "07141ba4cc8052f5ed0e6ee1374b33216a8a3ce69c5198edfe511cec7e8569e8",
+    "or1200/rtl/verilog/or1200_cpu.v": "5f4cfccdfc024757057df9858b5403fc3cf515e42dd51693bcb311be31abfd36",
+    "or1200/rtl/verilog/or1200_ctrl.v": "f69aec8ed9aa9810b5748545de0ad87441e30d243878bf386638c19517543540",
+    "or1200/rtl/verilog/or1200_dc_fsm.v": "185d75d26dec8d0b565d70333b563ef13640a4ea1bcadb8ea0d87251ea4460e1",
+    "or1200/rtl/verilog/or1200_dc_ram.v": "a8186b941017e49f500b444fbdfdaabe3f37f54ca68faf0540f3d7f465705d4f",
+    "or1200/rtl/verilog/or1200_dc_tag.v": "31f48df5a567d28c4fdc1c7224f0686819d8574ed848bbf43e4c1b7a00df66d9",
+    "or1200/rtl/verilog/or1200_dc_top.v": "1c8eee6a8ce9ec8a2423f77849d57e4381fcc1f23f803403a5c8ec58ca2b277a",
+    "or1200/rtl/verilog/or1200_defines.v": "07d4ccaa2236d40f620680b218fd01e1a9d21f0de8353401f246a90d6d8b6ffe",
+    "or1200/rtl/verilog/or1200_dmmu_tlb.v": "140d09a6d93091a727d97483cd0112ce515cdcd71973b113a8a076f08b9ccddc",
+    "or1200/rtl/verilog/or1200_dmmu_top.v": "3a2590f402c23a2eab975bef09426ce7b715ae09d6235ce9b95a106a85009851",
+    "or1200/rtl/verilog/or1200_dpram.v": "8895909b90f03b60865b8ad494f10d5862f08a1ccfc5452953d1d3777a52b576",
+    "or1200/rtl/verilog/or1200_dpram_256x32.v": "b1f0a9cecac6e815f6710f99396912e99b476d7e12d102907839d0b9458e6e5a",
+    "or1200/rtl/verilog/or1200_dpram_32x32.v": "dbea1e28659acbfa9fa046d9ac2380b0052b873b3b5c203489b377c4755529d4",
+    "or1200/rtl/verilog/or1200_du.v": "f5730ef810932c9f7f52f71388ec6d070e813457a43f6985064e444a5f168f23",
+    "or1200/rtl/verilog/or1200_except.v": "1dfb93f83e19a5009a7469f30538a2d4cbe87095e9ea3070ee6f88d02d64cc13",
+    "or1200/rtl/verilog/or1200_fpu.v": "3ab8a29103106ad10d2fc6cccde900df6e1936dc8a44f8afdac10c26fa7f6cba",
+    "or1200/rtl/verilog/or1200_fpu_addsub.v": "6c3268e64b9c2890a35f45f06a74b4410cca537f4291bacbeb5ab56005ee04eb",
+    "or1200/rtl/verilog/or1200_fpu_arith.v": "23f1656e2e9ae3bc85a39bf563c424d1ef61e35040f81ec731f24eb7e1165b1a",
+    "or1200/rtl/verilog/or1200_fpu_div.v": "38a32e4f619b8706813eab3e65de642e73931dc94a70c8962494164a46b1b32d",
+    "or1200/rtl/verilog/or1200_fpu_fcmp.v": "b5b6e92913faefac5165d5afbc2780ca70207b295f5ca98c57d18f1fdf0234ad",
+    "or1200/rtl/verilog/or1200_fpu_intfloat_conv.v": "f5a63a7c3ab0dadfd5630a141df248771a22c892cc257c3a8e8fce6ea4e8e75b",
+    "or1200/rtl/verilog/or1200_fpu_intfloat_conv_except.v": "2446e6d6d327e3b278fec949a898c30cf8a260863774a58b559a9fbc1a6d757a",
+    "or1200/rtl/verilog/or1200_fpu_mul.v": "b80b515c9962cd91f5fe16942a54d4bedc933dc9e992780426312d90ed02ff17",
+    "or1200/rtl/verilog/or1200_fpu_post_norm_addsub.v": "a790b85e7282278c801f2d6d254df81b8bbff711697f7df935f58a9347461d31",
+    "or1200/rtl/verilog/or1200_fpu_post_norm_div.v": "d29fcb9419b0c2962161ce55614e1380185ae6999fd03f7f4257d795db501fb2",
+    "or1200/rtl/verilog/or1200_fpu_post_norm_intfloat_conv.v": "efc2c5255e80a045a936b863eb7d9140934668e33825af2ad08968db72f83050",
+    "or1200/rtl/verilog/or1200_fpu_post_norm_mul.v": "aee4a5e6451a8cb52dd0cda4e8bdaa75af3d7332bc8cddb99cf7b48e740267f4",
+    "or1200/rtl/verilog/or1200_fpu_pre_norm_addsub.v": "f43acaf561180f077fc60ef669a1167dc98ae9a090d1ec218708fdb067fad8db",
+    "or1200/rtl/verilog/or1200_fpu_pre_norm_div.v": "ec091757c6902588cf8fbdcbcc346998fd1cd6316e4b06c9a2ab46b9da56d5b0",
+    "or1200/rtl/verilog/or1200_fpu_pre_norm_mul.v": "1157c40c115de020446ec5bda1fd5f99c6b72a59012eb1d9cb20cb3902b1b234",
+    "or1200/rtl/verilog/or1200_freeze.v": "2e6a839ce6a0d2b5e84e6ba3dff1c3db531f18e646d614b9cc1e6978b51dda13",
+    "or1200/rtl/verilog/or1200_genpc.v": "fb385f7a5ec4e1d6c9d9575b47bffb88128274748a11be12b365c67853fa4d56",
+    "or1200/rtl/verilog/or1200_gmultp2_32x32.v": "2fd9b1f4f4fea5634bef8d3c29f0ca1951e2e500c2cb5336ee225e623670b14c",
+    "or1200/rtl/verilog/or1200_ic_fsm.v": "44962361efed4a205f7d6fbacffb84147ad6412e9755abddd380fa8928ac166b",
+    "or1200/rtl/verilog/or1200_ic_ram.v": "acb82e13c8e9e7690b6551744adb294903e4aebb78e11abe395a12829186ccf3",
+    "or1200/rtl/verilog/or1200_ic_tag.v": "cdf1bc7333c83074999fb70936d9da4a270e8a275f9e382028f4c2d099dd7a36",
+    "or1200/rtl/verilog/or1200_ic_top.v": "3c2ec22e6db1aef389d6cff790030bb9b6dfab05274def85cb34549b8ad901ad",
+    "or1200/rtl/verilog/or1200_if.v": "798584ed01e56ffb78c4ad9d35fea13748a4d3b822f723454aaf5b571a6569b3",
+    "or1200/rtl/verilog/or1200_immu_tlb.v": "3a351dd8daeb033c9052859b27853d7d825270cad19061b4dbb5c19b3f1ccdc3",
+    "or1200/rtl/verilog/or1200_immu_top.v": "6122569cad337bc33f29cdcf2204c3b4e9cd8326df0d1de53bef238efb77310d",
+    "or1200/rtl/verilog/or1200_iwb_biu.v": "232e4afeff57d5cab14cc9b2da15220846376d0940f4ca924799d52feb6e027d",
+    "or1200/rtl/verilog/or1200_lsu.v": "c2f43014cce4eaba8358b31c63c3c457b72a9165b9c0d88b64530edd213fe532",
+    "or1200/rtl/verilog/or1200_mem2reg.v": "b6375ac18f33d43c7f2bcbb56b77c173b7a641af347b1ba8c9c665ff76c6c479",
+    "or1200/rtl/verilog/or1200_mult_mac.v": "bdbe8fc121cfee987f81b7f266b9253fceb0781a712d0ddc831d580f18234740",
+    "or1200/rtl/verilog/or1200_operandmuxes.v": "7f755d4e55df81cc7dcb1d1f926365c7ac7ebf965f55dabccc840a0c91f5bb7e",
+    "or1200/rtl/verilog/or1200_pic.v": "d67fe71e5f89d6cb086dff1185123beb6248f99c87259ea13d2591d4c3dba065",
+    "or1200/rtl/verilog/or1200_pm.v": "ca8da9366c68e501d086acf9e1e73be8eb2e4c42dcb54af974cdbf2a0e34b171",
+    "or1200/rtl/verilog/or1200_qmem_top.v": "aca9ef8897f792d91db5b29103648214389122b8ff69820105b87972644f6073",
+    "or1200/rtl/verilog/or1200_reg2mem.v": "681885b1903f1bae38f43e42a56d62bc4b75eabc19acbbcae3f11a9a6cfc1205",
+    "or1200/rtl/verilog/or1200_rf.v": "1f98edbe31abd8ed8640cbcaac53fbb3063d5d20c117b0296edadf7d4fc4db18",
+    "or1200/rtl/verilog/or1200_rfram_generic.v": "c7b521dce51b8dd8e28a44601cc42e2f64161b799f8a9028b0f121ff47f10686",
+    "or1200/rtl/verilog/or1200_sb.v": "6b6f9ecfdf2e8fdc48a22597c36a70c4fd416f08cfa02eec1e0fd72b53e1c7f0",
+    "or1200/rtl/verilog/or1200_sb_fifo.v": "8f6cc97f59c107fb945b8ccaccd0ef6472579c669712f6f258fd4042bcd9873e",
+    "or1200/rtl/verilog/or1200_spram.v": "158b52c4d99a51bc0748359f31c61731f090a2f84ddfd4f06b058b2762b506b5",
+    "or1200/rtl/verilog/or1200_spram_1024x32.v": "10d54b5b190c87bfb593925f95d887f1bda72ee107a8b7936fff6a50de078caf",
+    "or1200/rtl/verilog/or1200_spram_1024x32_bw.v": "cac01ef42f92f7236e4746a5b590166d6a105d69383af5ffdf4e128d2b117e45",
+    "or1200/rtl/verilog/or1200_spram_1024x8.v": "b264585e30aad20bc579d7af54c80aee0f634aed9ce844952d6511ff34b06ab6",
+    "or1200/rtl/verilog/or1200_spram_128x32.v": "40d53d4cebf7a3de880aa96b92672debadea46035475328ff22436b562f5a0bb",
+    "or1200/rtl/verilog/or1200_spram_2048x32.v": "8178de18e6f4943578118faec6ce8bb5b049bf425b1d0db6e32db26c2a1e001b",
+    "or1200/rtl/verilog/or1200_spram_2048x32_bw.v": "4941a6f47aee6c037dae626ddd4f1d9686f8ab94b63ec4ce4298b27522357330",
+    "or1200/rtl/verilog/or1200_spram_2048x8.v": "d88c7c39b0feb93802a3cce2372d8073896b3266c7f859f04a69909b780e339b",
+    "or1200/rtl/verilog/or1200_spram_256x21.v": "2d92505dfeb424f3fdbe837ce98f5fc983ea5c8fbf8ddbb7dfe46b8d1a79c725",
+    "or1200/rtl/verilog/or1200_spram_32_bw.v": "813a52462de6f933f7ef42a391a7b81461ddbee963666c6b4bf0b36ecd08edfb",
+    "or1200/rtl/verilog/or1200_spram_32x24.v": "1b684082b641d61a43facaf5aa627bbc79805ca7dac28ce4136ff19dc44369e6",
+    "or1200/rtl/verilog/or1200_spram_512x20.v": "6082c3f376b5dacff4ba58c2cd255948ae5ec888b49777c07363909686199c21",
+    "or1200/rtl/verilog/or1200_spram_64x14.v": "5c3063cc38ce3b4a14a9a546c4f334dbd8f4720712c3beac50916c60879e9a57",
+    "or1200/rtl/verilog/or1200_spram_64x22.v": "06ffcdaef484af66f30b17fa84cb654819b94c0339d802440cee349faef6d5c3",
+    "or1200/rtl/verilog/or1200_spram_64x24.v": "3ba74710fa665982f81f665ac67b8380fde7b2b0d15f9e66f0b722a1495ebf18",
+    "or1200/rtl/verilog/or1200_sprs.v": "2a2d3fe249540d190501248f8fb6466204fa6c2b4e13d41fe785c5eab4bf8b1f",
+    "or1200/rtl/verilog/or1200_top.v": "0f47b603999371806de7ea3adc06eb81b70bcbb55c98979d959ed5ad36dada58",
+    "or1200/rtl/verilog/or1200_tpram_32x32.v": "7825823232ba474feb86ad50d854f99a929166d9c4933dec3a47870b03604ba4",
+    "or1200/rtl/verilog/or1200_tt.v": "f79126aa918adaaa3793402484a32c9cb563e1b9807fccf245e5678e765b5fa4",
+    "or1200/rtl/verilog/or1200_wb_biu.v": "fa2a3292e4ca2d02de2cb4470f759186514b3020db797c591d9fa6bf60a315f6",
+    "or1200/rtl/verilog/or1200_wbmux.v": "4d1d172777cc737cd956adebb0c5f4ecf671e5738d0163c7749ae74b7a920e6a",
+    "or1200/rtl/verilog/or1200_xcv_ram32x8d.v": "3da23631ab5fee2223632b29ed458269317214c7f92e1688b0fcbfe3924cae19",
+    "or1200/rtl/verilog/timescale.v": "2d9c43f0ce8d1d088ecde127ddbef39445b57a2b514ea3736de13a3d32619c1f"
+  },
+  "files": {
+    "LICENSE": "704cebf79052113f84f051f61be8f622556ca54600a1f744910e2f67155746c5",
+    "README.md": "a6493c84ee9f4519fdb08e5b7888d397083652b421426fe2e05803a65dea576b",
+    "alpha/ex_stage.v": "5cc426c2d4382d17afc6e15164c61a646ef8784ce34f022bca2923ef69d3893a",
+    "alpha/id_stage.v": "a7ba7a564b06cb4503de909bbeb4d748e101f8d6f7c2fa7c734230d72092e557",
+    "alpha/pipeline.v": "2fd6615a79f47483fe632f438257c3bfc11f6b018774a3485d54f42ac2627617",
+    "alpha/regfile.v": "5709f076568b8f1a3db402b134ec6f21371c0e85e0de62791a0fc07ddf531962",
+    "alpha/sys_defs.vh": "1ca6008f47d98d5709df146555c8d134f08905bffabbf16a926b0d22a33dacf1",
+    "alpha/wb_stage.v": "c763107c8c7604226d1880500518028bd0968d71762754d7efe11ddfb28f5f13",
+    "dlx/bypass_ex.v": "e344e8743f53fa153990b85b00b3a6f3c951e9e6a17a6f4a628d9758afc30d58",
+    "dlx/bypass_id.v": "9e95418de55125478d7b0ed2a7dcfe2992d59397c8ccfcc9e0d32a3daba46ce6",
+    "dlx/dislaimer": "9adec473e64e19c0a97f44039bbb24612c9748e5a10bf90d7d6122bfa43e7fc0",
+    "dlx/dlx_defs.v": "d05a0e7d8b5eccb50399d64d0ed8eef0501e739a1b56af759895599b78cb172e",
+    "dlx/quick_compare.v": "8720d546fbd6aa5e170ba150b841b8345027c389c2b0fa3988f35d609512374d",
+    "dlx/regfile.v": "408d3c60554cdecf18e8454442bf34710e485ab94a60b0f0e87e7807e9a97ad4",
+    "fpu/rtl/dfuncs.h": "ef0c3fb1960c4db2d9f263cf11bf03076df02b52b39c737d310f4a75925214fb",
+    "fpu/rtl/fp_lead0.v": "4fbc34ac0f214d18f4cfb93631e85c619f02dc33903ac645c811321f99eb48f7",
+    "fpu/rtl/fp_lead0_p0.v": "5b90448c968f8e295d3cdca338be0a833b37bd44468314e45568e8144ff1562b",
+    "fpu/rtl/fp_lead0_p1.v": "1a53d06d6096c759aa68013593e2dc0911fa5775b031abfc3c60f960df203895",
+    "fpu/rtl/fp_shift0.v": "79dc83a6e9d350beb6e8bcb39ec22388b4706c457b79231b5d3d1ace75bbcb97",
+    "fpu/rtl/fp_shift1.v": "5fd230f72c95ba0e9914efc8243ecbf93e109a996c24316d41d38b7d19ab739d",
+    "fpu/rtl/fp_sqrt64.v": "8bbdc0df0ee2fcb559924d0552ce813bac0a6954d4b6bcc3b225a0766814e322",
+    "fpu/rtl/scoore_fpu.h": "835486236a198de7a83164ce7c7de0351cb4991f90b6216c7f4b22aeda2768a7",
+    "mor1kx/LICENSE": "0bf06350b0970949b796166cc91966e35ffe334beb93d0b5b139f3db1d87493c",
+    "mor1kx/rtl/verilog/mor1kx-defines.v": "d0655fb1874d9218333e6b477cb86a02ff66236ca7edfba47bed4bebaf194e24",
+    "mor1kx/rtl/verilog/mor1kx-sprs.v": "8f9534b8dae8a3b533417237de1f235343758f5adbf8303d074bbf2723af4095",
+    "mor1kx/rtl/verilog/mor1kx_branch_predictor_simple.v": "6d1f025d43038daec0460ca047c689a0a95a35e720666810f1ea0ef187ef2413",
+    "mor1kx/rtl/verilog/mor1kx_cpu.v": "ee9f4793a234577f56836debe91f43dbc58eefd87e5e6e62b8f2d2d4ce4729fd",
+    "mor1kx/rtl/verilog/mor1kx_ctrl_cappuccino.v": "fb723842d9b0aaffe5aa3e32b3bfa77f1923796784943360944bdcf0b855e0ed",
+    "mor1kx/rtl/verilog/mor1kx_dmmu.v": "4fe42071e48fd47478015fe756bf277314b0e966e10ae43adcee4d46da3c4b5c",
+    "mor1kx/rtl/verilog/mor1kx_fetch_espresso.v": "3ee902e530e2b55d381d3009b9d99789d412f8eb267ae6b91cc730992004c4de",
+    "mor1kx/rtl/verilog/mor1kx_icache.v": "6c64868f2a3a2ac798d4d4246224d48e5da4b3f62a16143b1e7191c68bdd5a3a",
+    "mor1kx/rtl/verilog/mor1kx_pic.v": "b4017bb6143899dffdf23fea0f7641ec1665dbd8c23222e8f19f3c8995b8264a",
+    "or1200/LICENSE": "a6fc146dc22be5ff3c88fdad389a1524422bec44e0897f605bae6b9c45fe1e36",
+    "or1200/rtl/verilog/or1200_cpu.v": "5f4cfccdfc024757057df9858b5403fc3cf515e42dd51693bcb311be31abfd36",
+    "or1200/rtl/verilog/or1200_defines.v": "07d4ccaa2236d40f620680b218fd01e1a9d21f0de8353401f246a90d6d8b6ffe",
+    "or1200/rtl/verilog/or1200_fpu.v": "3ab8a29103106ad10d2fc6cccde900df6e1936dc8a44f8afdac10c26fa7f6cba",
+    "or1200/rtl/verilog/or1200_ic_fsm.v": "44962361efed4a205f7d6fbacffb84147ad6412e9755abddd380fa8928ac166b",
+    "or1200/rtl/verilog/or1200_pic.v": "d67fe71e5f89d6cb086dff1185123beb6248f99c87259ea13d2591d4c3dba065",
+    "or1200/rtl/verilog/or1200_pm.v": "ca8da9366c68e501d086acf9e1e73be8eb2e4c42dcb54af974cdbf2a0e34b171",
+    "or1200/rtl/verilog/timescale.v": "2d9c43f0ce8d1d088ecde127ddbef39445b57a2b514ea3736de13a3d32619c1f",
+    "scripts/Makefile.config": "932a126aa794b6cec6f55cce21e828c7b69c1213a4a8ffc59fbdea2f7e4a01e1",
+    "scripts/Makefile.targets": "89e4a2f40aab3a16eeaf823f53c94257aa14d6d1eff858227d5dccbb23a2052f",
+    "alpha/if_stage.v": "f94b265b9184b686d3fe122a06b0648636f239d869eccddeef13df927d7db8cf",
+    "alpha/mem_stage.v": "ca8e410b323e764812ae400d0f09cba9c9a2da660ed7be16915c2dd24cfa7630",
+    "dlx/alu.v": "3b1e90057766dc59f90c42b0aa58552d4efe49f190faef52224edad2b19a00ff",
+    "dlx/alu_control.v": "602f5394e024a3b57db5fec77b81d55e4845ff095e4dd58fd9f98e670e2ad332",
+    "dlx/cpu.v": "4baf293e84b70c7b504b8311750d5b569c8ff378cbd5eb0a7b01a00ce6e51434",
+    "dlx/decode.v": "7633e666ba03df7c4e21f9e931d65bff832afae6988bcea61416f19c58daeb2e",
+    "dlx/ff.v": "845fdf5c3b39417ae2c7ff09a8d6187a787983c24d43b069c92f7c051055b9bd",
+    "dlx/globals.v": "73132446370df775e9871cd38472509a077d715160092bd16f3294ad2390496b",
+    "dlx/wb_control.v": "0c147c095aeec2bd120d46ce15f38ecb2a189d6f493f3cde48e3f137cf97d152",
+    "fpu/rtl/fp_add64.v": "1a67b3b51b2ec302e3a0fd1ea5fd527d5ffe4e60c0c32879ea82d117ba11364b",
+    "fpu/rtl/fp_add64_post_comb.v": "0885d6a01de81d65b2f300db3c99a61b69fcb8cb489ef0be79a392124aa2918f",
+    "fpu/rtl/fp_busy_generator_comb.v": "7cfbf5ec6d42feeb1213c36d2480a9d3912d6303169fbdefba876de10e39c7d7",
+    "fpu/rtl/fp_denorm.v": "f6fe086fbae37599f7e38d08b374e66ed33e1a5e43b034c78c0618f0116cf136",
+    "fpu/rtl/fp_div64.v": "96eec8e2719132aa5169b777ca5f751e970ce6bedda01de26e5f5ec49c468e39",
+    "fpu/rtl/fp_div64_post_comb.v": "4be493a7ccbf3162c6702afff4050fb96974ab84ccf9b70f5e74591d13e0c9b9",
+    "fpu/rtl/fp_div64_to_64.v": "0d3b85cef29056d10a783d21abfc1003274df2c0984647e0e1eacb2e58e3eb0c",
+    "fpu/rtl/fp_divide_result_selector_comb.v": "2b551f7f405b1cff17461f3522619df20d62daa32c5d731ec5611e16da7eb546",
+    "fpu/rtl/fp_divider_selector_comb.v": "a4d63c6b193a718a67266e37d4339ace142982e8a7bc85e310e5c854a7b68b7c",
+    "fpu/rtl/fp_ex.v": "f8109ac051810db78e53b961fe9500f8e2066dd169a1a0264c85bdce5f163b30",
+    "fpu/rtl/fp_mult64.v": "5a7e987c460236bd0f0cc5373a167156350f5c816838a56079b1612026cedc2c",
+    "fpu/rtl/fp_mult64_post_comb.v": "2e7d31043c7de7e904932ad30e65dce8ff23a40d393cf05516684190882cdc75",
+    "fpu/rtl/fp_normalize.v": "6b9b0e317dc9aae92d24fc6fe21c4cbdd0827b901fa88665b4715da7195d39ee",
+    "fpu/rtl/fp_normalize_fix.v": "4bb53471d5a7a32a4dd9ab2b3f6251d00718b61d8ce6c57afad836312b88b387",
+    "fpu/rtl/fp_normalize_fp.v": "72f6538bc822effcb029c66bb05b433c601fd098de278827c55650d4e2d85557",
+    "fpu/rtl/fp_op_predec.v": "72e3a858fd1e32d0d68b9a3877e5b4c64bcc3240821ad04583db15b1aee94ad1",
+    "fpu/rtl/fp_propagate_div.v": "c13de720ab167b445223345302f577532aa9e40f3f7872301de52f9fad390ea7",
+    "fpu/rtl/fp_propagate_nan_comb.v": "f94e4d748302fabfdf8192c922a26fe91da5d67955b59559c0f80a3b7bbb66e8",
+    "fpu/rtl/fp_result_queue.v": "b46bee6ae767d7eefc5d0761bccdc9ea6078fc137b536f02f93daf14c2efd676",
+    "fpu/rtl/fp_sqrt64_post_comb.v": "97b7441793818d44e110f89089286567acca46f15297069436ff2cb52769e6ca",
+    "fpu/rtl/fpu.v": "ca954dfe120df2a4334cbcf5f0417570e4d7b277c58b6aa27b32db5485b115d4",
+    "fpu/rtl/register.v": "73a31d8b4b92b438ce8e4368f0c60df9168c18327841a2bbdfbc8f5229c71a4c",
+    "fpu/rtl/scoore_fpu.v": "c8d47a4121b54031ff74d8f0d21be8e2de3a13394721ac3ff14000dd422c8807",
+    "fpu/rtl/stage.v": "7624b93234f8ad92ea603a05703ca27062b380d17ad9fed6439af9aa47626e2d",
+    "fpu/rtl/stage_flop_retry.v": "50a338e83bf9709a6840356435abdb8da4651252b1d33567f39c6f48caf53edf",
+    "mor1kx/bench/verilog/mor1kx_monitor.v": "74055a16eceb17135ddf70c37bae5355750f310ca07418f9e914be0bcc18b2e0",
+    "mor1kx/bench/verilog/mor1kx_traceport_monitor.v": "b272e5c350813a437636b6c876573a5236442bc0b674a1652aeb5e09122ff109",
+    "mor1kx/rtl/verilog/mor1kx.v": "08180eaf9628be14b2740e15647704cb7c228a0c53d58cc2338c9353eed1a451",
+    "mor1kx/rtl/verilog/mor1kx_branch_prediction.v": "1b3c05d78fc14beb56af3763ddf8c3824aa2acb226681427d740787a32bdab96",
+    "mor1kx/rtl/verilog/mor1kx_branch_predictor_saturation_counter.v": "97dd9c65dd6c9f8d45f5a94b258e04ff97675df86f4cb51f0052cd9939956b35",
+    "mor1kx/rtl/verilog/mor1kx_bus_if_wb32.v": "8028a6415329ccca1506973995ed8e18f9498f3f2100a8e5028ea89a996464e7",
+    "mor1kx/rtl/verilog/mor1kx_cache_lru.v": "2a3a5928794d88ac6a0533f5a82b62a0a89b700bb15e91fb72641da90c586fb6",
+    "mor1kx/rtl/verilog/mor1kx_cfgrs.v": "17bfb332b1cb2dd895c582076be8bf8345febe10bf4e7674e87493d458cc24bc",
+    "mor1kx/rtl/verilog/mor1kx_cpu_cappuccino.v": "13f3105270246558314fdb221a9c25e6bea89e141e66d05c2a3ba020d2f17786",
+    "mor1kx/rtl/verilog/mor1kx_cpu_espresso.v": "82bb3ae9b62fc57992fe59316ab22336a0aa4860485cdb97067bf092c454c472",
+    "mor1kx/rtl/verilog/mor1kx_cpu_prontoespresso.v": "df45bb6b11b13f2239dd7cff84629d0c1e3da30a23e00445b9c91e402ab4581c",
+    "mor1kx/rtl/verilog/mor1kx_ctrl_espresso.v": "2d6bc84ba345c9fc26e2c9d3484fef67649be2b5bfce4b5147920d5d35e70f0e",
+    "mor1kx/rtl/verilog/mor1kx_ctrl_prontoespresso.v": "fcbb47acbe65721699efaf8615e84144fc69ff3f85a3f99fffc58d0026862a1a",
+    "mor1kx/rtl/verilog/mor1kx_dcache.v": "d0a0d3f3c2f151a0434a7059a757154596f0287a8c82edb450f101a4893b193a",
+    "mor1kx/rtl/verilog/mor1kx_decode.v": "00e7e132f48100b4e0cd600985ad4181b6355140030720d1e12cfb764a11112f",
+    "mor1kx/rtl/verilog/mor1kx_decode_execute_cappuccino.v": "2927eba2e87bf7a5570569fe526c79382abceb4a98921e03180a1a4a7293d446",
+    "mor1kx/rtl/verilog/mor1kx_execute_alu.v": "6f5698a713345c6a1c5d5721ebec68c0f619ede907f9e8d02459becce13f222d",
+    "mor1kx/rtl/verilog/mor1kx_execute_ctrl_cappuccino.v": "c0a023166822577964eb51ddf83fee0ae063e6ffe9b91825d62de2925c1c175a",
+    "mor1kx/rtl/verilog/mor1kx_fetch_cappuccino.v": "050664925f1804803756f74cce104f59d4acf1525ab3cdb3bd282afe57a4f778",
+    "mor1kx/rtl/verilog/mor1kx_fetch_prontoespresso.v": "ca2e21ac240a66a42af692bce4114b5cd8be17d5adbacbaf2e69b2e668afc673",
+    "mor1kx/rtl/verilog/mor1kx_fetch_tcm_prontoespresso.v": "63a62cc5da1eb02eb881c06f19f62eb88ce3756b9e2ec34b8a9cc393db47ef09",
+    "mor1kx/rtl/verilog/mor1kx_immu.v": "08374f0c716cad78d05af13941091dea68a6fec9b8214513e6c39b323ff97458",
+    "mor1kx/rtl/verilog/mor1kx_lsu_cappuccino.v": "efa2b5de3c73d0ce65564e8061f03b2e8e99c71e83d80c7b9e5d40b9b6fa5330",
+    "mor1kx/rtl/verilog/mor1kx_lsu_espresso.v": "7023eb08f4ffed7746df6afcc1a6f9ef65cb5cfd080a962d150b2325ed0a1156",
+    "mor1kx/rtl/verilog/mor1kx_rf_cappuccino.v": "a6e31946457d33f8b2a4b78adaf758ef3c05e216d59a9aa9852a791a6413135c",
+    "mor1kx/rtl/verilog/mor1kx_rf_espresso.v": "710b672a1c3b929841c0b701b62e30dc877b94e1799fae3ce5b3cbd49641c6fc",
+    "mor1kx/rtl/verilog/mor1kx_simple_dpram_sclk.v": "0c2cd3390cbfa3739464b094b183b11a71fb49d8176273662ffd6df948caea6c",
+    "mor1kx/rtl/verilog/mor1kx_store_buffer.v": "415e3f4ab90bd1b9b9b44ff73bbfd5689f6b3c27458a4ea27352457b6ed92284",
+    "mor1kx/rtl/verilog/mor1kx_ticktimer.v": "d168bd40a04967bfa503017de1919043497b6bb07c08f2e3528475112600395b",
+    "mor1kx/rtl/verilog/mor1kx_true_dpram_sclk.v": "94223de3dee0b36eb6799fc645316bdb274c8e64fbdcb44728f0f46cc5e4324b",
+    "mor1kx/rtl/verilog/mor1kx_utils.vh": "e0cd6f04025374dd729bd8b4425fe86c49e30f83b218cba64d629c9b377fc101",
+    "mor1kx/rtl/verilog/mor1kx_wb_mux_cappuccino.v": "8f6fc441c3a48fa2544c2a0c558815a3d655649855c55bbf666265f75c95f048",
+    "mor1kx/rtl/verilog/mor1kx_wb_mux_espresso.v": "6a8c071388f6ed06f7ad63ddbf5bd7e7f1bb38266791414a5594ce07bb107170",
+    "mor1kx/rtl/verilog/pfpu32/pfpu32_addsub.v": "bd620cc2e4ee1bbcebc1827e98466d89e01fab0766cda4c75b48a06634472755",
+    "mor1kx/rtl/verilog/pfpu32/pfpu32_cmp.v": "3839db2bb5b1d375d5938cfe9bf04d5b2d6e01d59f3214e9d506a4ec2a4e73ac",
+    "mor1kx/rtl/verilog/pfpu32/pfpu32_f2i.v": "7b8f0671e6213a9926c7b651478fc7acfff127c388e00c5fa6b85f8f6c18b413",
+    "mor1kx/rtl/verilog/pfpu32/pfpu32_i2f.v": "e056db1b02aa09f3215bf83d4e1049693078941047a68cde6ebcefd4f227eb29",
+    "mor1kx/rtl/verilog/pfpu32/pfpu32_muldiv.v": "9e444eb54227f5271b6a6482750ceeca8d282b492df87dcbe3a2d24a6be203ae",
+    "mor1kx/rtl/verilog/pfpu32/pfpu32_rnd.v": "951311febfd587d3f2c874702be41d2420afc2f2a3c933f2b1cabe536191fbc4",
+    "mor1kx/rtl/verilog/pfpu32/pfpu32_top.v": "d925f21a111579df55bdb08286440a2a4a08a4264b9a74eabb43595a90b68d3e",
+    "or1200/bench/or1200_monitor.v": "4fc9e583c162902c5bc363d2818c4b6aa056bfae09be1792ccc541210435bd0d",
+    "or1200/bench/or1200_monitor_defines.v": "2e98d8897c47f048b0b108400e5f1ccd43b5ec8e6ee33c0357053f0bb01aa62d",
+    "or1200/rtl/verilog/or1200_alu.v": "b7d3994a9aed5bcbbd6b5ccda20d38a2330ec218f4822200cbd5dd97d8f8786e",
+    "or1200/rtl/verilog/or1200_amultp2_32x32.v": "f41fe29cb510a3ded47368ad7dd9a51f8f59d78d8fb562ae6e661aee63763dfa",
+    "or1200/rtl/verilog/or1200_cfgr.v": "07141ba4cc8052f5ed0e6ee1374b33216a8a3ce69c5198edfe511cec7e8569e8",
+    "or1200/rtl/verilog/or1200_ctrl.v": "f69aec8ed9aa9810b5748545de0ad87441e30d243878bf386638c19517543540",
+    "or1200/rtl/verilog/or1200_dc_fsm.v": "185d75d26dec8d0b565d70333b563ef13640a4ea1bcadb8ea0d87251ea4460e1",
+    "or1200/rtl/verilog/or1200_dc_ram.v": "a8186b941017e49f500b444fbdfdaabe3f37f54ca68faf0540f3d7f465705d4f",
+    "or1200/rtl/verilog/or1200_dc_tag.v": "31f48df5a567d28c4fdc1c7224f0686819d8574ed848bbf43e4c1b7a00df66d9",
+    "or1200/rtl/verilog/or1200_dc_top.v": "1c8eee6a8ce9ec8a2423f77849d57e4381fcc1f23f803403a5c8ec58ca2b277a",
+    "or1200/rtl/verilog/or1200_dmmu_tlb.v": "140d09a6d93091a727d97483cd0112ce515cdcd71973b113a8a076f08b9ccddc",
+    "or1200/rtl/verilog/or1200_dmmu_top.v": "3a2590f402c23a2eab975bef09426ce7b715ae09d6235ce9b95a106a85009851",
+    "or1200/rtl/verilog/or1200_dpram.v": "8895909b90f03b60865b8ad494f10d5862f08a1ccfc5452953d1d3777a52b576",
+    "or1200/rtl/verilog/or1200_dpram_256x32.v": "b1f0a9cecac6e815f6710f99396912e99b476d7e12d102907839d0b9458e6e5a",
+    "or1200/rtl/verilog/or1200_dpram_32x32.v": "dbea1e28659acbfa9fa046d9ac2380b0052b873b3b5c203489b377c4755529d4",
+    "or1200/rtl/verilog/or1200_du.v": "f5730ef810932c9f7f52f71388ec6d070e813457a43f6985064e444a5f168f23",
+    "or1200/rtl/verilog/or1200_except.v": "1dfb93f83e19a5009a7469f30538a2d4cbe87095e9ea3070ee6f88d02d64cc13",
+    "or1200/rtl/verilog/or1200_fpu_addsub.v": "6c3268e64b9c2890a35f45f06a74b4410cca537f4291bacbeb5ab56005ee04eb",
+    "or1200/rtl/verilog/or1200_fpu_arith.v": "23f1656e2e9ae3bc85a39bf563c424d1ef61e35040f81ec731f24eb7e1165b1a",
+    "or1200/rtl/verilog/or1200_fpu_div.v": "38a32e4f619b8706813eab3e65de642e73931dc94a70c8962494164a46b1b32d",
+    "or1200/rtl/verilog/or1200_fpu_fcmp.v": "b5b6e92913faefac5165d5afbc2780ca70207b295f5ca98c57d18f1fdf0234ad",
+    "or1200/rtl/verilog/or1200_fpu_intfloat_conv.v": "f5a63a7c3ab0dadfd5630a141df248771a22c892cc257c3a8e8fce6ea4e8e75b",
+    "or1200/rtl/verilog/or1200_fpu_intfloat_conv_except.v": "2446e6d6d327e3b278fec949a898c30cf8a260863774a58b559a9fbc1a6d757a",
+    "or1200/rtl/verilog/or1200_fpu_mul.v": "b80b515c9962cd91f5fe16942a54d4bedc933dc9e992780426312d90ed02ff17",
+    "or1200/rtl/verilog/or1200_fpu_post_norm_addsub.v": "a790b85e7282278c801f2d6d254df81b8bbff711697f7df935f58a9347461d31",
+    "or1200/rtl/verilog/or1200_fpu_post_norm_div.v": "d29fcb9419b0c2962161ce55614e1380185ae6999fd03f7f4257d795db501fb2",
+    "or1200/rtl/verilog/or1200_fpu_post_norm_intfloat_conv.v": "efc2c5255e80a045a936b863eb7d9140934668e33825af2ad08968db72f83050",
+    "or1200/rtl/verilog/or1200_fpu_post_norm_mul.v": "aee4a5e6451a8cb52dd0cda4e8bdaa75af3d7332bc8cddb99cf7b48e740267f4",
+    "or1200/rtl/verilog/or1200_fpu_pre_norm_addsub.v": "f43acaf561180f077fc60ef669a1167dc98ae9a090d1ec218708fdb067fad8db",
+    "or1200/rtl/verilog/or1200_fpu_pre_norm_div.v": "ec091757c6902588cf8fbdcbcc346998fd1cd6316e4b06c9a2ab46b9da56d5b0",
+    "or1200/rtl/verilog/or1200_fpu_pre_norm_mul.v": "1157c40c115de020446ec5bda1fd5f99c6b72a59012eb1d9cb20cb3902b1b234",
+    "or1200/rtl/verilog/or1200_freeze.v": "2e6a839ce6a0d2b5e84e6ba3dff1c3db531f18e646d614b9cc1e6978b51dda13",
+    "or1200/rtl/verilog/or1200_genpc.v": "fb385f7a5ec4e1d6c9d9575b47bffb88128274748a11be12b365c67853fa4d56",
+    "or1200/rtl/verilog/or1200_gmultp2_32x32.v": "2fd9b1f4f4fea5634bef8d3c29f0ca1951e2e500c2cb5336ee225e623670b14c",
+    "or1200/rtl/verilog/or1200_ic_ram.v": "acb82e13c8e9e7690b6551744adb294903e4aebb78e11abe395a12829186ccf3",
+    "or1200/rtl/verilog/or1200_ic_tag.v": "cdf1bc7333c83074999fb70936d9da4a270e8a275f9e382028f4c2d099dd7a36",
+    "or1200/rtl/verilog/or1200_ic_top.v": "3c2ec22e6db1aef389d6cff790030bb9b6dfab05274def85cb34549b8ad901ad",
+    "or1200/rtl/verilog/or1200_if.v": "798584ed01e56ffb78c4ad9d35fea13748a4d3b822f723454aaf5b571a6569b3",
+    "or1200/rtl/verilog/or1200_immu_tlb.v": "3a351dd8daeb033c9052859b27853d7d825270cad19061b4dbb5c19b3f1ccdc3",
+    "or1200/rtl/verilog/or1200_immu_top.v": "6122569cad337bc33f29cdcf2204c3b4e9cd8326df0d1de53bef238efb77310d",
+    "or1200/rtl/verilog/or1200_iwb_biu.v": "232e4afeff57d5cab14cc9b2da15220846376d0940f4ca924799d52feb6e027d",
+    "or1200/rtl/verilog/or1200_lsu.v": "c2f43014cce4eaba8358b31c63c3c457b72a9165b9c0d88b64530edd213fe532",
+    "or1200/rtl/verilog/or1200_mem2reg.v": "b6375ac18f33d43c7f2bcbb56b77c173b7a641af347b1ba8c9c665ff76c6c479",
+    "or1200/rtl/verilog/or1200_mult_mac.v": "bdbe8fc121cfee987f81b7f266b9253fceb0781a712d0ddc831d580f18234740",
+    "or1200/rtl/verilog/or1200_operandmuxes.v": "7f755d4e55df81cc7dcb1d1f926365c7ac7ebf965f55dabccc840a0c91f5bb7e",
+    "or1200/rtl/verilog/or1200_qmem_top.v": "aca9ef8897f792d91db5b29103648214389122b8ff69820105b87972644f6073",
+    "or1200/rtl/verilog/or1200_reg2mem.v": "681885b1903f1bae38f43e42a56d62bc4b75eabc19acbbcae3f11a9a6cfc1205",
+    "or1200/rtl/verilog/or1200_rf.v": "1f98edbe31abd8ed8640cbcaac53fbb3063d5d20c117b0296edadf7d4fc4db18",
+    "or1200/rtl/verilog/or1200_rfram_generic.v": "c7b521dce51b8dd8e28a44601cc42e2f64161b799f8a9028b0f121ff47f10686",
+    "or1200/rtl/verilog/or1200_sb.v": "6b6f9ecfdf2e8fdc48a22597c36a70c4fd416f08cfa02eec1e0fd72b53e1c7f0",
+    "or1200/rtl/verilog/or1200_sb_fifo.v": "8f6cc97f59c107fb945b8ccaccd0ef6472579c669712f6f258fd4042bcd9873e",
+    "or1200/rtl/verilog/or1200_spram.v": "158b52c4d99a51bc0748359f31c61731f090a2f84ddfd4f06b058b2762b506b5",
+    "or1200/rtl/verilog/or1200_spram_1024x32.v": "10d54b5b190c87bfb593925f95d887f1bda72ee107a8b7936fff6a50de078caf",
+    "or1200/rtl/verilog/or1200_spram_1024x32_bw.v": "cac01ef42f92f7236e4746a5b590166d6a105d69383af5ffdf4e128d2b117e45",
+    "or1200/rtl/verilog/or1200_spram_1024x8.v": "b264585e30aad20bc579d7af54c80aee0f634aed9ce844952d6511ff34b06ab6",
+    "or1200/rtl/verilog/or1200_spram_128x32.v": "40d53d4cebf7a3de880aa96b92672debadea46035475328ff22436b562f5a0bb",
+    "or1200/rtl/verilog/or1200_spram_2048x32.v": "8178de18e6f4943578118faec6ce8bb5b049bf425b1d0db6e32db26c2a1e001b",
+    "or1200/rtl/verilog/or1200_spram_2048x32_bw.v": "4941a6f47aee6c037dae626ddd4f1d9686f8ab94b63ec4ce4298b27522357330",
+    "or1200/rtl/verilog/or1200_spram_2048x8.v": "d88c7c39b0feb93802a3cce2372d8073896b3266c7f859f04a69909b780e339b",
+    "or1200/rtl/verilog/or1200_spram_256x21.v": "2d92505dfeb424f3fdbe837ce98f5fc983ea5c8fbf8ddbb7dfe46b8d1a79c725",
+    "or1200/rtl/verilog/or1200_spram_32_bw.v": "813a52462de6f933f7ef42a391a7b81461ddbee963666c6b4bf0b36ecd08edfb",
+    "or1200/rtl/verilog/or1200_spram_32x24.v": "1b684082b641d61a43facaf5aa627bbc79805ca7dac28ce4136ff19dc44369e6",
+    "or1200/rtl/verilog/or1200_spram_512x20.v": "6082c3f376b5dacff4ba58c2cd255948ae5ec888b49777c07363909686199c21",
+    "or1200/rtl/verilog/or1200_spram_64x14.v": "5c3063cc38ce3b4a14a9a546c4f334dbd8f4720712c3beac50916c60879e9a57",
+    "or1200/rtl/verilog/or1200_spram_64x22.v": "06ffcdaef484af66f30b17fa84cb654819b94c0339d802440cee349faef6d5c3",
+    "or1200/rtl/verilog/or1200_spram_64x24.v": "3ba74710fa665982f81f665ac67b8380fde7b2b0d15f9e66f0b722a1495ebf18",
+    "or1200/rtl/verilog/or1200_sprs.v": "2a2d3fe249540d190501248f8fb6466204fa6c2b4e13d41fe785c5eab4bf8b1f",
+    "or1200/rtl/verilog/or1200_top.v": "0f47b603999371806de7ea3adc06eb81b70bcbb55c98979d959ed5ad36dada58",
+    "or1200/rtl/verilog/or1200_tpram_32x32.v": "7825823232ba474feb86ad50d854f99a929166d9c4933dec3a47870b03604ba4",
+    "or1200/rtl/verilog/or1200_tt.v": "f79126aa918adaaa3793402484a32c9cb563e1b9807fccf245e5678e765b5fa4",
+    "or1200/rtl/verilog/or1200_wb_biu.v": "fa2a3292e4ca2d02de2cb4470f759186514b3020db797c591d9fa6bf60a315f6",
+    "or1200/rtl/verilog/or1200_wbmux.v": "4d1d172777cc737cd956adebb0c5f4ecf671e5738d0163c7749ae74b7a920e6a",
+    "or1200/rtl/verilog/or1200_xcv_ram32x8d.v": "3da23631ab5fee2223632b29ed458269317214c7f92e1688b0fcbfe3924cae19"
+  },
+  "macro_occurrences": {
+    "alpha_noc0": [
+      {
+        "file": "alpha/ex_stage.v",
+        "line": 223,
+        "macro": "ANUBIS_NOC_0"
+      }
+    ],
+    "alpha_noc1": [
+      {
+        "file": "alpha/id_stage.v",
+        "line": 336,
+        "macro": "ANUBIS_NOC_1"
+      },
+      {
+        "file": "alpha/id_stage.v",
+        "line": 387,
+        "macro": "ANUBIS_NOC_1"
+      },
+      {
+        "file": "alpha/id_stage.v",
+        "line": 394,
+        "macro": "ANUBIS_NOC_1"
+      }
+    ],
+    "alpha_noc2": [
+      {
+        "file": "alpha/ex_stage.v",
+        "line": 361,
+        "macro": "ANUBIS_NOC_2"
+      }
+    ],
+    "alpha_noc3": [
+      {
+        "file": "alpha/wb_stage.v",
+        "line": 52,
+        "macro": "ANUBIS_NOC_3"
+      },
+      {
+        "file": "alpha/wb_stage.v",
+        "line": 63,
+        "macro": "ANUBIS_NOC_3"
+      },
+      {
+        "file": "alpha/wb_stage.v",
+        "line": 75,
+        "macro": "ANUBIS_NOC_3"
+      }
+    ],
+    "alpha_noc4": [
+      {
+        "file": "alpha/pipeline.v",
+        "line": 98,
+        "macro": "ANUBIS_NOC_4"
+      },
+      {
+        "file": "alpha/pipeline.v",
+        "line": 326,
+        "macro": "ANUBIS_NOC_4"
+      },
+      {
+        "file": "alpha/pipeline.v",
+        "line": 354,
+        "macro": "ANUBIS_NOC_4"
+      }
+    ],
+    "alpha_noc5": [
+      {
+        "file": "alpha/regfile.v",
+        "line": 72,
+        "macro": "ANUBIS_NOC_5"
+      }
+    ],
+    "dlx_noc0": [
+      {
+        "file": "dlx/bypass_id.v",
+        "line": 44,
+        "macro": "ANUBIS_NOC_0"
+      },
+      {
+        "file": "dlx/bypass_id.v",
+        "line": 51,
+        "macro": "ANUBIS_NOC_0"
+      },
+      {
+        "file": "dlx/bypass_id.v",
+        "line": 64,
+        "macro": "ANUBIS_NOC_0"
+      },
+      {
+        "file": "dlx/bypass_id.v",
+        "line": 79,
+        "macro": "ANUBIS_NOC_0"
+      }
+    ],
+    "dlx_noc1": [
+      {
+        "file": "dlx/bypass_ex.v",
+        "line": 38,
+        "macro": "ANUBIS_NOC_1"
+      }
+    ],
+    "dlx_noc2": [
+      {
+        "file": "dlx/quick_compare.v",
+        "line": 36,
+        "macro": "ANUBIS_NOC_2"
+      }
+    ],
+    "dlx_noc3": [
+      {
+        "file": "dlx/regfile.v",
+        "line": 36,
+        "macro": "ANUBIS_NOC_3"
+      }
+    ],
+    "fpu_noc0": [
+      {
+        "file": "fpu/rtl/fp_lead0.v",
+        "line": 229,
+        "macro": "ANUBIS_NOC_0"
+      }
+    ],
+    "fpu_noc1": [
+      {
+        "file": "fpu/rtl/fp_lead0_p0.v",
+        "line": 137,
+        "macro": "ANUBIS_NOC_1"
+      }
+    ],
+    "fpu_noc2": [
+      {
+        "file": "fpu/rtl/fp_shift0.v",
+        "line": 62,
+        "macro": "ANUBIS_NOC_2"
+      }
+    ],
+    "fpu_noc3": [
+      {
+        "file": "fpu/rtl/fp_shift1.v",
+        "line": 69,
+        "macro": "ANUBIS_NOC_3"
+      }
+    ],
+    "fpu_noc4": [
+      {
+        "file": "fpu/rtl/fp_shift1.v",
+        "line": 74,
+        "macro": "ANUBIS_NOC_4"
+      }
+    ],
+    "fpu_noc5": [
+      {
+        "file": "fpu/rtl/fp_sqrt64.v",
+        "line": 133,
+        "macro": "ANUBIS_NOC_5"
+      }
+    ],
+    "fpu_noc6": [
+      {
+        "file": "fpu/rtl/fp_lead0_p1.v",
+        "line": 68,
+        "macro": "ANUBIS_NOC_6"
+      }
+    ],
+    "mor1kx_noc0": [
+      {
+        "file": "mor1kx/rtl/verilog/mor1kx_cpu.v",
+        "line": 608,
+        "macro": "ANUBIS_NOC_0"
+      }
+    ],
+    "mor1kx_noc1": [
+      {
+        "file": "mor1kx/rtl/verilog/mor1kx_fetch_espresso.v",
+        "line": 160,
+        "macro": "ANUBIS_NOC_1"
+      }
+    ],
+    "mor1kx_noc2": [
+      {
+        "file": "mor1kx/rtl/verilog/mor1kx_ctrl_cappuccino.v",
+        "line": 910,
+        "macro": "ANUBIS_NOC_2"
+      }
+    ],
+    "mor1kx_noc3": [
+      {
+        "file": "mor1kx/rtl/verilog/mor1kx_branch_predictor_simple.v",
+        "line": 28,
+        "macro": "ANUBIS_NOC_3"
+      }
+    ],
+    "mor1kx_noc4": [
+      {
+        "file": "mor1kx/rtl/verilog/mor1kx_dmmu.v",
+        "line": 290,
+        "macro": "ANUBIS_NOC_4"
+      },
+      {
+        "file": "mor1kx/rtl/verilog/mor1kx_dmmu.v",
+        "line": 320,
+        "macro": "ANUBIS_NOC_4"
+      }
+    ],
+    "mor1kx_noc5": [
+      {
+        "file": "mor1kx/rtl/verilog/mor1kx_icache.v",
+        "line": 316,
+        "macro": "ANUBIS_NOC_5"
+      }
+    ],
+    "mor1kx_noc6": [
+      {
+        "file": "mor1kx/rtl/verilog/mor1kx_pic.v",
+        "line": 126,
+        "macro": "ANUBIS_NOC_6"
+      }
+    ],
+    "or1200_noc0": [
+      {
+        "file": "or1200/rtl/verilog/or1200_ic_fsm.v",
+        "line": 125,
+        "macro": "ANUBIS_NOC_0"
+      }
+    ],
+    "or1200_noc1": [
+      {
+        "file": "or1200/rtl/verilog/or1200_fpu.v",
+        "line": 377,
+        "macro": "ANUBIS_NOC_1"
+      }
+    ],
+    "or1200_noc2": [
+      {
+        "file": "or1200/rtl/verilog/or1200_defines.v",
+        "line": 170,
+        "macro": "ANUBIS_NOC_2"
+      }
+    ],
+    "or1200_noc3": [
+      {
+        "file": "or1200/rtl/verilog/or1200_cpu.v",
+        "line": 352,
+        "macro": "ANUBIS_NOC_3"
+      }
+    ],
+    "or1200_noc4": [
+      {
+        "file": "or1200/rtl/verilog/or1200_pic.v",
+        "line": 89,
+        "macro": "ANUBIS_NOC_4"
+      }
+    ],
+    "or1200_noc5": [
+      {
+        "file": "or1200/rtl/verilog/or1200_pm.v",
+        "line": 174,
+        "macro": "ANUBIS_NOC_5"
+      }
+    ]
+  }
+}

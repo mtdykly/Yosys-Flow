@@ -62,7 +62,8 @@ class AutomaticTests(unittest.TestCase):
     def execute(self,case,name,source=None,base=None):
         fixture,original=self.cases[case];out=self.root/name
         args=parser().parse_args(['auto','--base-run',str(base or original),
-            '--new-source',str(source or fixture/'new.v'),'--out',str(out),'--native-yosys',str(NATIVE)])
+            '--new-source',str(source or fixture/'new.v'),'--out',str(out),'--native-yosys',str(NATIVE),
+            '--no-equivalence-precheck'])
         result=automatic.run(args)
         return result,out
 

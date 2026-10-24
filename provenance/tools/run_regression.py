@@ -42,7 +42,10 @@ def main():
     # Keep external experiment artifacts alongside the regression report.
     # unittest on its own still uses temporary directories.
     destinations={'YOSYS_FLOW_ANUBIS_RESULTS':out/'anubis','YOSYS_FLOW_AUTO_RESULTS':out/'automatic',
-                  'YOSYS_FLOW_STATEMENT_RESULTS':out/'statements'}
+                  'YOSYS_FLOW_STATEMENT_RESULTS':out/'statements',
+                  'YOSYS_FLOW_EQUIVALENCE_RESULTS':out/'equivalence',
+                  'YOSYS_FLOW_NOCHANGE_RESULTS':out/'nochange',
+                  'YOSYS_FLOW_SEQUENTIAL_RESULTS':out/'sequential'}
     previous={key:os.environ.get(key) for key in destinations}
     for key,path in destinations.items():os.environ[key]=str(path.resolve())
     try:
@@ -58,7 +61,8 @@ def main():
                 'abc_internal': str(ROOT/'build/abc/install/bin/yosys-abc')}
     versions = {name: command_output([binary, '-c', 'version'] if name.startswith('abc') else [binary, '-V'])
                 for name, binary in binaries.items() if binary and Path(binary).is_file()}
-    report = {'status': 'passed' if complete else 'failed', 'input_scope': 'combinational',
+    report = {'status': 'passed' if complete else 'failed',
+              'input_scope': 'combinational provenance/incremental; independent single-clock sequential precheck',
               'timestamp_utc': datetime.now(timezone.utc).isoformat(),
               'elapsed_seconds': time.perf_counter()-started, 'command': [sys.executable, *sys.argv],
               'commit': command_output(['git', 'rev-parse', 'HEAD'])['output'],
@@ -73,6 +77,9 @@ def main():
               'anubis_experiment_report': str((out/'anubis/report.json').resolve()),
               'automatic_experiment_directory': str((out/'automatic').resolve()),
               'statement_experiment_directory': str((out/'statements').resolve()),
+              'equivalence_experiment_directory': str((out/'equivalence').resolve()),
+              'nochange_experiment_directory': str((out/'nochange').resolve()),
+              'sequential_experiment_directory': str((out/'sequential').resolve()),
               'acceptance_layers': {
                   'record_consistency': ['test_native', 'test_synth', 'test_cli', 'test_hierarchy'],
                   'source_selection': ['test_process', 'test_selection', 'test_abc_internal', 'test_abc_factoring',
@@ -83,6 +90,10 @@ def main():
                   'anubis_external_edits': ['incremental.tests.test_anubis'],
                   'automatic_difference_extraction_and_binding': ['incremental.tests.test_automatic',
                                                                  'incremental.tests.test_statements'],
+                  'equivalence_precheck_and_whole_netlist_reuse': ['incremental.tests.test_equivalence'],
+                  'anubis_nochange_inventory_and_proof_measurements': ['incremental.tests.test_nochange',
+                                                                    'incremental.tests.test_nochange_full'],
+                  'sequential_precheck_and_whole_netlist_reuse': ['incremental.tests.test_sequential'],
                   'export_correctness': ['test_export'],
                   'input_contract': ['test_combinational']},
               'note': 'Suite-to-layer mapping; passing tests does not prove complete provenance coverage.'}

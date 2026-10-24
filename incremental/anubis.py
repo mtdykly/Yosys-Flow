@@ -200,7 +200,10 @@ def experiment(name, mode, fixture, directory, args):
         if getattr(args,'automatic',False):
             stage='automatic_derivation'
             result=automatic.run(SimpleNamespace(base_run=str(base),new_source=[str(fixture/'new.v')],
-                out=str(directory/'automatic'),yosys=args.yosys,native_yosys=args.native_yosys))
+                out=str(directory/'automatic'),yosys=args.yosys,native_yosys=args.native_yosys,
+                no_equivalence_precheck=getattr(args,'no_equivalence_precheck',False),
+                equivalence_timeout=getattr(args,'equivalence_timeout',5.0),
+                equivalence_budget=getattr(args,'equivalence_budget',15.0)))
             row['automatic_report']=str(directory/'automatic/report.json')
             row['timings']['automatic']=result['timings']
             row['status']=result['status']
@@ -212,10 +215,12 @@ def experiment(name, mode, fixture, directory, args):
             require(case['expect']!='reject_state','automatic flow accepted latch-introducing edit')
             row['checks']=result['checks'];row['selected_scopes']=result.get('selected_scopes',[])
             row['splice']=result.get('splice',{})
-            if result['status']=='unchanged':
-                work=directory/'automatic/work';script=equivalence_script('base.json','reference.json','benchmark')
-            else:
-                work=directory/'automatic/replacement/work';script=equivalence_script('base-view.json','new-reference.json','benchmark')
+            if result['status'] in {'unchanged','reused_equivalent'}:
+                require(case['expect']=='equivalent','functional edit unexpectedly classified as equivalent')
+                row.update(status='passed',reuse=result['reuse'],base_new_relation='equivalent_all_outputs',
+                    relation_evidence='structural_context_and_all_output_leaf_SAT')
+                return row
+            work=directory/'automatic/replacement/work';script=equivalence_script('base-view.json','new-reference.json','benchmark')
             stage='change_classification'
             if case['expect']=='equivalent':
                 run_yosys(args.yosys,work,'base-new-equivalent',script)

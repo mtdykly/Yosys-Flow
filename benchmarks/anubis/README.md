@@ -4,7 +4,42 @@
 
 本命令在仓库检出中运行，使用随仓库保存的语料；不是完整 ANUBIS 设计集或官方评分流程。没有接入 YSYX、EPFL 或其他外部测试库。原有内部回归测试不删除。
 
-## 全部 nochange 宏盘点与组合叶模块测量
+## 按上游顶层与配置验证 NOC
+
+判断原始 NOC 是否影响实际设计，使用这个入口：
+
+```bash
+python3 -m incremental anubis-nochange --upstream-top \
+  --repeats 1 --case-timeout 600 --frontend-timeout 300 \
+  --out runs/anubis-noc-upstream-final
+```
+
+`--upstream-top` 与历史 `--with-sequential` 模块上下文调查互斥。固定上游 `scripts/yosys/*_files.tcl` 的文件顺序、语言选项和 include 设置，从 `Makefile.config` 读取真正顶层：ALPHA `pipeline`、DLX `cpu_bug`、FPU `fpu`、MOR1KX `mor1kx`、OR1200 `or1200_top`。不添加 `Fast=0`、`Left=1` 或额外功能开关，实际参数来自原始实例。上游 Yosys Makefile 未使用 `DEFS_MOR1KX`，本入口也不自行添加。文件清单、Makefile 和基准脚本原文纳入 `nochange-lock.json`。
+
+每个宏仅一个上游配置，共 30 项。首先通过 `hierarchy -check` 比较完整活动层次，保留子模块类型、参数与连接。仍有差异则使用 `proc`、`opt_expr`、`memory_collect`、清理和内部名称规范化；保留状态、初始化、内存内容及全部顶层端口。然后对变化叶模块尝试原有全输出 SAT，**局部反例仅作诊断**；再展开完整上下文检查是否被上游常量或下游未使用关系消除。仍不同则尝试完整顶层 SAT/EQY，只有此处真实输出反例才能记为设计 `different`。不支持的时钟、未驱动、X、未证明或超时仍为 `unknown`，不额外假设启动复位。
+
+本入口不执行完整 `synth`/ABC，不生成复用网表。`structural_same` 是结构一致性证据，不是 SAT/EQY 成功，也不证明全部输出有定义；所有条目保持 `reuse_authorized=false`。局部二值等价不在尚未验证的时序/X 上下文中自动升级为顶层等价。
+
+### 本次顶层复核
+
+本地 `runs/anubis-noc-upstream-final/` 全部 30 项完成，耗时约 86 秒：**26 个结构一致、0 个明确顶层反例、4 个未知**。26 项中，17 项在层次展开后即相同，8 项在模块内基础整理后相同，1 项在完整上下文整理后相同。
+
+| 未知项 | 当前阻碍 |
+| --- | --- |
+| `dlx_noc2` | 完整 `cpu_bug` 同时包含正沿和负沿状态；现有后端仅接受单个正沿时钟。局部检查仍遇到原始 X 默认输出 |
+| `fpu_noc5` | 顶层 `rco[4:0]` 未驱动，`check -assert` 拒绝；未删除这些输出 |
+| `mor1kx_noc3` | 局部分支预测器已证明等价，但顶层有 168 个未驱动信号位问题，无法按当前严格规则完成整体证明 |
+| `or1200_noc3` | 上游时钟标签 `clk` 与实际端口不同；实际状态使用 `clk_i`、`iwb_clk_i`、`dwb_clk_i`，且有异步复位，超出现有时序后端范围 |
+
+四项待补工作的实施顺序、X/未驱动语义、反例要求和验收条件统一维护在 [时序验证后续计划](../../incremental/sequential.md#后续补齐计划)。这里记录实测结果，计划中的能力不计入当前支持范围。
+
+原来的五个 FPU 反例来自四个宏的独立模块配置：`fp_lead0 Fast=0` 在真实实例中为 `Fast=1`；`fp_lead0_p0`、`fp_shift0`、`fp_lead0_p1` 没有进入 FPU 层次。本次四个宏的有效设计均相同。**原反例保留为局部诊断，不能当作上游 FPU 的 NOC 失败。** 其余宏也不因 NOC 标签而预设为等价。
+
+产物含 `configurations.json`、每版 `frontend.il`、规范化表示、局部证明、顶层尝试及诊断、`report.json`、`timings.csv` 和证据哈希。输入、工具、实现哈希在结束时核对；运行结果仍不提交。结构一致性不是求解器耗时样本，本次不修改生产默认预算；此前 35 配置的时间只代表模块诊断。
+
+`incremental.tests.test_nochange_top` 验收原始 FPU 上下文、子模块类型/参数/初始化差异、不可达局部反例、真实顶层反例，以及顶层未知时禁止提升局部结论。错误注入测试不计入 30 个原始宏。
+
+## 历史诊断：组合叶模块测量（非上游顶层）
 
 这是独立于下文六项 DLX 替换实验的入口。`nochange-lock.json` 记录固定提交完整归档的哈希、五个设计目录的 HDL 扫描清单、每个 NOC 宏的全部位置，以及本地保存的原文件/头文件/许可证的 SHA-256。`nochange-cases.json` 登记包含修改的模块、支持范围和参数配置。原始源码逐字节保留，正常运行不需要联网。
 
@@ -58,7 +93,7 @@ FPU 例子不能仅凭 `NOC` 标签认定功能不变。例如 `fpu_noc0 Fast=0`
 
 专项回归位于 `incremental/tests/test_nochange.py`。完整项目回归会将这套结果保存到 `nochange/survey/`；运行结果仍由 `.gitignore` 排除，源码、目录清单和验收代码可以提交。
 
-## 包含时序设计上下文的完整 NOC 调查
+## 历史诊断：包含时序的模块上下文调查（非上游顶层）
 
 ```bash
 python3 -m incremental anubis-nochange --with-sequential \

@@ -217,6 +217,11 @@ def publish(out, report):
 
 
 def run(args):
+    if getattr(args, 'upstream_top', False):
+        require(not getattr(args, 'with_sequential', False),
+                '--upstream-top and --with-sequential select different benchmark boundaries')
+        from . import nochange_top
+        return nochange_top.run(args)
     if getattr(args, 'with_sequential', False):
         from . import nochange_full
         return nochange_full.run(args)

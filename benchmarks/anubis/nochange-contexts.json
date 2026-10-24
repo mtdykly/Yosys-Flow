@@ -258,5 +258,6 @@
       ],
       "note": "Default feature disabled plus an explicit enabled configuration; no source edits or reset conversion."
     }
-  }
+  },
+  "scope": "Historical containing-module diagnostics, not the upstream benchmark tops. Use --upstream-top for the original CPU/FPU context."
 }

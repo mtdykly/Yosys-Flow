@@ -4,13 +4,17 @@
 
 新增外部实验只使用 [ANUBIS](../benchmarks/anubis/README.md)。运行 `python3 -m incremental anubis --out runs/anubis-demo` 可保留原版、宏修改后的完整版、局部 patch、绑定、源码查询、契约和逐用例报告。原有四通道及错误绑定等回归继续保留。
 
-`python3 -m incremental anubis-nochange --out runs/anubis-nochange` 是独立的等价后端测量入口：全部 30 个 NOC 宏先登记，原始组合叶模块按明确参数执行证明，输出完整清单、逐例报告、反例、分项耗时和 `timings.csv`。成功证明默认串行重复三次，每次保护上限 600 秒，没有共享 15 秒预算；`--inventory-only` 只盘点，`--cases dlx_noc1 fpu_noc0` 可单独复查。它保留原始 `X`，不做局部综合或网表复用，不把时序模块裁剪后冒充完整原例；不能用这个命令的工具后端结果代替原生插桩/自动流程的集成验收。
+原始 NOC 验证使用 `python3 -m incremental anubis-nochange --upstream-top --repeats 1 --frontend-timeout 300 --out runs/anubis-noc-upstream-final`。按上游文件清单与真实顶层展开；未使用的模块/分支不触发功能变化判定，局部反例不提升为顶层反例。本轮 30 个宏为 26 个结构一致、4 个未知、0 个明确顶层反例。输出表示、证明尝试与证据哈希；不交付复用网表，不替代旧基准验证。`--inventory-only` 只盘点，`--cases` 可选择宏。
+
+无 `--upstream-top` 的原入口保留为独立模块诊断，单次保护上限默认 600 秒、无共享预算；不代表原始 CPU/FPU 的全部行为。说明见 [ANUBIS 评测](../benchmarks/anubis/README.md)。
+
+后续先明确行为等价与输出定义性的不同义务，再补 DLX 正负沿建模、FPU/MOR1KX 未驱动信号分析，以及 OR1200 多时钟和异步复位证明。每项的小型对照、顶层验收、预算测量与复用条件见 [后续补齐计划](sequential.md#后续补齐计划)。这些能力尚未实现，四项未知不计为等价通过。
 
 ## 自动入口
 
 另有独立的时序前置检查：`seq-baseline` 归档并证明旧网表，`seq-reuse` 接收旧归档和完整新版 RTL，用 EQY/SBY 完成全输出无界证明后逐字节复用。单时钟、明确初始化或同步启动复位；失败/超时不交付、不进入组合增量。命令、依赖、状态语义及 ANUBIS 时序验收见 [sequential.md](sequential.md)。
 
-加入时序的全 NOC 调查使用 `python3 -m incremental anubis-nochange --with-sequential --out runs/anubis-noc-combined`：重新检查全部 30 个宏的设计上下文，共 35 个参数/功能配置，组合 SAT 和时序 EQY 分别测量。支持条件、原始依赖、启动协议、未知/拒绝原因及计时口径见 [ANUBIS 说明](../benchmarks/anubis/README.md)。该评测不改变组合增量的支持范围或生产预算。
+历史 `--with-sequential` 调查覆盖 30 个宏、35 个自选模块/参数配置，组合 SAT 和时序 EQY 分别测量。它与 `--upstream-top` 互斥；该模式的成功率、反例和耗时不能视为上游完整设计的结果。两者都不扩大组合增量范围或更改生产预算。
 
 ```bash
 python3 -m incremental auto \

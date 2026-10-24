@@ -65,12 +65,12 @@ python3 -m incremental demo --out runs/incremental-demo
 
 ## ANUBIS 真实修改实验
 
-单独评测组合等价后端可使用 `python3 -m incremental anubis-nochange --out runs/anubis-nochange`。加上 `--with-sequential` 会重新检查全部 30 个 NOC 宏的设计上下文，共 35 个参数/功能配置：组合用 SAT，支持的时序用 EQY 验证新版并实际复用旧网表。成功证明默认重复三次，每次保护上限 600 秒，没有共享的 15 秒预算；旧版建档、前端、证明和复用总时间分别记录。原始 `X`、异步复位和初始化语义保持不变，宏未生效、范围外、反例和未知单列。**NOC 名称不保证任意模块边界/参数下等价**，这些后端结果不代表原生来源追踪或时序局部替换的支持范围扩大。生产默认预算暂不改变。详见 [评测范围、结果与预算口径](benchmarks/anubis/README.md)。
+判断原始 NOC 是否影响实际设计，使用 `anubis-nochange --upstream-top`：按上游文件清单、真正顶层和实际实例参数展开，先比较完整有效设计，再做局部诊断及必要的顶层证明。局部反例不能冒充顶层反例。本轮 30 个宏中 26 个结构一致、4 个未知、0 个确认的顶层反例；这不是全部证明通过。原始 X、初始化、异步复位语义保持不变，生产预算不变。旧的无标志模式和 `--with-sequential` 保留为模块边界诊断，其 35 配置及五个 FPU 局部反例不代表原始 CPU/FPU 顶层结果。详见 [范围与结果](benchmarks/anubis/README.md)。
 
 ```bash
-# 包含时序上下文的全部 NOC 调查
-python3 -m incremental anubis-nochange --with-sequential \
-  --frontend-timeout 300 --out runs/anubis-noc-combined
+# 按上游实际顶层与配置复核全部 NOC
+python3 -m incremental anubis-nochange --upstream-top --repeats 1 \
+  --frontend-timeout 300 --out runs/anubis-noc-upstream-final
 
 python3 -m incremental anubis --out runs/anubis-demo
 # 仅运行真实功能修改，保留层次

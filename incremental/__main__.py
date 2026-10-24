@@ -43,6 +43,8 @@ def parser():
     survey.add_argument('--repeats',type=positive_count,default=3,help='成功证明的独立重复次数，默认 3')
     survey.add_argument('--with-sequential',action='store_true',
                         help='展开全部 NOC 的设计上下文，组合用 SAT，支持的时序用 EQY 和旧网表复用')
+    survey.add_argument('--upstream-top',action='store_true',
+                        help='按上游 Yosys 文件清单、真实顶层及默认参数验证；局部反例不冒充顶层反例')
     survey.add_argument('--eqy',default='eqy')
     survey.add_argument('--synthesis-timeout',type=positive_seconds,default=600.0,
                         help='扩展评测中旧版基准综合的保护上限；不综合新版')

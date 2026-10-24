@@ -130,7 +130,7 @@
       "file": "fpu/rtl/fp_lead0.v",
       "top": "fp_lead0",
       "execution": "leaf",
-      "scope_note": "NOC label is not an equivalence guarantee: normalized output is complemented when Fast=0.",
+      "scope_note": "Standalone Fast=0 changes normalized output. The original FPU instantiates Fast=1, where this NOC branch is inactive. This is not an upstream-top counterexample.",
       "parameters": [
         {
           "Bits": 64,
@@ -149,7 +149,7 @@
       "file": "fpu/rtl/fp_lead0_p0.v",
       "top": "fp_lead0_p0",
       "execution": "leaf",
-      "scope_note": "NOC label is not an equivalence guarantee: inequality changed to equality.",
+      "scope_note": "NOC label is not an equivalence guarantee: inequality changed to equality. This module is absent from the original FPU active hierarchy; standalone counterexamples do not imply a top-level difference.",
       "parameters": [
         {}
       ]
@@ -161,7 +161,7 @@
       "file": "fpu/rtl/fp_shift0.v",
       "top": "fp_shift0",
       "execution": "leaf",
-      "scope_note": "NOC label is not an equivalence guarantee: Left generate condition inverted.",
+      "scope_note": "NOC label is not an equivalence guarantee: Left generate condition inverted. This module is absent from the original FPU active hierarchy; standalone counterexamples do not imply a top-level difference.",
       "parameters": [
         {
           "Left": 0
@@ -224,7 +224,7 @@
       "file": "fpu/rtl/fp_lead0_p1.v",
       "top": "fp_lead0_p1",
       "execution": "leaf",
-      "scope_note": "NOC label is not an equivalence guarantee: shift amount slice changed.",
+      "scope_note": "NOC label is not an equivalence guarantee: shift amount slice changed. This module is absent from the original FPU active hierarchy; standalone counterexamples do not imply a top-level difference.",
       "parameters": [
         {}
       ]
@@ -385,5 +385,6 @@
         {}
       ]
     }
-  ]
+  ],
+  "scope": "Isolated containing-module diagnostics; actual upstream top/configuration uses --upstream-top and the locked scripts/yosys file lists."
 }

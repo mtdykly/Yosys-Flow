@@ -94,6 +94,10 @@ class NochangeProofTests(unittest.TestCase):
                 self.assertGreater(sample['timings']['sat_command_seconds'], 0)
                 self.assertIn('sat -enable_undef', (Path(sample['directory'])/'prove.ys').read_text())
         for script in self.out.rglob('*.ys'):
+            if script.is_relative_to(self.out/'inputs'):
+                # Locked upstream reference scripts are archived, not executed
+                # by this isolated-module proof experiment.
+                continue
             self.assertFalse(any(line.split()[0] in {'synth','abc','techmap','flatten'}
                                  for line in script.read_text().splitlines() if line.strip()), script)
 

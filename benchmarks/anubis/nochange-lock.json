@@ -387,7 +387,14 @@
     "or1200/rtl/verilog/or1200_tt.v": "f79126aa918adaaa3793402484a32c9cb563e1b9807fccf245e5678e765b5fa4",
     "or1200/rtl/verilog/or1200_wb_biu.v": "fa2a3292e4ca2d02de2cb4470f759186514b3020db797c591d9fa6bf60a315f6",
     "or1200/rtl/verilog/or1200_wbmux.v": "4d1d172777cc737cd956adebb0c5f4ecf671e5738d0163c7749ae74b7a920e6a",
-    "or1200/rtl/verilog/or1200_xcv_ram32x8d.v": "3da23631ab5fee2223632b29ed458269317214c7f92e1688b0fcbfe3924cae19"
+    "or1200/rtl/verilog/or1200_xcv_ram32x8d.v": "3da23631ab5fee2223632b29ed458269317214c7f92e1688b0fcbfe3924cae19",
+    "scripts/yosys/Makefile": "55624f5b2cc5458bef6cf9cfbfd8b31180badaaad6bb836139e6ae8da7f20269",
+    "scripts/yosys/base_synth.ys": "60b9b93d4b3d3b0712388910cda661606505d25f4c23baa3811b241129348cb9",
+    "scripts/yosys/alpha_files.tcl": "7efb0181c4628fc232cfe9fbd3c6256fe88febf9287b204cc2b789b515127111",
+    "scripts/yosys/dlx_files.tcl": "501b46f5bc89f96010e02a5e888301ed90e3cd8c66cddaf739c6da4db766b471",
+    "scripts/yosys/fpu_files.tcl": "5d3e8c0501252dbb3fa8ea4b22ab4a4082db2e2f76c28fa7ddf8595db20d7a23",
+    "scripts/yosys/mor1kx_files.tcl": "1146ece26fe39969481ec7390f54c07375b1671052a483c6dcace50f8619973d",
+    "scripts/yosys/or1200_files.tcl": "9bf13b8bc2e2f551b6b18f5768845e4cd8f0f8ffaba81d53a026082b39e6f213"
   },
   "macro_occurrences": {
     "alpha_noc0": [

@@ -84,3 +84,5 @@ python3 -m incremental anubis --automatic --out runs/anubis-automatic
 显式模式六项用例 × 两种模式中，四项完成替换，两项正确拒绝锁存，六项来源或连接证据不足而阻塞。自动模式增加模块内切片验收，包括完整 `compare_local9`（231 个旧门替换 110 个、复用 121 个）及明确标注的表达式、过程和位宽适配例。部分比较器和嵌套条件仍受 ABC 候选证据限制。详见[用例、结果及限制](benchmarks/anubis/README.md)。
 
 已有 `fraig` 清理的实际节点复制/删除记录、按位交错的 BDD 输入排序，以及阶段见证缺失等诊断。查询、记录重放、证明、契约、绑定、局部综合、拼接和验证均单独计时。等价预检查的开关成本比较保存在完整回归的 `equivalence/comparison.json`；等价改写可省去综合工作，但不保留其潜在 PPA 改善，也没有对任意电路的加速承诺。
+
+统一对比入口为 `python3 -m incremental compare --repeats 3 --out runs/comparison-retained`：默认只比较 ANUBIS 适配版中确有功能变化的组合案例 `compare_local9`、`control_local2`，关闭功能不变预检查。比较 F 全量综合、P-module 框架内整模块选区和 P-fine 细粒度选区，独立模块级方法 M 不在本项目内。主计时终点是**拼接后整份新版网表的 JSON/IL/Verilog 已写出**；后续正确性验证单独计时，只有验证通过的样本才纳入加速比和通用门数量比较。NOC、锁存器负例和人工控制仅作显式诊断，不进入主要时间与规模结论。命令、计时口径和适配范围见[对比实验说明](incremental/comparison.md)。

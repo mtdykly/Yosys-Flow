@@ -235,12 +235,45 @@ def prove_local_outputs(stitched, contract, patch, bindings, added_names):
 
 
 def run(args):
+    """Standalone replacement always replays its supplied baseline archive."""
+    return _run(args)
+
+
+def _recheck_context_archive(context, directory):
+    """Recheck bytes before reusing one automatic call's replayed context.
+
+    This is not a persistent cache. The initial full replay and the final fresh
+    replay remain required; this check avoids repeating the same replay between
+    source selection and local synthesis, while detecting changed evidence.
+    """
+    require(context.directory == Path(directory).resolve(),
+            'validated context belongs to a different baseline directory')
+    manifest = context.directory/'manifest.json'
+    expected = context.baseline['manifest_sha256']
+    require(digest(manifest) == expected, 'baseline manifest hash mismatch during context handoff')
+    for name, meta in context.baseline['artifacts'].items():
+        require(Path(name).name == name, 'invalid native artifact path')
+        path = context.directory/name
+        require(path.is_file() and digest(path) == meta['sha256'], 'artifact hash mismatch: '+name)
+    require(digest(manifest) == expected, 'baseline manifest hash mismatch during context handoff')
+
+
+def _run(args, *, validated_context=None):
+    """Private handoff for an already replayed context in this automatic call."""
     started = time.perf_counter()
     timings = {}
     out = Path(args.out).resolve()
     require(not out.exists(), 'refusing to overwrite experiment directory: '+str(out))
-    context = ContractContext(args.base_run)
-    timings['baseline_load_and_evidence_replay_seconds'] = time.perf_counter()-started
+    if validated_context is None:
+        context = ContractContext(args.base_run)
+        timings['baseline_load_and_evidence_replay_seconds'] = time.perf_counter()-started
+        context_source = 'fresh_archive_replay'
+    else:
+        context = validated_context
+        _recheck_context_archive(context,args.base_run)
+        timings['baseline_load_and_evidence_replay_seconds'] = 0.0
+        timings['baseline_artifact_recheck_seconds'] = time.perf_counter()-started
+        context_source = 'same_automatic_call'
     step = time.perf_counter()
     contract = context.validate(json.loads(Path(args.contract).read_text()))
     timings['contract_validation_seconds'] = time.perf_counter()-step
@@ -267,6 +300,7 @@ def run(args):
     out.mkdir(parents=True)
     work = out/'work'; work.mkdir()
     report = {'schema_version':1, 'status':'running', 'base_run':str(context.directory),
+        'baseline_context_source':context_source,
         'contract_id':contract['contract_id'], 'baseline':contract['baseline'],
         'input_sha256':source_hashes, 'bindings':bindings, 'yosys':version.strip(),
         'yosys_sha256':digest(binary), 'semantic_domain':'two_state_combinational',
@@ -298,12 +332,20 @@ def run(args):
         module, stats = splice(base['modules'][top],contract,patch,bindings)
         timings['binding_validation_and_splice_seconds'] = time.perf_counter()-step
         report['splice'] = stats
+        # Measure a complete stitched netlist, before post-generation proofs.
+        # It remains a candidate until all existing checks below have passed.
+        stage = 'candidate_export'
+        write_json(work/'candidate.json',{'modules':{top:module}})
+        timings['candidate_export_seconds'] = run_yosys(binary,work,'candidate-export',
+            f'read_json candidate.json\nhierarchy -top {top}\nwrite_rtlil candidate.il\nwrite_verilog -noattr candidate.v')
+        timings['netlist_generation_seconds'] = time.perf_counter()-started
+        validation_started = time.perf_counter()
         stage = 'local_output_proof'; step = time.perf_counter()
         report['local_output_proof'] = prove_local_outputs(module,contract,patch,bindings,stats['added_names'])
         timings['local_output_proof_seconds'] = time.perf_counter()-step
-        write_json(work/'candidate.json',{'modules':{top:module}})
         stage = 'candidate_checks'
-        timings['candidate_check_and_export_seconds'] = run_yosys(binary,work,'candidate-check',f'read_json candidate.json\nhierarchy -check -top {top}\ncheck -assert\nscc -expect 0\nwrite_verilog -noattr candidate.v')
+        timings['candidate_check_seconds'] = run_yosys(binary,work,'candidate-check',
+            f'read_json candidate.json\nhierarchy -check -top {top}\ncheck -assert\nscc -expect 0')
         timings['replacement_ready_seconds'] = time.perf_counter()-started
         # Build the reference only AFTER the candidate has been produced. It is
         # never read by splice(), and no new full-netlist gates are copied.
@@ -335,7 +377,8 @@ def run(args):
         stage = 'baseline_revalidation'; step = time.perf_counter()
         ContractContext(args.base_run).validate(contract)
         timings['final_baseline_revalidation_seconds'] = time.perf_counter()-step
-        for extension in ('json','v'):
+        timings['post_generation_validation_seconds'] = time.perf_counter()-validation_started
+        for extension in ('json','il','v'):
             shutil.copyfile(work/('candidate.'+extension),out/('incremental.'+extension))
         report.update(status='passed', checks={'contract_replayed':True,'outside_cells_identical':True,
             'all_boundary_outputs_implement_local_RTL':True,'all_external_consumers_preserved':True,
@@ -343,7 +386,9 @@ def run(args):
             'emitted_Verilog_equivalent':True,'baseline_unchanged':True})
         report['artifacts'] = {str(p.relative_to(out)):digest(p) for p in sorted(out.rglob('*')) if p.is_file()}
         timings['total_checked_experiment_seconds'] = time.perf_counter()-started
-        report['timing_scope'] = {'replacement_ready_seconds':'replay, contract check, binding, local synthesis, splice and candidate checks; excludes caller query/contract generation',
+        report['timing_scope'] = {'netlist_generation_seconds':'replay, region/contract decisions, local synthesis, binding, splice and complete JSON/IL/Verilog export; excludes caller preparation and all subsequent validation',
+            'post_generation_validation_seconds':'local output proof, candidate checks, independent full reference, whole equivalence, roundtrip and final archive audit; excluded from generation time',
+            'replacement_ready_seconds':'generation plus local output proof and candidate checks; excludes caller query/contract generation',
             'total_checked_experiment_seconds':'includes independent new full synthesis and all validation; not an incremental speedup claim'}
         write_json(out/'report.json',report)
         return report

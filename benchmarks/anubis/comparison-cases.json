@@ -1,0 +1,42 @@
+{
+  "schema_version": 2,
+  "suite": "incremental-comparison-v2",
+  "scope": "primary_adapted_ANUBIS_combinational_functional_edits_with_opt_in_diagnostics",
+  "original_ANUBIS_top_designs_claimed": false,
+  "independent_module_incremental_method_included": false,
+  "selection_policy": "primary eligibility fixed before measurement; retain every selected case and failure; NOC, synthetic and state-negative cases excluded from primary time and cell-count comparison",
+  "default_suite": "anubis-functional",
+  "suites": {
+    "anubis-functional": {
+      "purpose": "primary generation-time and generic-cell-count comparison",
+      "cases": ["compare_local9", "control_local2"],
+      "scope_note": "Existing adapted ANUBIS combinational functional edits, not all upstream functional macros or full original designs; expected_change remains a classification rather than a measured equivalence verdict."
+    },
+    "diagnostic": {
+      "purpose": "explicit opt-in regression and diagnostic controls; no aggregate primary performance claim",
+      "cases": ["bypass_noc1", "compare_noc2", "compare_local9", "control_local2", "writeback_local10", "bypass_with_adder", "scale_2", "scale_8", "scale_32", "shared_dependency"],
+      "primary_exclusions": {
+        "bypass_noc1": "no functional change",
+        "compare_noc2": "no functional change",
+        "bypass_with_adder": "no functional change",
+        "writeback_local10": "state inference, outside combinational scope",
+        "scale_2": "synthetic, not an ANUBIS edit",
+        "scale_8": "synthetic, not an ANUBIS edit",
+        "scale_32": "synthetic, not an ANUBIS edit",
+        "shared_dependency": "synthetic, not an ANUBIS edit"
+      }
+    }
+  },
+  "cases": [
+    {"name": "bypass_noc1", "generator": "anubis", "source_case": "bypass_noc1", "family": "anubis_adapted", "category": "nochange", "expected_change": "equivalent", "macro": "ANUBIS_NOC_1"},
+    {"name": "compare_noc2", "generator": "anubis", "source_case": "compare_noc2", "family": "anubis_adapted", "category": "nochange", "expected_change": "equivalent", "macro": "ANUBIS_NOC_2"},
+    {"name": "compare_local9", "generator": "anubis", "source_case": "compare_local9", "family": "anubis_adapted", "category": "functional", "expected_change": "functional_change", "macro": "ANUBIS_LOCAL_9"},
+    {"name": "control_local2", "generator": "anubis", "source_case": "control_local2", "family": "anubis_adapted", "category": "functional", "expected_change": "functional_change", "macro": "ANUBIS_LOCAL_2"},
+    {"name": "writeback_local10", "generator": "anubis", "source_case": "writeback_local10", "family": "anubis_adapted", "category": "negative", "expected_change": "reject_state", "macro": "ANUBIS_LOCAL_10"},
+    {"name": "bypass_with_adder", "generator": "anubis", "source_case": "bypass_with_adder", "family": "anubis_adapted", "category": "nochange", "expected_change": "equivalent", "macro": "ANUBIS_NOC_1", "variant": "independent_original_32_bit_add_branch"},
+    {"name": "scale_2", "generator": "synthetic", "family": "synthetic", "category": "functional", "expected_change": "functional_change", "variant": "independent_neighbors", "unchanged_neighbors": 2, "width": 4},
+    {"name": "scale_8", "generator": "synthetic", "family": "synthetic", "category": "functional", "expected_change": "functional_change", "variant": "independent_neighbors", "unchanged_neighbors": 8, "width": 4},
+    {"name": "scale_32", "generator": "synthetic", "family": "synthetic", "category": "functional", "expected_change": "functional_change", "variant": "independent_neighbors", "unchanged_neighbors": 32, "width": 4},
+    {"name": "shared_dependency", "generator": "synthetic", "family": "synthetic", "category": "functional", "expected_change": "functional_change", "variant": "shared_inputs_and_dependent_output", "unchanged_neighbors": 1, "width": 4}
+  ]
+}

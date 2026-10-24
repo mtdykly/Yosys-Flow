@@ -90,6 +90,8 @@ def main():
                   'anubis_external_edits': ['incremental.tests.test_anubis'],
                   'automatic_difference_extraction_and_binding': ['incremental.tests.test_automatic',
                                                                  'incremental.tests.test_statements'],
+                  'controlled_comparison_accounting': ['incremental.tests.test_experiment',
+                                                      'incremental.tests.test_experiment_metrics'],
                   'equivalence_precheck_and_whole_netlist_reuse': ['incremental.tests.test_equivalence'],
                   'anubis_nochange_inventory_and_proof_measurements': ['incremental.tests.test_nochange',
                                                                     'incremental.tests.test_nochange_full',

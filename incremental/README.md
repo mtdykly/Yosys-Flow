@@ -4,6 +4,8 @@
 
 新增外部实验只使用 [ANUBIS](../benchmarks/anubis/README.md)。运行 `python3 -m incremental anubis --out runs/anubis-demo` 可保留原版、宏修改后的完整版、局部 patch、绑定、源码查询、契约和逐用例报告。原有四通道及错误绑定等回归继续保留。
 
+全量与增量的性能对比使用 `python3 -m incremental compare --mode retained --repeats 3 --out runs/comparison-retained`，默认只测 ANUBIS 适配版中有功能变化的组合案例 `compare_local9`、`control_local2`，关闭功能不变预检查。比较完整新版全量综合 `F`、同一来源实现的模块选区 `P-module` 和语句选区 `P-fine`；独立模块级增量方法不在本项目内。主指标是生成整份新版网表的时间（含局部综合、拼接和 JSON/IL/Verilog 写出），正确性验证在此后执行并单独计时。通过验证后才比较速度与通用门数量；NOC、负例和人工控制保留为诊断。固定案例、失败统计、各计时终点及一次性建档成本见 [对比实验](comparison.md)。
+
 原始 NOC 验证使用 `python3 -m incremental anubis-nochange --upstream-top --repeats 1 --frontend-timeout 300 --out runs/anubis-noc-upstream-final`。按上游文件清单与真实顶层展开；未使用的模块/分支不触发功能变化判定，局部反例不提升为顶层反例。本轮 30 个宏为 26 个结构一致、4 个未知、0 个明确顶层反例。输出表示、证明尝试与证据哈希；不交付复用网表，不替代旧基准验证。`--inventory-only` 只盘点，`--cases` 可选择宏。
 
 无 `--upstream-top` 的原入口保留为独立模块诊断，单次保护上限默认 600 秒、无共享预算；不代表原始 CPU/FPU 的全部行为。说明见 [ANUBIS 评测](../benchmarks/anubis/README.md)。

@@ -274,10 +274,21 @@ def reuse_archived(context,args,out,report,frozen_inputs,had_changes):
 def run(args):
     out=Path(args.out).resolve();require(not out.exists(),'refusing to overwrite '+str(out));out.mkdir(parents=True)
     work=out/'work';work.mkdir();started=time.perf_counter();stage='baseline'
+    selection_mode=getattr(args,'selection_mode','fine')
     report={'schema_version':1,'status':'running','automatic_RTL_diff':True,'automatic_patch_and_bindings':True,
-        'granularity':'changed_assignments_with_boundary_closure_and_module_fallback','minimal_region_claimed':False,
-        'new_full_synthesis_used_only_as_validation_oracle':True,'timings':{},'attempts':[]}
+        'granularity':('changed_assignments_with_boundary_closure_and_module_fallback' if selection_mode=='fine'
+                       else 'changed_module_instances_with_boundary_closure'),
+        'selection_mode':selection_mode,'minimal_region_claimed':False,
+        'new_full_synthesis_used_only_as_validation_oracle':True,'timings':{},'attempts':[],
+        'timing_scope':{
+            'selection_contract_binding_seconds':'source selection, contract verification and patch/binding construction',
+            'patch_export_seconds':'write patch/contract/bindings and export reviewable Verilog',
+            'region_contract_patch_binding_seconds':'sum of selection and patch export; do not add these twice',
+            'netlist_generation_seconds':'all automatic preparation plus local synthesis, binding, splice and complete JSON/IL/Verilog export; includes selection evidence, excludes post-generation validation',
+            'post_generation_validation_seconds':'post-export correctness validation only; excluded from generation time',
+            'incremental_candidate_ready_seconds':'online preparation and checked candidate construction; excludes new full synthesis and its validation oracle'}}
     try:
+        require(selection_mode in {'fine','module'},'selection_mode must be fine or module')
         context=ContractContext(args.base_run);top=context.baseline['module']
         require('frontend.il' in context.manifest['artifacts'],'automatic mode requires archived pre-proc frontend.il')
         old=rtlil.parse((context.directory/'frontend.il').read_text())
@@ -303,16 +314,24 @@ def run(args):
             stage='reuse_verification';step=time.perf_counter()
             reuse_archived(context,args,out,report,frozen_inputs,bool(difference['changes']))
             report['timings']['reuse_verification_seconds']=time.perf_counter()-step
+            report['timings']['incremental_candidate_ready_seconds']=time.perf_counter()-started
         else:
             stage='region_and_binding';step=time.perf_counter()
             from . import statements
             report['statement_plan']={}
-            planned=statements.plan(context,old,new,oc,nc,coarse,scopes,report['statement_plan'],work,args.yosys)
+            if selection_mode=='fine':
+                planned=statements.plan(context,old,new,oc,nc,coarse,scopes,report['statement_plan'],work,args.yosys)
+            else:
+                # P-module is an ablation of source selection only. Retain
+                # provenance, contract proofs, boundary expansion and every
+                # replacement check used by the default fine-grained path.
+                planned=None
+                report['statement_plan']={'status':'disabled','reason':'module_selection_ablation'}
             if planned:
                 contract,patch,bindings,spec=planned
                 report['selection_strategy']='statement_dependency_slice'
             else:
-                report['selection_strategy']='module_fallback'
+                report['selection_strategy']='module_fallback' if selection_mode=='fine' else 'module_scope_ablation'
                 for attempt in range(65):
                     row={'scopes':scopes};report['attempts'].append(row)
                     try:
@@ -328,25 +347,30 @@ def run(args):
                         if scopes==next_scopes:raise
                         scopes=next_scopes
                 else:raise PlanningBlocked('expansion_budget','Region expansion limit reached')
+            report['timings']['selection_contract_binding_seconds']=time.perf_counter()-step
+            export_started=time.perf_counter()
             write_json(out/'region.contract.json',contract);write_json(out/'bindings.json',bindings)
             write_json(out/'patch-specification.json',spec);(out/'patch.il').write_text(patch)
             # Verilog is a reviewable form of the local semantics, not a text
             # slice of incomplete always blocks.
             replace.run_yosys(args.yosys,work,'patch-export',
                 'read_rtlil '+token(out/'patch.il')+'\nhierarchy -check -top __auto_patch\nproc\nwrite_verilog -noattr '+token(out/'patch.v'))
+            report['timings']['patch_export_seconds']=time.perf_counter()-export_started
             report['timings']['region_contract_patch_binding_seconds']=time.perf_counter()-step
             stage='replacement'
             report['timings']['automatic_preparation_seconds']=time.perf_counter()-started
-            result=replace.run(SimpleNamespace(base_run=args.base_run,contract=str(out/'region.contract.json'),
+            result=replace._run(SimpleNamespace(base_run=args.base_run,contract=str(out/'region.contract.json'),
                 bindings=str(out/'bindings.json'),patch_rtl=str(out/'patch.il'),patch_top='__auto_patch',
                 patch_is_rtlil=True,new_frontend=str(work/'new.frontend.il'),baseline_from_archive=True,
                 new_source=args.new_source,out=str(out/'replacement'),yosys=args.yosys,
-                additional_input_hashes=frozen_inputs))
+                additional_input_hashes=frozen_inputs),validated_context=context)
             report.update(status='passed',selected_scopes=scopes,checks=result['checks'],splice=result['splice'])
             report.update(new_full_synthesis_executed=True,local_synthesis_executed=True)
             report['timings']['replacement']=result['timings']
+            report['timings']['netlist_generation_seconds']=report['timings']['automatic_preparation_seconds']+result['timings']['netlist_generation_seconds']
+            report['timings']['post_generation_validation_seconds']=result['timings']['post_generation_validation_seconds']
             report['timings']['incremental_candidate_ready_seconds']=report['timings']['automatic_preparation_seconds']+result['timings']['replacement_ready_seconds']
-            for suffix in ('json','v'):shutil.copyfile(out/'replacement'/('incremental.'+suffix),out/('incremental.'+suffix))
+            for suffix in ('json','il','v'):shutil.copyfile(out/'replacement'/('incremental.'+suffix),out/('incremental.'+suffix))
         report['artifacts']={str(p.relative_to(out)):digest(p) for p in sorted(out.rglob('*')) if p.is_file() and p.name!='report.json'}
     except PlanningBlocked as exc:
         report.update(status='blocked',failure={'stage':stage,'code':exc.code,'detail':exc.detail},published_incremental_netlist=False)

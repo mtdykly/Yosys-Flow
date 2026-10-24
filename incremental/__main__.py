@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 from yosys_flow.common import ROOT, TraceError
-from . import demo, replace, anubis, automatic, nochange, sequential, seq_anubis
+from . import demo, replace, anubis, automatic, nochange, sequential, seq_anubis, experiment as comparison
 
 
 def positive_seconds(value):
@@ -33,6 +33,19 @@ def parser():
     benchmark.add_argument('--cases',nargs='+',choices=list(anubis.CASES))
     benchmark.add_argument('--native-yosys',default=str(ROOT/'build/native/install/bin/yosys'))
     benchmark.add_argument('--automatic',action='store_true',help='仅把旧记录和完整新版交给 auto，不提供目标实例或 patch')
+    compare = commands.add_parser('compare',help='ANUBIS 组合功能修改的 F / P-module / P-fine 对比（不含独立 M）')
+    compare.add_argument('--mode',choices=['retained','flatten','both'],default='retained')
+    compare.add_argument('--suite',choices=['anubis-functional','diagnostic'],default='anubis-functional',
+                         help='默认只测 ANUBIS 组合功能修改；diagnostic 显式启用 NOC、合成控制与状态负例')
+    compare.add_argument('--cases',nargs='+',help='所选 suite 中的固定案例；默认 compare_local9 和 control_local2')
+    compare.add_argument('--native-yosys',default=str(ROOT/'build/native/install/bin/yosys'))
+    compare.add_argument('--repeats',type=positive_count,default=5,help='每个方法至少 3 次，默认 5')
+    compare.add_argument('--precheck',choices=['on','off','both'],default='off',
+                         help='主比较默认关闭等价预检查；on 的运行成本计入生成时间；both 对诊断 NOC 测开/关，其余开启；auto 默认不变')
+    compare.add_argument('--seed',type=int,default=20261024)
+    compare.add_argument('--cpu',type=int,help='串行绑定一个允许的 CPU；默认取当前 affinity 的最小编号')
+    compare.add_argument('--job-timeout',type=positive_seconds,default=600.0)
+    compare.add_argument('--fallback-full',action='store_true',help='失败后实际执行 F，另报尝试加回退成本')
     survey = commands.add_parser('anubis-nochange',help='盘点全部 ANUBIS NOC 宏，单独测量组合模块等价证明')
     survey.add_argument('--cases',nargs='+',help='清单 ID，例如 dlx_noc1 fpu_noc3；默认全部 30 个宏')
     survey.add_argument('--inventory-only',action='store_true',help='只校验并输出完整变体清单')
@@ -80,6 +93,8 @@ def parser():
     auto.add_argument('--base-run',required=True)
     auto.add_argument('--new-source',action='append',required=True)
     auto.add_argument('--native-yosys',default=str(ROOT/'build/native/install/bin/yosys'))
+    auto.add_argument('--selection-mode',choices=['fine','module'],default='fine',
+                      help='module 保留当前记录、契约和拼接，只禁用模块内切片，用于消融实验')
     for command in (auto,benchmark):
         command.add_argument('--no-equivalence-precheck',action='store_true',
             help='关闭叶模块组合等价预检查，直接走原来的局部提取流程')
@@ -87,7 +102,9 @@ def parser():
             help='每个等价证明的墙钟预算（秒，包含表示转换，默认 5）')
         command.add_argument('--equivalence-budget',type=positive_seconds,default=15.0,
             help='本次自动流程全部等价预检查的共享墙钟预算（秒，默认 15）')
-    for command in (experiment,execute,benchmark,auto,survey,seq_base,seq_reuse,seq_bench):
+    compare.add_argument('--equivalence-timeout',type=positive_seconds,default=5.0)
+    compare.add_argument('--equivalence-budget',type=positive_seconds,default=15.0)
+    for command in (experiment,execute,benchmark,auto,survey,seq_base,seq_reuse,seq_bench,compare):
         command.add_argument('--out',required=True,help='新的实验结果目录')
         command.add_argument('--yosys',default='yosys')
     return cli
@@ -98,7 +115,8 @@ def main():
     try:
         result = {'demo':demo.run,'anubis':anubis.run,'auto':automatic.run,'run':replace.run,
                   'anubis-nochange':nochange.run,'seq-baseline':sequential.baseline,
-                  'seq-reuse':sequential.reuse,'anubis-sequential':seq_anubis.run}[args.command](args)
+                  'seq-reuse':sequential.reuse,'anubis-sequential':seq_anubis.run,
+                  'compare':comparison.run}[args.command](args)
     except (TraceError,OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError) as exc:
         print('incremental: '+str(exc),file=sys.stderr)
         return 1
@@ -119,8 +137,11 @@ def main():
     elif args.command=='anubis-sequential':
         result={k:result[k] for k in ('status','baseline_status','counts')}
         result['report']=str(args.out)+'/report.json'
+    elif args.command=='compare':
+        result={k:result[k] for k in ('status','counts','methods','total_seconds')}
+        result['report']=str(args.out)+'/report.json'
     print(json.dumps(result,indent=2,ensure_ascii=False))
-    return 1 if result.get('status') in {'failed','blocked','unknown','different'} else 0
+    return 1 if result.get('status') in {'failed','blocked','unknown','different','invalidated'} else 0
 
 
 if __name__ == '__main__':

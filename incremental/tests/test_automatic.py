@@ -5,10 +5,11 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from incremental import anubis, automatic, rtlil, statements
+from incremental import anubis, automatic, replace, rtlil, statements
 from incremental.__main__ import parser
 from incremental.tests.test_replacement import NATIVE
 from yosys_flow.cli import parser as flow_parser
@@ -59,11 +60,12 @@ class AutomaticTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):cls.temp.cleanup()
 
-    def execute(self,case,name,source=None,base=None):
+    def execute(self,case,name,source=None,base=None,selection_mode=None):
         fixture,original=self.cases[case];out=self.root/name
         args=parser().parse_args(['auto','--base-run',str(base or original),
             '--new-source',str(source or fixture/'new.v'),'--out',str(out),'--native-yosys',str(NATIVE),
             '--no-equivalence-precheck'])
+        if selection_mode is not None:args.selection_mode=selection_mode
         result=automatic.run(args)
         return result,out
 
@@ -84,6 +86,151 @@ class AutomaticTests(unittest.TestCase):
         self.assertIn('new.frontend.il',(out/'replacement/work/new-reference.ys').read_text())
         self.assertNotIn('synth',(out/'work/new-frontend.ys').read_text())
         self.assertNotIn('abc',(out/'work/new-combinational-check.ys').read_text())
+
+    def test_generation_cutoff_includes_full_export_and_excludes_later_proof(self):
+        original_proof=replace.prove_local_outputs
+        real_clock=replace.time.perf_counter
+        offset=[0.0]
+        destination=self.root/'generation-cutoff'
+        def proof_after_generation(*args,**kwargs):
+            for suffix in ('json','il','v'):
+                self.assertTrue((destination/'replacement/work'/('candidate.'+suffix)).is_file())
+            # Charge 100 simulated seconds to a post-export proof. This must
+            # affect validation/checked timings, never netlist generation.
+            offset[0]+=100
+            return original_proof(*args,**kwargs)
+        with patch.object(replace,'prove_local_outputs',side_effect=proof_after_generation), \
+                patch.object(replace.time,'perf_counter',side_effect=lambda:real_clock()+offset[0]):
+            result,out=self.execute('bypass_noc1','generation-cutoff')
+        self.assertEqual(result['status'],'passed',result.get('failure'))
+        timings=result['timings']
+        self.assertGreater(timings['post_generation_validation_seconds'],100)
+        self.assertGreater(timings['incremental_candidate_ready_seconds']-timings['netlist_generation_seconds'],100)
+        self.assertEqual(timings['netlist_generation_seconds'],timings['automatic_preparation_seconds']+
+                         timings['replacement']['netlist_generation_seconds'])
+        for suffix in ('json','il','v'):
+            self.assertTrue((out/('incremental.'+suffix)).is_file())
+
+    def test_post_generation_proof_failure_keeps_candidate_unpublished(self):
+        with patch.object(replace,'prove_local_outputs',side_effect=TraceError('test post-generation proof failure')):
+            result,out=self.execute('bypass_noc1','generation-rejected')
+        self.assertEqual(result['status'],'failed')
+        replacement=json.loads((out/'replacement/report.json').read_text())
+        self.assertGreater(replacement['timings']['netlist_generation_seconds'],0)
+        self.assertTrue((out/'replacement/work/candidate.v').is_file())
+        for suffix in ('json','il','v'):
+            self.assertFalse((out/('incremental.'+suffix)).exists())
+            self.assertFalse((out/'replacement'/('incremental.'+suffix)).exists())
+
+    def test_module_selection_ablation_replaces_more_cells_with_the_same_safety_checks(self):
+        fine,_=self.execute('compare_local9','ablation-fine')
+        with patch.object(statements,'plan',side_effect=AssertionError('module mode must skip statement planning')):
+            module,out=self.execute('compare_local9','ablation-module',selection_mode='module')
+        for result in (fine,module):
+            self.assertEqual(result['status'],'passed',result.get('failure'))
+            self.assertEqual(result['selected_scopes'],['benchmark/u_target'])
+            self.assertTrue(all(result['checks'].values()))
+            times=result['timings']
+            self.assertGreater(times['selection_contract_binding_seconds'],0)
+            self.assertGreater(times['patch_export_seconds'],0)
+            self.assertGreaterEqual(times['region_contract_patch_binding_seconds'],
+                times['selection_contract_binding_seconds']+times['patch_export_seconds'])
+        self.assertEqual(fine['selection_mode'],'fine')
+        self.assertEqual(module['selection_mode'],'module')
+        self.assertEqual(module['selection_strategy'],'module_scope_ablation')
+        self.assertEqual(module['checks'].keys(),fine['checks'].keys())
+        self.assertGreater(module['splice']['removed_cells'],fine['splice']['removed_cells'])
+        self.assertLess(module['splice']['reused_cells'],fine['splice']['reused_cells'])
+        self.assertTrue((out/'region.contract.json').is_file())
+        self.assertTrue((out/'replacement/work/whole-equivalence.log').is_file())
+
+    def test_same_call_context_handoff_preserves_proofs_and_standalone_replay(self):
+        created=[]
+        original=ContractContext.__init__
+        def record(context,*args,**kwargs):
+            original(context,*args,**kwargs)
+            created.append(context)
+        for mode in ('fine','module'):
+            created.clear()
+            with patch.object(ContractContext,'__init__',record):
+                result,out=self.execute('bypass_noc1','handoff-'+mode,selection_mode=mode)
+            self.assertEqual(result['status'],'passed',result.get('failure'))
+            self.assertTrue(all(result['checks'].values()))
+            self.assertEqual(len(created),2)  # initial replay and independent final audit
+            self.assertIsNot(created[0],created[1])
+            replacement=json.loads((out/'replacement/report.json').read_text())
+            self.assertEqual(replacement['baseline_context_source'],'same_automatic_call')
+            self.assertEqual(replacement['timings']['baseline_load_and_evidence_replay_seconds'],0)
+            self.assertGreater(replacement['timings']['baseline_artifact_recheck_seconds'],0)
+            self.assertGreater(replacement['timings']['final_baseline_revalidation_seconds'],0)
+        # Independent callers still replay at entry, even after an automatic
+        # call in this process. No cross-edit or global cache is introduced.
+        fixture,base=self.cases['bypass_noc1']
+        args=SimpleNamespace(base_run=str(base),contract=str(out/'region.contract.json'),
+            bindings=str(out/'bindings.json'),patch_rtl=str(out/'patch.il'),patch_top='__auto_patch',
+            patch_is_rtlil=True,new_frontend=str(out/'work/new.frontend.il'),baseline_from_archive=True,
+            new_source=[str(fixture/'new.v')],out=str(self.root/'handoff-standalone'),yosys='yosys')
+        created.clear()
+        with patch.object(ContractContext,'__init__',record):direct=replace.run(args)
+        self.assertEqual(direct['status'],'passed')
+        self.assertTrue(all(direct['checks'].values()))
+        self.assertEqual(len(created),2)
+        self.assertEqual(direct['baseline_context_source'],'fresh_archive_replay')
+        self.assertGreater(direct['timings']['baseline_load_and_evidence_replay_seconds'],0)
+        self.assertNotIn('baseline_artifact_recheck_seconds',direct['timings'])
+
+    def test_context_handoff_rechecks_all_archive_bytes_before_local_synthesis(self):
+        _,base=self.cases['bypass_noc1'];original=statements.plan
+        for artifact in ('manifest.json','after.json','yosys.jsonl'):
+            target=self.root/('handoff-tampered-'+artifact);shutil.copytree(base,target)
+            def corrupt(*args,**kwargs):
+                planned=original(*args,**kwargs)
+                with (target/artifact).open('a') as file:file.write(' ')
+                return planned
+            with patch.object(statements,'plan',side_effect=corrupt):
+                result,out=self.execute('bypass_noc1','handoff-reject-'+artifact,base=target)
+            self.assertEqual(result['status'],'failed',result)
+            self.assertEqual(result['failure']['code'],'invalid_recorded_evidence')
+            self.assertFalse((out/'replacement/work/local-synth.ys').exists())
+            self.assertFalse((out/'incremental.json').exists())
+
+    def test_context_handoff_keeps_fresh_final_audit_after_local_synthesis(self):
+        _,base=self.cases['bypass_noc1'];target=self.root/'handoff-late-tampered'
+        shutil.copytree(base,target);original=replace.run_yosys
+        def corrupt_after_synthesis(binary,work,name,script):
+            elapsed=original(binary,work,name,script)
+            if name=='local-synth':
+                with (target/'after.json').open('a') as file:file.write(' ')
+            return elapsed
+        with patch.object(replace,'run_yosys',side_effect=corrupt_after_synthesis):
+            result,out=self.execute('bypass_noc1','handoff-late-rejected',base=target)
+        self.assertEqual(result['status'],'failed',result)
+        replacement=json.loads((out/'replacement/report.json').read_text())
+        self.assertEqual(replacement['failure']['stage'],'baseline_revalidation')
+        self.assertEqual(replacement['failure']['code'],'invalid_recorded_evidence')
+        self.assertTrue((out/'replacement/work/candidate.json').exists())
+        self.assertFalse((out/'replacement/incremental.json').exists())
+        self.assertFalse((out/'incremental.json').exists())
+
+    def test_context_handoff_does_not_trust_a_resealed_contract(self):
+        original=replace._run
+        def corrupt(args,**kwargs):
+            path=Path(args.contract);document=json.loads(path.read_text())
+            document['verification']['status']='partial_old_region'
+            path.write_text(json.dumps(seal(document)))
+            return original(args,**kwargs)
+        with patch.object(replace,'_run',side_effect=corrupt):
+            result,out=self.execute('bypass_noc1','handoff-resealed-contract')
+        self.assertEqual(result['status'],'failed',result)
+        self.assertIn('differs from replayed',result['failure']['detail'])
+        self.assertFalse((out/'replacement/work/local-synth.ys').exists())
+        self.assertFalse((out/'incremental.json').exists())
+
+    def test_context_handoff_rejects_another_archive_directory(self):
+        _,base=self.cases['bypass_noc1'];context=ContractContext(base)
+        copied=self.root/'handoff-identical-copy';shutil.copytree(base,copied)
+        with self.assertRaisesRegex(TraceError,'different baseline directory'):
+            replace._recheck_context_archive(context,copied)
 
     def test_equivalent_macro_rewrite_is_also_derived(self):
         result,_=self.execute('bypass_noc1','equivalent-edit')
@@ -186,15 +333,20 @@ class AutomaticTests(unittest.TestCase):
         self.assertEqual(result['failure']['code'],'old_region_not_proven')
         self.assertEqual(len(result['attempts']),2)
         self.assertFalse((out/'incremental.v').exists())
+        module,module_out=self.execute('bypass_noc1','flat-module-blocked',base=base,selection_mode='module')
+        self.assertEqual(module['status'],'blocked',module.get('failure'))
+        self.assertEqual(module['failure']['code'],'old_region_not_proven')
+        self.assertFalse((module_out/'incremental.v').exists())
 
     def test_modified_archived_frontend_is_rejected(self):
         _,base=self.cases['bypass_noc1'];target=self.root/'tampered-baseline'
         shutil.copytree(base,target)
         with (target/'frontend.il').open('a') as f:f.write('# modified\n')
-        result,out=self.execute('bypass_noc1','tampered-rejected',base=target)
-        self.assertEqual(result['status'],'failed')
-        self.assertEqual(result['failure']['code'],'invalid_recorded_evidence')
-        self.assertFalse((out/'work/new.frontend.il').exists())
+        for mode in ('fine','module'):
+            result,out=self.execute('bypass_noc1','tampered-rejected-'+mode,base=target,selection_mode=mode)
+            self.assertEqual(result['status'],'failed')
+            self.assertEqual(result['failure']['code'],'invalid_recorded_evidence')
+            self.assertFalse((out/'work/new.frontend.il').exists())
 
     def test_new_frontend_change_between_planning_and_synthesis_is_rejected(self):
         original=statements.plan

@@ -22,6 +22,46 @@ def row(method, candidate, end_to_end, cells, *, case='changed', mode='retained'
 
 
 class ExperimentSummaryTests(unittest.TestCase):
+    def test_library_mapping_cost_is_separate_and_never_includes_proof(self):
+        measurement = {'library_area': {'status': 'passed', 'library_sha256': 'same-library',
+                       'unit': 'um^2', 'cell_area': 12.5, 'cell_count': 3,
+                       'mapping_seconds': 2, 'validation_seconds': 100}}
+        columns = experiment.area_columns(measurement, 5)
+        self.assertEqual(columns['mapped_netlist_generation_seconds'], 7)
+        self.assertEqual(columns['mapping_validation_seconds'], 100)
+        measurement['library_area']['status'] = 'failed'
+        failed = experiment.area_columns(measurement, 5)
+        self.assertIsNone(failed['mapped_cell_area'])
+        self.assertIsNone(failed['mapped_cell_count'])
+        self.assertIsNone(failed['mapped_netlist_generation_seconds'])
+        self.assertEqual(experiment.area_columns({}, None)['area_status'], 'not_attempted')
+
+    def test_area_ratios_require_matching_library_and_complete_proofs(self):
+        full, fine = row('F', 1, 100, 10), row('P-fine', 2, 200, 12)
+        def attach(value, area):
+            value.update(experiment.area_columns({'library_area': {
+                'status': 'passed', 'library_sha256': 'same-library', 'unit': 'um^2',
+                'cell_area': area, 'cell_count': 10, 'mapping_seconds': 1,
+                'validation_seconds': 100}}, value['netlist_generation_seconds']))
+        attach(full, 20)
+        attach(fine, 25)
+        def summary(rows):
+            return next(r for r in experiment.summarize(rows, {}) if r['method'] == 'P-fine')
+        result = summary([full, fine])
+        self.assertEqual(result['mapped_cell_area_overhead_percent'], 25)
+        self.assertEqual(result['mapped_generation_speedup'], 2/3)
+        self.assertEqual(result['generation_speedup'], 0.5)
+        for field, changed in [('library_sha256', 'another-library'), ('area_unit', 'different-unit'),
+                               ('area_status', 'failed'), ('outcome', 'blocked')]:
+            altered = dict(fine, **{field: changed})
+            result = summary([full, fine, altered])
+            self.assertNotIn('mapped_cell_area_overhead_percent', result)
+            self.assertNotIn('mapped_generation_speedup', result)
+            # With different units/libraries even successful medians are meaningless.
+            if field in {'library_sha256', 'area_unit'}:
+                self.assertIsNone(result['library_area']['successful_medians']['mapped_cell_area'])
+        self.assertNotIn('mapped_cell_area_overhead_percent', summary([fine]))
+
     def test_primary_speedup_uses_actual_generation_cutoff_not_checked_total(self):
         full = row('F', 10, 14, 100)
         fine = row('P-fine', 8, 200, 110)
@@ -107,6 +147,7 @@ class ExperimentSummaryTests(unittest.TestCase):
 
     def test_outcome_keeps_timeouts_validation_failures_and_scope_separate(self):
         controls = [({'status': 'timeout'}, 'timeout'),
+                    ({'status': 'resource_limit', 'failure': {'code': 'measurement_output_byte_limit'}}, 'resource_limit'),
                     ({'status': 'blocked', 'failure': {'code': 'source_correspondence_not_proven'}}, 'blocked'),
                     ({'status': 'failed', 'failure': {'code': 'new_design_equivalence_failed'}}, 'validation_failed'),
                     ({'status': 'failed', 'failure': {'code': 'state_outside_combinational_scope'}}, 'out_of_scope'),
@@ -117,6 +158,128 @@ class ExperimentSummaryTests(unittest.TestCase):
 
 
 class ExperimentMeasurementTests(unittest.TestCase):
+    def test_size_limit_retains_partial_files_and_is_not_a_proof_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)/'measurement'
+            process = MagicMock(pid=1001, returncode=-9)
+            process.poll.return_value = None
+            def launch(*args, **kwargs):
+                (output/'partial.jsonl').write_text('0123456789')
+                return process
+            with patch.object(experiment.subprocess, 'Popen', side_effect=launch), \
+                    patch.object(experiment, 'process_tree', return_value=(128, {1001, 1002})), \
+                    patch.object(experiment.time, 'perf_counter', side_effect=[0, 2, 3]), \
+                    patch.object(experiment.os, 'kill') as kill, patch.object(experiment.os, 'killpg'):
+                result = experiment.measured({'kind': 'baseline', 'archive_byte_limit': 5}, output, 100)
+            self.assertEqual(result['status'], 'resource_limit')
+            self.assertEqual(experiment.outcome(result), 'resource_limit')
+            self.assertEqual(result['failure']['limit_bytes'], 5)
+            self.assertGreaterEqual(result['failure']['observed_bytes'], 10)
+            self.assertEqual((output/'partial.jsonl').read_text(), '0123456789')
+            self.assertEqual({call.args[0] for call in kill.call_args_list}, {1001, 1002})
+
+    def test_directory_size_excludes_symlink_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job = root/'job'; job.mkdir()
+            (job/'actual').write_bytes(b'123')
+            (root/'outside').write_bytes(b'1234567890')
+            (job/'linked-file').symlink_to(root/'outside')
+            (job/'linked-directory').symlink_to(root, target_is_directory=True)
+            self.assertEqual(experiment.directory_bytes(job), 3)
+
+    def test_shared_baseline_uses_content_identity_and_does_not_rerun_or_overwrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first, second = root/'first.v', root/'second.v'
+            first.write_text('same RTL'); second.write_text('same RTL')
+            a, b = ({'base_source': str(p), 'top': 'top'} for p in (first, second))
+            cache = {}
+            with patch.object(experiment, 'measured', return_value={'status': 'resource_limit'}) as measure:
+                one = experiment.prepare_baseline('epfl-functional', a, 'retained', root/'original', {}, 1, cache, {})
+                two = experiment.prepare_baseline('epfl-functional', b, 'retained', root/'must-not-create', {}, 1, cache, {})
+            self.assertIs(one, two)
+            self.assertEqual(measure.call_count, 2)  # stock old + native old, once
+            self.assertEqual(two['baseline_reference'], str(root/'original'))
+            identity = experiment.baseline_identity('epfl-functional', a, 'retained')
+            self.assertNotEqual(identity, experiment.baseline_identity('anubis-functional', b, 'retained'))
+            self.assertNotEqual(identity, experiment.baseline_identity('epfl-functional', b, 'flatten'))
+            self.assertNotEqual(identity, experiment.baseline_identity('epfl-functional', dict(b, top='other'), 'retained'))
+            second.write_text('different RTL')
+            self.assertNotEqual(identity, experiment.baseline_identity('epfl-functional', b, 'retained'))
+
+    def test_reuse_fractions_use_old_cells_and_missing_values_stay_unknown(self):
+        self.assertEqual(experiment.reuse_columns(100, {'removed_cells': 10, 'reused_cells': 90}),
+                         {'base_cells': 100, 'removed_fraction': .1, 'reused_fraction': .9})
+        for denominator in (None, 0):
+            values = experiment.reuse_columns(denominator, {'removed_cells': 10, 'reused_cells': 90})
+            self.assertIsNone(values['removed_fraction'])
+            self.assertIsNone(values['reused_fraction'])
+        self.assertIsNone(experiment.reuse_columns(100, {})['removed_fraction'])
+
+    def test_epfl_schedule_shares_three_baselines_and_keeps_failed_qualification_rows(self):
+        from incremental.__main__ import parser
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            names = [c+'_'+edit for c in ('adder', 'bar', 'arbiter') for edit in ('local', 'shared')]
+            cases = {name: {'category': 'functional', 'family': 'epfl_mutated'} for name in names}
+            catalog = root/'catalog.json'; catalog.write_text(json.dumps(cases))
+            for filename in ('yosys', 'native', 'yosys-abc'):
+                (root/filename).write_text(filename)
+            args = parser().parse_args(['compare', '--suite', 'epfl-functional', '--repeats', '3',
+                                        '--out', str(root/'run')])
+            def prepare(name, dest):
+                dest.mkdir(parents=True)
+                circuit = name.split('_')[0]
+                (dest/'base.v').write_text(circuit)
+                (dest/'new.v').write_text(name)
+                (dest/'fixture.json').write_text('{}')
+                return {'top': 'top', 'case': name, 'base_source': str(dest/'base.v'),
+                        'new_source': str(dest/'new.v'), 'fixture_manifest': str(dest/'fixture.json'),
+                        'baseline_key': circuit}
+            calls = []
+            def measured(job, dest, timeout):
+                calls.append(job)
+                dest.mkdir(parents=True)
+                result = {'status': 'passed', 'measured_wall_seconds': 1}
+                if job['kind'] == 'qualification':
+                    if job['fixture']['case'] == 'adder_local':
+                        result['status'] = 'failed'
+                elif job['kind'] == 'baseline':
+                    base = dest/'base-run'; base.mkdir()
+                    (base/'manifest.json').write_text(json.dumps({'tool': {'abc': []}}))
+                    result.update(base_run=str(base), baseline_stages_seconds={'traced': .5})
+                elif job['kind'] == 'incremental':
+                    result.update(status='blocked', failure={'code': 'source_correspondence_not_proven'})
+                else:
+                    result.update(netlist=str(dest/'netlist.json'), rtl_to_netlist_seconds=.5,
+                                  netlist_generation_seconds=.5, post_generation_validation_seconds=.1)
+                (dest/'measurement.json').write_text(json.dumps(result))
+                return result
+            with patch.object(experiment, 'suite_definition', return_value=(cases, names, prepare, catalog)), \
+                    patch.object(experiment.shutil, 'which', side_effect=lambda value: str(root/('native' if 'native' in value else 'yosys'))), \
+                    patch.object(experiment.subprocess, 'check_output', return_value=experiment.PIN), \
+                    patch.object(experiment, 'measured', side_effect=measured), \
+                    patch('incremental.experiment_metrics.measure_netlist', return_value={'cell_count': 100, 'logic_depth': 8}):
+                report = experiment.run(args)
+            self.assertEqual(report['methods'], ['F', 'P-fine'])
+            self.assertEqual(len(report['measurements']), 36)
+            self.assertEqual(report['unique_baseline_count'], 3)
+            self.assertEqual(sum(j['kind'] == 'baseline' for j in calls), 3)
+            self.assertEqual(sum(j['kind'] == 'stock_old' for j in calls), 3)
+            self.assertEqual(sum(j['kind'] == 'qualification' for j in calls), 6)
+            self.assertEqual(report['status'], 'completed')
+            self.assertEqual(report['baselines']['bar_local/retained']['baseline_reference'],
+                             report['baselines']['bar_shared/retained']['baseline_reference'])
+            refused = [r for r in report['measurements'] if r['case'] == 'adder_local']
+            self.assertEqual(len(refused), 6)
+            self.assertTrue(all(r['outcome'] == 'blocked' and
+                                r['failure']['code'] == 'edit_qualification_not_proven' for r in refused))
+            self.assertEqual(report['counts'], {'success': 15, 'blocked': 21})
+            for item in report['summary']:
+                if item['case'] == 'adder_local' or item['method'] != 'F':
+                    self.assertNotIn('generation_speedup', item)
+
     def test_missing_or_modified_frozen_input_invalidates_measurement(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'input.v'
@@ -236,6 +399,36 @@ class ExperimentMeasurementTests(unittest.TestCase):
             self.assertNotIn('sampled_process_tree_rss_kib', result)
             self.assertEqual(result['worker_seconds'], 2)
 
+    def test_optional_mapping_failure_preserves_valid_generic_measurement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            generic = {'status': 'passed', 'netlist': '/tmp/generic.json',
+                       'netlist_generation_seconds': 2, 'post_generation_validation_seconds': 10}
+            area = {'status': 'failed', 'cell_area': None, 'mapping_seconds': 1,
+                    'validation_seconds': 3}
+            with patch.object(experiment_worker, 'full', return_value=generic), \
+                    patch('incremental.liberty_area.measure', return_value=area) as mapper:
+                result = experiment_worker.execute({'kind': 'full', 'library': {'sha256': 'lib'},
+                    'top': 'top', 'yosys': 'yosys'}, Path(directory))
+            self.assertEqual(result['status'], 'passed')
+            self.assertEqual(result['netlist_generation_seconds'], 2)
+            self.assertEqual(result['post_generation_validation_seconds'], 10)
+            self.assertEqual(result['library_area'], area)
+            mapper.assert_called_once()
+            with patch.object(experiment_worker, 'full', return_value=generic), \
+                    patch('incremental.liberty_area.measure', side_effect=OSError('area directory unavailable')):
+                result = experiment_worker.execute({'kind': 'full', 'library': {'sha256': 'lib'},
+                    'top': 'top', 'yosys': 'yosys'}, Path(directory))
+            self.assertEqual(result['status'], 'passed')
+            self.assertEqual(result['library_area']['failure']['code'], 'area_measurement_error')
+
+    def test_failed_generic_result_is_not_mapped_even_if_file_path_exists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(experiment_worker, 'full', return_value={
+                    'status': 'failed', 'netlist': '/tmp/partial.json'}), \
+                    patch('incremental.liberty_area.measure') as mapper:
+                experiment_worker.execute({'kind': 'full', 'library': {'sha256': 'lib'}}, Path(directory))
+            mapper.assert_not_called()
+
 
 class FrozenFixtureTests(unittest.TestCase):
     def test_catalog_retains_negative_cases_and_separates_synthetic_controls(self):
@@ -257,6 +450,27 @@ class FrozenFixtureTests(unittest.TestCase):
 
 
 class PrimaryComparisonSelectionTests(unittest.TestCase):
+    def test_epfl_defaults_are_single_mode_and_two_methods_with_mandatory_reference(self):
+        from incremental.__main__ import parser
+        from yosys_flow.common import TraceError
+        args = parser().parse_args(['compare', '--suite', 'epfl-functional', '--out', '/tmp/epfl'])
+        self.assertEqual(args.mode, 'retained')
+        self.assertEqual(experiment.selected_methods(args.suite, args.methods), ['F', 'P-fine'])
+        self.assertEqual(experiment.selected_methods('anubis-functional'), ['F', 'P-module', 'P-fine'])
+        self.assertEqual(experiment.selected_methods('epfl-functional', ['F', 'P-module']), ['F', 'P-module'])
+        self.assertIsNone(args.archive_byte_limit)
+        with self.assertRaisesRegex(TraceError, 'include F'):
+            experiment.selected_methods('epfl-functional', ['P-fine'])
+        with self.assertRaisesRegex(TraceError, 'unique'):
+            experiment.selected_methods('epfl-functional', ['F', 'F'])
+
+    def test_suite_catalogs_do_not_allow_cross_suite_cases(self):
+        from yosys_flow.common import TraceError
+        with self.assertRaises(TraceError):
+            experiment.suite_definition('anubis-functional', ['epfl_adder_local'])
+        with self.assertRaises(TraceError):
+            experiment.suite_definition('epfl-functional', ['compare_local9'])
+
     def test_primary_default_keeps_both_anubis_functional_cases_including_blocker(self):
         self.assertEqual(experiment_cases.PRIMARY_CASES, ('compare_local9', 'control_local2'))
         self.assertEqual(experiment_cases.select_cases(), ['compare_local9', 'control_local2'])
@@ -290,6 +504,9 @@ class PrimaryComparisonSelectionTests(unittest.TestCase):
         self.assertEqual(compare.suite, 'anubis-functional')
         self.assertEqual(compare.precheck, 'off')
         self.assertIsNone(compare.cases)
+        self.assertIsNone(compare.liberty)
+        mapped = parser().parse_args(['compare', '--liberty', '/tmp/cells.lib', '--out', '/tmp/mapped'])
+        self.assertEqual(mapped.liberty, '/tmp/cells.lib')
         diagnostic = parser().parse_args(['compare', '--suite', 'diagnostic', '--precheck', 'both',
                                          '--cases', 'bypass_noc1', '--out', '/tmp/diagnostic'])
         self.assertEqual(experiment_cases.select_cases(diagnostic.suite, diagnostic.cases), ['bypass_noc1'])

@@ -1,4 +1,4 @@
-# 来源记录与区域契约子系统
+# 来源记录、索引与区域导出
 
 本目录集中保存来源追踪的 Python 实现、原生钩子、构建工具、测试和文档。以下命令均在仓库根目录执行。局部综合与替换实验位于独立的 [incremental/](../incremental/README.md)。
 
@@ -25,6 +25,12 @@ make test
 ```
 
 `make` 构建固定插桩 ABC 到 `build/abc/install`，再构建原生插桩 Yosys 到 `build/native/install`。`--native-yosys` 指向该工具，`--yosys` 指向独立原版，二者不能是同一文件。每次 `run` 使用新目录，`extract` 也不会覆盖已有文件。`make demo` 使用 `provenance/examples/comb.v`，可通过 `DEMO_OUT` 指定新目录。
+
+## 首次建档的可复用索引
+
+新建归档在来源、网表和独立对照检查通过后保存 `verified-index.json.gz`，供查询和自动增量复用旧来源状态及连接索引。它绑定原始产物与实现版本，并由本机密钥认证；每次仍核对原始产物哈希。旧归档缺索引、实现变化或异机无认证密钥时回退完整重放，不自动修改归档；内容损坏拒绝。原始 JSONL、ABC 证据和最终网表继续保留，索引只是验证加速副本，不能消除候选或边界问题。`yosys_flow validate` 强制完整重放，`contract-validate` 则可用已认证索引重建区域声明。
+
+自动增量按需生成轻量 `replacement-plan.json`，引用旧证据并重新确定本次边界。完整 v1 契约、合并和导出继续作为独立接口，详见 [区域契约与替换计划](docs/region-contracts.md)；首次与在线分工见 [自动流程](../incremental/automatic.md#首次建档与在线替换计划)。
 
 ## 输入范围
 
@@ -55,7 +61,7 @@ python3 -m yosys_flow run --source provenance/examples/hierarchy.v --top demo --
 
 `diagnose` 从同一次运行的记录生成旧区域诊断，不启动 Yosys/ABC：列出边界及全部所选门的外部使用者、其他已记录来源、候选依据，并检查是否包含已记录门组的全部最终成员。若只选中门组的一部分，会列出需要补入的对象，保持原选择不变。电气边界完整、记录门组闭合和修改后的安全替换是不同结论，诊断继续报告未证明的条件。详见[区域诊断与基线](docs/abc-diagnostics.md)。
 
-`contract` 将查询结果交付为绑定原始版本的区域契约，显式补齐已记录门组，保存所有边界输出的函数、使用者、共享来源和证明缺口。`contract-validate` 对照记录重新验证；`contract-merge` 合并同一次运行的契约，重新计算边界并验证每一个输出，支持重叠和嵌套合并。三者不启动综合；`extract --contract <文件>` 可导出合并后的完整区域。契约的输出函数验证以重放的最终对象和最终网表为依据，不能替代 RTL 来源完整性证明。命令与验收见[区域契约](docs/region-contracts.md)。
+`contract` 是独立的完整来源审查接口，将查询结果交付为绑定原始版本的 v1 区域契约，显式补齐已记录门组，保存所有边界输出的函数、使用者、共享来源和证明缺口。`contract-validate` 对照记录重新验证；`contract-merge` 合并同一次运行的契约，重新计算边界并验证每一个输出，支持重叠和嵌套合并。三者不启动综合；`extract --contract <文件>` 可导出合并后的完整区域。契约的输出函数验证以重放的最终对象和最终网表为依据，不能替代 RTL 来源完整性证明。命令与验收见[区域契约](docs/region-contracts.md)。
 
 `coverage=partial`、`end_to_end_exact=false`、`safe_for_incremental_reuse=false` 继续保留。`abc_internal_cut` 表示内部证据支持的局部功能切点证明，不表示完整因果历史；`abc_internal_joint_cut` 表示多门整体对应，组内不能逐门独占归给某条语句；`abc_output_cone_candidate` 和 `abc_region_candidate` 均为候选；导出格式等价不证明语句选择准确，也不证明可安全替换逻辑。
 

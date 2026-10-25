@@ -81,10 +81,11 @@ def main():
               'nochange_experiment_directory': str((out/'nochange').resolve()),
               'sequential_experiment_directory': str((out/'sequential').resolve()),
               'acceptance_layers': {
-                  'record_consistency': ['test_native', 'test_synth', 'test_cli', 'test_hierarchy'],
+                  'record_consistency': ['test_native', 'test_synth', 'test_cli', 'test_hierarchy',
+                                         'test_persistent_index'],
                   'source_selection': ['test_process', 'test_selection', 'test_abc_internal', 'test_abc_factoring',
                                        'test_boolean', 'test_abc_scale', 'test_diagnostics', 'test_contracts'],
-                  'region_contracts': ['test_contracts', 'test_hierarchy'],
+                  'region_contracts': ['test_contracts', 'test_plans', 'test_hierarchy'],
                   'hierarchical_instances': ['test_hierarchy'],
                   'local_replacement_experiment': ['incremental.tests.test_replacement'],
                   'anubis_external_edits': ['incremental.tests.test_anubis'],

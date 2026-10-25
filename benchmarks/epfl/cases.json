@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "suite": "epfl-functional",
+  "scope": "original_single_module_structural_combinational_Verilog_with_one_operator_mutation",
+  "selection_fixed_before_incremental_outcomes": true,
+  "selection_rules": {
+    "local": "Among internal AND assignments reaching an output: fewest reachable output ports, then shortest maximum distance to any output, then earliest source line.",
+    "shared": "Among internal AND assignments reaching an output: most reachable output ports, then highest immediate fanout, then earliest source line.",
+    "mutation": "Replace exactly one & with |; retain all ports, signal names, declarations and other source bytes.",
+    "eligibility": "Find a concrete full-top binary difference with Yosys SAT, independently replay all outputs directly on both source DAGs. Keep failed qualifications in experiment report."
+  },
+  "cases": [
+    {
+      "name": "epfl_adder_local",
+      "circuit": "adder",
+      "variant": "local",
+      "family": "epfl_mutated",
+      "category": "functional",
+      "expected_change": "functional_change",
+      "upstream_file": "arithmetic/adder.v",
+      "mutation": {
+        "line": 183,
+        "target": "n386",
+        "original": "  assign n386 = \\a[0]  & ~\\b[0] ;",
+        "reachable_output_count": 1,
+        "max_source_distance_to_output": 1,
+        "direct_users": 1,
+        "replacement": "  assign n386 = \\a[0]  | ~\\b[0] ;"
+      },
+      "new_source_sha256": "198f8de8c3f58abe35f021ffdfd8439a0658c0d95bc65cee00a29385355f9d89"
+    },
+    {
+      "name": "epfl_adder_shared",
+      "circuit": "adder",
+      "variant": "shared",
+      "family": "epfl_mutated",
+      "category": "functional",
+      "expected_change": "functional_change",
+      "upstream_file": "arithmetic/adder.v",
+      "mutation": {
+        "line": 186,
+        "target": "n389",
+        "original": "  assign n389 = \\a[0]  & \\b[0] ;",
+        "reachable_output_count": 128,
+        "max_source_distance_to_output": 254,
+        "direct_users": 3,
+        "replacement": "  assign n389 = \\a[0]  | \\b[0] ;"
+      },
+      "new_source_sha256": "4aa8ea1b9a02b96b26920d379a99ba83230aa64459acf43ad2ed31ddb4c37641"
+    },
+    {
+      "name": "epfl_bar_local",
+      "circuit": "bar",
+      "variant": "local",
+      "family": "epfl_mutated",
+      "category": "functional",
+      "expected_change": "functional_change",
+      "upstream_file": "arithmetic/bar.v",
+      "mutation": {
+        "line": 620,
+        "target": "n483",
+        "original": "  assign n483 = ~\\shift[6]  & ~n482;",
+        "reachable_output_count": 1,
+        "max_source_distance_to_output": 1,
+        "direct_users": 1,
+        "replacement": "  assign n483 = ~\\shift[6]  | ~n482;"
+      },
+      "new_source_sha256": "8ebdff9c401cafef3187b2de1b1a7765861f64a79446a9f888fc754f5ad72054"
+    },
+    {
+      "name": "epfl_bar_shared",
+      "circuit": "bar",
+      "variant": "shared",
+      "family": "epfl_mutated",
+      "category": "functional",
+      "expected_change": "functional_change",
+      "upstream_file": "arithmetic/bar.v",
+      "mutation": {
+        "line": 412,
+        "target": "n275",
+        "original": "  assign n275 = ~\\shift[2]  & ~\\shift[3] ;",
+        "reachable_output_count": 128,
+        "max_source_distance_to_output": 8,
+        "direct_users": 128,
+        "replacement": "  assign n275 = ~\\shift[2]  | ~\\shift[3] ;"
+      },
+      "new_source_sha256": "f2da439f5cabdebaca98e4eebd463dce74d53bde42f16919ea0f7c94295b2690"
+    },
+    {
+      "name": "epfl_arbiter_local",
+      "circuit": "arbiter",
+      "variant": "local",
+      "family": "epfl_mutated",
+      "category": "functional",
+      "expected_change": "functional_change",
+      "upstream_file": "random_control/arbiter.v",
+      "mutation": {
+        "line": 1683,
+        "target": "n721",
+        "original": "  assign n721 = ~n717 & n720;",
+        "reachable_output_count": 1,
+        "max_source_distance_to_output": 1,
+        "direct_users": 1,
+        "replacement": "  assign n721 = ~n717 | n720;"
+      },
+      "new_source_sha256": "8580e70c29d82329b25ee33a5bd994d04cfe5b98928c9f041126e8de1b316d6a"
+    },
+    {
+      "name": "epfl_arbiter_shared",
+      "circuit": "arbiter",
+      "variant": "shared",
+      "family": "epfl_mutated",
+      "category": "functional",
+      "expected_change": "functional_change",
+      "upstream_file": "random_control/arbiter.v",
+      "mutation": {
+        "line": 1350,
+        "target": "n388",
+        "original": "  assign n388 = ~\\req[2]  & ~\\req[3] ;",
+        "reachable_output_count": 43,
+        "max_source_distance_to_output": 85,
+        "direct_users": 3,
+        "replacement": "  assign n388 = ~\\req[2]  | ~\\req[3] ;"
+      },
+      "new_source_sha256": "03afb5ea479adb9ed8ed38653cc32e1ce1551e26395b682b5494d4110e16cb28"
+    }
+  ]
+}

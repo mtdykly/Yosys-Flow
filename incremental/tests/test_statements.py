@@ -232,7 +232,7 @@ class StatementTests(unittest.TestCase):
         self.assertEqual({r['wire'] for r in result['statement_plan']['seeds']},{'\\result'})
         original=json.loads((self.baselines['chain']/'after.json').read_text())['modules']['demo']
         t=set(original['ports']['t']['bits'])
-        contract=json.loads((out/'region.contract.json').read_text())
+        contract=json.loads((out/'replacement-plan.json').read_text())
         self.assertTrue(t<={r['original_bit'] for r in contract['boundary'] if r['direction']=='input'})
         spec=json.loads((out/'patch-specification.json').read_text())
         self.assertFalse(any(c['type']=='$and' for c in json.loads((out/'work/statement-slice.json').read_text())['modules']['__auto_patch']['cells'].values()))
@@ -254,7 +254,7 @@ class StatementTests(unittest.TestCase):
 
     def test_source_gate_derivation_replays_all_outputs_and_rejects_forgery(self):
         _,out=self.successful('chain')
-        contract=json.loads((out/'region.contract.json').read_text())
+        contract=json.loads((out/'replacement-plan.json').read_text())
         self.assertEqual(contract['derivation']['kind'],'source_cells')
         context=ContractContext(self.baselines['chain'])
         self.assertEqual(context.validate(contract),contract)

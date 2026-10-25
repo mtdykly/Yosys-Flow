@@ -87,7 +87,11 @@ class AbcScaleTests(unittest.TestCase):
         for setting,limit,reason in [('MAX_BDD_NODES',5,'bdd_node_limit_exceeded'),
                                       ('MAX_BDD_WORK',0,'bdd_work_limit_exceeded')]:
             with self.subTest(setting=setting), patch('yosys_flow.boolean.'+setting,limit):
-                selected = query(self.args(32))
+                args = self.args(32)
+                # Inject exhaustion into a fresh proof, not a previously
+                # completed proof restored from the authenticated index.
+                manifest,trace,_ = load_run(args.directory,use_index=False)
+                selected = query_loaded(args,manifest,trace)
                 internal = selected['abc_internal'][0]
                 self.assertEqual(internal['fallback_reason'],reason)
                 self.assertEqual(internal['function_proof']['status'],'incomplete')
@@ -100,7 +104,9 @@ class AbcScaleTests(unittest.TestCase):
             if count>10: raise ProofBudgetExceeded('bdd_work_limit_exceeded')
             return cut_domain(count, **kwargs)
         with patch('yosys_flow.abc_joint.cut_domain',side_effect=limited):
-            selected = query(self.args(32))
+            args = self.args(32)
+            manifest,trace,_ = load_run(args.directory,use_index=False)
+            selected = query_loaded(args,manifest,trace)
         internal = selected['abc_internal'][0]
         self.assertEqual(internal['function_proof']['status'],'verified')
         self.assertIsNone(internal['fallback_reason'])

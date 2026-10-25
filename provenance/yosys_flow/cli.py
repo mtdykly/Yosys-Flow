@@ -80,7 +80,7 @@ def main(argv=None):
         elif args.command == 'contract-merge':
             result = contracts.merge(args)
         else:
-            _, _, result = load_run(args.directory)
+            _, _, result = load_run(args.directory, use_index=False)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     except (TraceError, OSError, ValueError, KeyError, TypeError, IndexError, subprocess.SubprocessError) as exc:

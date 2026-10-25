@@ -183,6 +183,7 @@ def diagnose(args):
     manifest, trace, _ = load_run(args.directory, timings=timings)
     timings['load_and_validate_total'] = time.perf_counter()-started
     report = diagnose_loaded(args,manifest,trace)
+    report['archive_load'] = {'verified_index_status':timings.pop('verified_index_status','not_reported')}
     report['timings_seconds'].update(timings)
     report['inventory'] = inventory(args.directory,trace)
     return report

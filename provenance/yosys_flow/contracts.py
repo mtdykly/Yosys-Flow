@@ -21,6 +21,7 @@ from .runner import load_run, query_loaded
 SELECTOR_KEYS = ('source','line','end_line','column','end_column','object','instance')
 EXACT_PRECISIONS = {'cell','bit_range','process_action','abc_internal_cut','abc_internal_joint_cut'}
 RULE = 'recorded_region_contract_v1'
+PLAN_RULE = 'recorded_replacement_plan_v2'
 
 
 def fingerprint(value):
@@ -68,10 +69,12 @@ def outside_paths(module, names, boundary):
 
 
 class ContractContext:
-    def __init__(self, directory):
+    def __init__(self, directory, *, compact=False):
+        self.compact = compact
         self.directory = Path(directory).resolve()
         manifest_hash = digest(self.directory/'manifest.json')
-        self.manifest,self.trace,_ = load_run(self.directory)
+        self.load_timings = {}
+        self.manifest,self.trace,_ = load_run(self.directory,timings=self.load_timings)
         require(self.manifest['flow']=='synth', 'region contracts require the default synth endpoint')
         netlist = (self.directory/'after.json').read_bytes()
         require(hashlib.sha256(netlist).hexdigest()==self.manifest['artifacts']['after.json']['sha256'],
@@ -83,6 +86,10 @@ class ContractContext:
                          'manifest_sha256':manifest_hash,
                          'artifacts':self.manifest['artifacts'], 'inputs':self.manifest['inputs']}
         self.validated, self.queries = {}, {}
+        # Encoded copies keep callers from mutating a cached, trusted recipe.
+        # Only compact plans are cached: legacy expanded evidence can be huge.
+        self.plans = {}
+        self._users = None
 
     def input_changes(self):
         return [r['path'] for r in self.manifest['inputs'] if not Path(r['path']).is_file() or digest(r['path'])!=r['sha256']]
@@ -97,6 +104,25 @@ class ContractContext:
 
     def cell(self, ref):
         require(ref in self.trace.final, 'contract cell is not live in this baseline')
+        if self.compact:
+            row = self.trace.objects[ref]
+            state = row['state']
+            # Preserve the reverse query's source-path check even for cells
+            # added by joint-group closure rather than the initial selector.
+            reachable = set(row['origins'])
+            for edge in self.trace.edges:
+                if edge['from'] in reachable: reachable.add(edge['to'])
+            require(ref in reachable, 'selected object has no continuous source evidence path')
+            result = {k:state[k] for k in ('module','name','type')}
+            result.update(ref=ref, precision=row['precision'], origin_ids=row['origins'])
+            result.update({k:row[k] for k in ('definition_ref','definition_module','definition_name',
+                                             'instance','instance_aliases') if k in row})
+            if self._users is None: _,self._users = endpoints(self.module)
+            cell = self.module['cells'][unescape(state['name'])]
+            bits = {b for p,bs in cell['connections'].items() if cell['port_directions'][p]=='output'
+                    for b in bs if isinstance(b,int)}
+            result['consumers'] = [u for b in sorted(bits) for u in self._users[b]]
+            return result
         selector = dict.fromkeys(SELECTOR_KEYS)
         selector['object'] = ref
         return self.query(selector)['final_cells'][0]
@@ -109,18 +135,55 @@ class ContractContext:
 
     def validate(self, document, depth=0):
         require(depth<=16, 'contract parent nesting limit exceeded')
-        require(document.get('schema_version')==1 and document.get('proof_rule')==RULE,
+        schema = document.get('schema_version')
+        require((schema,document.get('proof_rule')) in {(1,RULE),(2,PLAN_RULE)},
                 'unsupported region contract schema or proof rule')
         require(document.get('contract_id')==seal(document)['contract_id'], 'contract content hash mismatch')
         require(document.get('baseline')==self.baseline, 'contract baseline differs from this run')
         key = document['contract_id']
         if key not in self.validated:
-            expected = self.build(document['derivation'],depth)
+            expected = self._build_mode(document['derivation'],depth,compact=schema==2)
             require(document==expected, 'contract differs from replayed region, outputs, evidence or obligations')
             self.validated[key] = True
         return document
 
     def build(self, derivation, depth=0):
+        return self._build_mode(derivation,depth,compact=self.compact)
+
+    def _build_mode(self, derivation, depth, *, compact):
+        original = self.compact
+        self.compact = compact
+        try:
+            document = self._build(derivation,depth)
+            if compact:
+                self.validated[document['contract_id']] = True
+                self.plans[document['contract_id']] = json.dumps(document,separators=(',',':'),ensure_ascii=False)
+            return document
+        finally:
+            self.compact = original
+
+    def _parent(self, item, depth):
+        if not self.compact or 'schema_version' in item:
+            document = self.validate(item,depth)
+            # An explicit old contract may participate in a compact union, but
+            # the recipe must replay to the new representation deterministically.
+            if self.compact and document['schema_version']==1:
+                return self.build(document['derivation'],depth)
+            return document
+        require(set(item)=={'contract_id','derivation'}, 'invalid replacement plan parent recipe')
+        if item['contract_id'] in self.plans:
+            document = json.loads(self.plans[item['contract_id']])
+            require(document['derivation']==item['derivation'], 'replacement plan parent recipe mismatch')
+        else:
+            document = self.build(item['derivation'],depth)
+        require(document['contract_id']==item['contract_id'], 'replacement plan parent identity mismatch')
+        return document
+
+    @staticmethod
+    def _recipe(document):
+        return {'contract_id':document['contract_id'],'derivation':document['derivation']}
+
+    def _build(self, derivation, depth=0):
         require(depth<=16, 'contract parent nesting limit exceeded')
         parents = []
         additional_inputs = []
@@ -140,10 +203,10 @@ class ContractContext:
         elif kind=='union':
             require(set(derivation)=={'kind','parents'} and 2<=len(derivation['parents'])<=32,
                     'contract union requires 2 to 32 distinct parents')
-            parents = [self.validate(p,depth+1) for p in derivation['parents']]
+            parents = [self._parent(p,depth+1) for p in derivation['parents']]
             require(len({p['contract_id'] for p in parents})==len(parents), 'duplicate parent contract')
             parents.sort(key=lambda p:p['contract_id'])
-            derivation = {'kind':'union','parents':parents}
+            derivation = {'kind':'union','parents':[self._recipe(p) for p in parents] if self.compact else parents}
             requested = {r for p in parents for r in p['request']['cell_refs']}
             connections = {c['ref'] for p in parents for c in p['region']['connections']}
             source_ids = {r for p in parents for r in p['request']['source_ids']}
@@ -153,7 +216,9 @@ class ContractContext:
             require(set(derivation)=={'kind','parent','input_bits'} and isinstance(derivation['input_bits'],list)
                     and all(type(b) is int for b in derivation['input_bits']), 'invalid edit input extension')
             require(derivation['input_bits']==sorted(set(derivation['input_bits'])), 'edit input extension must be sorted and unique')
-            parent=self.validate(derivation['parent'],depth+1);parents=[parent]
+            parent=self._parent(derivation['parent'],depth+1);parents=[parent]
+            if self.compact:
+                derivation = {**derivation,'parent':self._recipe(parent)}
             requested=set(parent['request']['cell_refs']);connections={c['ref'] for c in parent['region']['connections']}
             source_ids=set(parent['request']['source_ids']);starting={c['ref'] for c in parent['region']['cells']}
             additional_inputs=derivation['input_bits']+[b['original_bit'] for b in parent['boundary'] if b['reason']=='new_edit_dependency']
@@ -208,12 +273,26 @@ class ContractContext:
         edges = [e for e in self.trace.edges if e['to'] in supporting]
         associations = [r for r in self.trace.abc_associations if r['ref'] in supporting]
         origin_ids = {s for c in cells for s in c['origin_ids']} | {s for c in connection_rows for s in c['origins']}
-        provenance = {'sources':[self.trace.sources[s] for s in sorted(origin_ids)],
-            'supporting_edges':edges, 'record_event_ids':sorted({e['event_id'] for e in edges}),
-            'abc_associations':associations,
-            'abc_internal':[r for r in self.trace.abc_internal if r['invocation_id'] in {a['invocation_id'] for a in associations}],
+        invocation_ids = {a['invocation_id'] for a in associations}
+        provenance = {'record_event_ids':sorted({e['event_id'] for e in edges}),
             'coverage':self.manifest['coverage'], 'coverage_gaps':self.manifest['coverage_gaps'],
             'source_completeness_proven':False, 'complete_causal_history':False}
+        if self.compact:
+            # Indices name the deterministic, manifest-bound replay view, not
+            # arbitrary caller files. validate() reconstructs each reference.
+            # Keep identities beside indices for readable diagnostics; no ABC
+            # joint-group history or raw edge is copied into an online plan.
+            provenance.update(evidence_encoding='baseline_replay_references_v1',
+                source_ids=sorted(origin_ids),
+                supporting_edge_indices=[i for i,e in enumerate(self.trace.edges) if e['to'] in supporting],
+                abc_associations=[{'ref':a['ref'],'invocation_id':a['invocation_id'],'evidence_index':i}
+                                  for i,a in enumerate(self.trace.abc_associations) if a['ref'] in supporting],
+                abc_internal=[{'invocation_id':r['invocation_id'],'evidence_index':i}
+                              for i,r in enumerate(self.trace.abc_internal) if r['invocation_id'] in invocation_ids])
+        else:
+            provenance.update(sources=[self.trace.sources[s] for s in sorted(origin_ids)],
+                supporting_edges=edges, abc_associations=associations,
+                abc_internal=[r for r in self.trace.abc_internal if r['invocation_id'] in invocation_ids])
         by_name = {unescape(c['name']):c for c in cells}
         outputs = []
         for proof in functions['outputs']:
@@ -250,7 +329,9 @@ class ContractContext:
         if not closed['complete_for_recorded_groups']: blockers.append('recorded_group_not_closed')
         if candidates: blockers.append('candidate_source_associations')
         if unresolved_connections: blockers.append('connection_consumers_not_fully_bound')
-        result = {'schema_version':1, 'report_type':'region_contract', 'proof_rule':RULE,
+        result = {'schema_version':2 if self.compact else 1,
+            'report_type':'replacement_plan' if self.compact else 'region_contract',
+            'proof_rule':PLAN_RULE if self.compact else RULE,
             'baseline':self.baseline, 'derivation':derivation,
             'request':{'cell_refs':sorted(requested), 'connection_refs':sorted(connections), 'source_ids':sorted(source_ids)},
             'region':{'cells':cells,'connections':connection_rows,'recorded_cell_functions':recorded},
@@ -264,6 +345,17 @@ class ContractContext:
                 'candidate_refs':candidates, 'unresolved_connection_users':unresolved_connections,
                 'scope':'baseline_region_functions_and_reported_evidence_only'},
             'safe_for_incremental_reuse':False, 'end_to_end_exact':False, 'synthesis_invocations':0}
+        if self.compact:
+            result.pop('other_recorded_sources')
+            result['other_recorded_source_ids'] = sorted(origin_ids-source_ids)
+            # Output functions are retained once, in outputs. The validation
+            # summary refers to those same ports rather than embedding the DAG
+            # a second time (which can dominate an arithmetic region's plan).
+            result['verification']['all_output_functions'] = {
+                **{k:v for k,v in functions.items() if k!='outputs'},
+                'output_evidence':'outputs',
+                'outputs':[{k:v for k,v in r.items() if k not in {'function','cone_cells'}}
+                           for r in functions['outputs']]}
         if len(self.trace.instance_catalog)>1:
             result['hierarchy'] = {'netlist_view':self.trace.view_rule,'instances':self.trace.instance_catalog,
                 'recorded_flatten_events':list(self.trace.flatten_events.values()),
@@ -286,6 +378,18 @@ class ContractContext:
                 'parent_boundary_mapping':mappings, 'all_outputs_recomputed':True,
                 'reused_association_refs':sorted({a['ref'] for p in parents for a in p['provenance']['abc_associations']})}
         return seal(deepcopy(result))
+
+    def expanded_provenance(self, document):
+        """Resolve evidence only for an explicit audit/export, never for splice."""
+        provenance = document['provenance']
+        if document['schema_version']==1: return provenance
+        self.validate(document)
+        return {**{k:v for k,v in provenance.items()
+                   if k not in {'source_ids','supporting_edge_indices','evidence_encoding'}},
+            'sources':[self.trace.sources[s] for s in provenance['source_ids']],
+            'supporting_edges':[self.trace.edges[i] for i in provenance['supporting_edge_indices']],
+            'abc_associations':[self.trace.abc_associations[r['evidence_index']] for r in provenance['abc_associations']],
+            'abc_internal':[self.trace.abc_internal[r['evidence_index']] for r in provenance['abc_internal']]}
 
 
 def publish(path, document):
@@ -321,10 +425,12 @@ def export_selection(context, document):
         if edge['to'] in supporting: supporting.add(edge['from'])
     nodes = [r for ref,r in context.trace.process_nodes.items() if ref in supporting]
     actions = {r['action'] for r in nodes if 'action' in r}
-    provenance = document['provenance']
+    provenance = context.expanded_provenance(document)
     invocations = {r['invocation_id'] for r in provenance['abc_associations']}
     changed = context.input_changes()
     cells,connections = document['region']['cells'],document['region']['connections']
+    if document['schema_version']==2:
+        cells = [{**c,'all_origins':[context.trace.sources[s] for s in c['origin_ids']]} for c in cells]
     return {'final_cells':cells, 'final_connections':connections, 'resolution':'contract_region',
         'association_precision':sorted({r['precision'] for r in cells+connections}),
         'seeds':document['request']['source_ids'], 'sources':provenance['sources'],

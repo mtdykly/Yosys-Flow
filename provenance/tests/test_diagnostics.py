@@ -54,6 +54,8 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual(report['replacement_assessment']['status'],'not_proven')
         self.assertEqual(report['inventory']['abc_regions'][0]['input_count'],5)
         self.assertGreater(report['inventory']['abc_trace_bytes'],0)
+        self.assertIn('verified_index_status',report['archive_load'])
+        self.assertNotIn('verified_index_status',report['timings_seconds'])
         for key in ('artifact_hash_check','record_replay_and_netlist_check','abc_artifact_check_and_proof','query_from_loaded_records'):
             self.assertGreaterEqual(report['timings_seconds'][key],0)
 
@@ -122,6 +124,17 @@ class DiagnosticTests(unittest.TestCase):
         self.assertFalse(first['missing_cells'])
         self.assertEqual(first['cut_proven_count'],1)
         aggregate=summarize([report,report])[0]
+        self.assertNotIn('verified_index_status',report['timings_seconds'])
+        self.assertNotIn('verified_index_status',aggregate['timings_seconds_median'])
+        self.assertEqual(aggregate['verified_index_status_counts'],{report['archive_load']['verified_index_status']:2})
+        # Retained samples from the first index implementation remain readable,
+        # including mixtures of cache-hit and raw-replay observations.
+        old=copy.deepcopy(report)
+        old.pop('archive_load')
+        old['timings_seconds']['verified_index_status']='implementation_changed'
+        mixed=summarize([report,old])[0]
+        self.assertEqual(mixed['verified_index_status_counts']['implementation_changed'],1)
+        self.assertNotIn('verified_index_status',mixed['timings_seconds_median'])
         self.assertTrue(aggregate['queries'][0]['exact_in_all_samples'])
         self.assertIsNone(aggregate['sample_max_rss_kib_median'])
         self.assertEqual(aggregate['samples'],2)

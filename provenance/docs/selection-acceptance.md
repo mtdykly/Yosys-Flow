@@ -109,7 +109,7 @@ python3 -m yosys_flow extract runs/selection-demo --source provenance/examples/s
 
 符号证明必须保留跨网络输入绑定、极性和切点独立性的依据，不能简单截掉依赖后判相等。区域预算耗尽保留候选；局部尝试耗尽预算只取消该尝试，保留其他证明及未证明候选。后续根据更复杂函数的节点/计算量决定局部验证分解、SAT 或减少重复快照；当前尚未实现 SAT，也未消除复杂全域函数造成的整体回退。
 
-旧基线中，12/16/32 输入时，一个门的目标分别返回 11/15/31 个候选门，原因为 `input_limit_exceeded`。新验收要求这些区域中的 `t` 和 `small` 语句各只返回自己的一个门；下游 `y` 的选择排除上游两门，来源、反查和独立边界均符合预期。所有规模案例都要求 `exact_cell_selection` 且没有候选，多选不再作为该里程碑的可通过状态。运行和字段见 [abc-diagnostics.md](abc-diagnostics.md)。
+验收要求 12/16/32 输入区域中的 `t` 和 `small` 语句各只返回自己的一个门；下游 `y` 的选择排除上游两门，来源、反查和独立边界均符合预期。所有规模案例都要求 `exact_cell_selection` 且没有候选，多选不再作为该里程碑的可通过状态。运行和字段见 [abc-diagnostics.md](abc-diagnostics.md)。
 
 `provenance/tests/test_diagnostics.py` 验证从已有记录诊断时没有外部工具调用、不会修改运行产物；共享输出 `y/z` 必须同时列出；单独查询一个门组成员会报告其他必需成员，且不暗中扩张选择；遗漏输出/消费者或损坏记录会被发现。还检查源码变更提示、常量值不被当成共享电气身份，以及规模采样要求独立精度预期。
 
@@ -117,7 +117,7 @@ python3 -m yosys_flow extract runs/selection-demo --source provenance/examples/s
 
 ## 区域契约验收（首轮已实现）
 
-契约独立验证层不替代前面的记录、来源选择与导出三层。`provenance/tests/test_contracts.py` 包含 18 项测试，验收如下：
+契约独立验证层不替代前面的记录、来源选择与导出三层。`provenance/tests/test_contracts.py` 的验收条件如下：
 
 - 两级链的局部输入及极性正确；合并后消去区间输入，并在原始输入所有取值上符合例子的独立 RTL 功能预期。
 - `factoring.v` 的共享输出同时保留 `y/z`；`multilevel.v` 的单对象契约显式补齐记录门组；32 输入案例仍只选择目标门。
@@ -129,11 +129,11 @@ python3 -m yosys_flow extract runs/selection-demo --source provenance/examples/s
 - 离线契约命令禁止外部进程并保留原始运行文件；源码变更提示仅影响当前适用性，不改写旧记录。
 - 合并契约实际导出 Verilog，并通过已有网表和重读等价验证。
 
-本轮完整回归：`runs/region-contracts-regression/report.json`，124 项通过、零跳过。契约输出函数验证的参考是最终对象记录和最终网表，尚未建立从任意原始 RTL 到每个边界输出的完整语义证明。详见 [region-contracts.md](region-contracts.md)。
+契约输出函数验证的参考是最终对象记录和最终网表，尚未建立从任意原始 RTL 到每个边界输出的完整语义证明。轻量计划另由 `provenance/tests/test_plans.py` 核对与完整契约的成员、边界和验证结果一致，并检查证据篡改拒绝。详见 [region-contracts.md](region-contracts.md)。
 
 ## 普通组合层次验收
 
-`provenance/tests/test_hierarchy.py` 包含 16 项测试，使用原生和独立原版工具执行完整综合。默认保留层次，显式 `--flatten` 请求展平；实际产物分别和相同配置的原版完整 JSON modules 比较。用户的 keep_hierarchy 属性另有混合模式测试。
+`provenance/tests/test_hierarchy.py` 使用原生和独立原版工具执行完整综合。默认保留层次，显式 `--flatten` 请求展平；实际产物分别和相同配置的原版完整 JSON modules 比较。用户的 keep_hierarchy 属性另有混合模式测试。
 
 - 两层双实例中，同一行源码按 `demo/u0/inner` / `demo/u1/inner` 分别只选目标门；省略实例时返回两份。定义对象反查有歧义时不能默认选一个实例。
 - 不同参数实例的宽度、数值参数及端口切片上下文正确；组合过程的动作报告保留实例身份。
@@ -143,13 +143,13 @@ python3 -m yosys_flow extract runs/selection-demo --source provenance/examples/s
 - 保留层次的电气实例视图与原始设计另做完整等价检查；后续查询、契约验证不调用外部工具，重建视图必须与已验证产物相同。
 - 错误的实例身份、源码复制或逐位映射必须被拒绝；子模块中的状态、黑盒、inout 和跨模块环路不发布成功运行。
 
-最终完整回归 `runs/hierarchy-final-regression/report.json` 为 **140 项通过、零失败、零跳过**，包含过程动作报告保留、门组隔离和视图重建校验。保留层次与展平的实际示例分别在 `runs/hierarchy-demo-retained/` 和 `runs/hierarchy-demo-flat/`，包含两份查询、单区域契约、合并契约和导出的 `union.v`。
+层次示例及生成查询、单区域契约、合并契约和导出文件的命令见 [hierarchy.md](hierarchy.md)。运行产物由命令生成，不依赖仓库保留历史示例目录。
 
 本阶段新增 hierarchy/flatten 的实际证据，并修复多个 ABC 调用都应校验导出边界的检查位置；没有为了层次支持假定 ABC 完整因果历史已完成。已有候选、覆盖缺口与未来修改未评估状态保持不变。详见 [hierarchy.md](hierarchy.md)。
 
 ## 独立局部替换实验验收
 
-现有实现及本文件已移入 `provenance/`；根目录兼容入口保持 `python3 -m yosys_flow`。独立的 `incremental/tests/test_replacement.py` 新增 12 项测试，完整回归同时运行两个子系统。
+现有实现及本文件已移入 `provenance/`；根目录兼容入口保持 `python3 -m yosys_flow`。独立的 `incremental/tests/test_replacement.py` 验收局部替换，完整回归同时运行两个子系统。
 
 四通道例子在默认保留层次和显式展平两种模式中，按 `chip/u1/core` 的两条原语句生成并合并旧区域契约，只替换 152 个门中的 16 个门。验收要求其余 136 个门的类型、参数、属性和引脚连接逐项不变；8 个输出的顶层与下游汇总使用者全部保持绑定。新局部门来自独立 `patch.v` 综合，随后才生成新版全量综合网表作为参考。全输出 SAT miter 覆盖全部 72 个输出位，另验证交付 Verilog。
 
@@ -157,4 +157,4 @@ python3 -m yosys_flow extract runs/selection-demo --source provenance/examples/s
 
 这项验收只针对给定修改及绑定，不改变来源选择精度或旧契约的安全声明。当前交付结果为展平网表，保持层次外形和自动拆分共享消费者仍未实现。详见 [实验说明](../../incremental/README.md)。
 
-目录迁移后的完整回归 `runs/incremental-final-regression/report.json` 为 **152 项通过、零失败、零跳过**。两种模式的实际替换产物及独立验证日志保存在 `runs/incremental-first/`。
+使用 `make test` 生成本次完整回归报告；实验命令与计时口径见 [对比实验](../../incremental/comparison.md)。历史运行目录不作为实现或测试依赖。

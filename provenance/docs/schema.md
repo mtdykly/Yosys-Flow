@@ -116,3 +116,19 @@ schema 4 的 `history_copy.reason=fraig_cleanup_copy` 连接 sweep 的后快照�
 `verification.status` 为 `verified_old_region` 或 `partial_old_region`，分别表示已声明的旧区域条件通过或存在明确阻碍；两者均不授予未来编辑安全性。`contract-validate` 的 `valid=true` 表示契约声明与归档记录相符，不意味着 partial 已升级。`safe_for_incremental_reuse=false`、`end_to_end_exact=false` 和源码完整性未证明标志继续保留。
 
 合并保存重叠成员、旧端口到新边界或内部信号的对应，以及复用的来源证据引用。父边界上的函数证明不能自动用于新边界，必须重新验证全部输出。`extract --contract` 在原 `.provenance.json` 中增加 `mode=region_contract`、`contract_id` 和 `contract_verification`；输出仍来自同一次运行的实际成员。完整字段、命令及限制见 [region-contracts.md](region-contracts.md)。
+
+
+## 在线替换计划 v2
+
+`report_type=replacement_plan`、`schema_version=2`、`proof_rule=recorded_replacement_plan_v2` 供 `incremental auto` 使用；`contract_id` 和绑定接口保留。完整 v1 的独立命令仍可用，日志 v2 与派生计划 v2 属于不同格式。
+
+计划的边界、输出函数、共享义务和候选声明不变。父节点以内容 ID 及推导条件表示，来源以 `source_ids`、`supporting_edge_indices`、`record_event_ids` 引用同一次重放视图；ABC 证据用调用 ID 与索引引用。完整 ROBDD 在 `outputs` 中仅存一份，`verification.all_output_functions` 保存摘要并指向输出证据。验证按版本重建实际区域及证据，不能只验内容哈希；独立导出才展开详细来源。完整字段对照见 [契约与替换计划](region-contracts.md#v2-轻量替换计划)。
+
+
+## 已验证来源索引
+
+`verified-index.json.gz` 是压缩 JSON 派生产物，包含通过原始重放与验证后的 trace 状态，以及源码到最终对象/连接、驱动者、消费者和别名索引。manifest 的 `artifacts` 保存其字节数与哈希，`verified_index` 保存格式及实现身份，`timings_seconds.verified_index_build` 记录首次建档成本。默认 synth 与原生开发检查点均可生成。
+
+加载时仍校验所有原始产物，索引还绑定实现、归档身份及本机认证；本机密钥位于忽略提交的 `build/.verified-index-auth-key`，不打包进运行目录。索引不存在、版本不兼容或缺少相同本机密钥时从原始日志重放；损坏或认证不符不能作为有效索引使用。索引不是可脱离旧证据独立信任的文件。
+
+读取计时中的 `verified_index_status` 区分 `hit` 与回退原因，`verified_index_load` 记录实际加载。命中时原重放、ABC 和实例视图重建计时为 0，哈希检查时间仍保留；`yosys_flow validate` 和 `load_run(..., use_index=False)` 显式完整复核原始记录。旧归档无需重新综合，也不会因一次读取被自动补写索引。

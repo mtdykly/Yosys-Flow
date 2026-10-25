@@ -515,6 +515,15 @@ def run_native(args):
     def path(name):
         return token(out / name)
 
+    from .persistent_index import artifact_inventory, require_evidence_unchanged, write_index
+    verified_artifacts = {}
+
+    def freeze_evidence():
+        nonlocal verified_artifacts
+        current = artifact_inventory(out)
+        require_evidence_unchanged(verified_artifacts, current)
+        verified_artifacts = current
+
     def execute(name, binary, script, dependencies=False):
         target = out / (name + ".ys")
         target.write_text(script + "\n")
@@ -529,6 +538,9 @@ def run_native(args):
             result = subprocess.run(command + ["-s", str(target)], stdout=log, stderr=subprocess.STDOUT, env=env)
         manifest["timings_seconds"][name] = time.perf_counter() - start
         require(result.returncode == 0, f"{name} failed:\n" + (out / (name + ".log")).read_text()[-4000:])
+        # Freeze each generated artifact before any subsequent replay or proof
+        # consumes it; later stages may add files, never alter earlier evidence.
+        freeze_evidence()
 
     try:
         start_ns = time.time_ns()
@@ -543,6 +555,7 @@ def run_native(args):
         trace.compare_abc_artifacts(out)
         from .hierarchy import instance_view, electrical_design
         view = instance_view(trace,after,top)
+        freeze_evidence()
         manifest["timings_seconds"]["record_validation"] = time.perf_counter() - validation_start
         manifest["tool"]["abc"] = []
         for executable in sorted({r["executable"] for r in trace.regions if "executable" in r}):
@@ -594,6 +607,10 @@ def run_native(args):
                       "full_transformation_coverage": False, "exact_proc_cell_attribution": False}
         if view.view_rule=='electrical_instance_expansion_v1': validation['checks']['instance_view_equivalence']=True
         write_json(out / "validation.json", validation)
+        freeze_evidence()
+        index_started = time.perf_counter()
+        manifest["verified_index"] = write_index(out, manifest, view, verified_artifacts=verified_artifacts)
+        manifest["timings_seconds"]["verified_index_build"] = time.perf_counter() - index_started
         manifest["artifacts"] = {p.name: {"sha256": digest(p), "size_bytes": p.stat().st_size}
                                  for p in sorted(out.iterdir()) if p.is_file() and p.name != "manifest.json"}
         manifest["status"] = "complete"
@@ -605,7 +622,8 @@ def run_native(args):
         raise
 
 
-def load_native(directory, manifest, timings=None):
+def load_native(directory, manifest, timings=None, *, use_index=True):
+    from .persistent_index import INDEX_NAME, read_index, build_lookup
     timings = timings if timings is not None else {}
     started = time.perf_counter()
     require(manifest.get("status") == "complete", "native run is incomplete or failed")
@@ -613,8 +631,27 @@ def load_native(directory, manifest, timings=None):
     require(required <= manifest["artifacts"].keys(), "native manifest is missing required artifacts")
     for name, meta in manifest["artifacts"].items():
         require(Path(name).name == name, "invalid native artifact path")
+        # A missing optional index can be rebuilt from the complete raw archive.
+        # Existing but corrupted indexes fail closed, just like raw artifacts.
+        if name == INDEX_NAME and not (directory / name).is_file():
+            continue
+        require((directory / name).is_file(), f"missing native artifact: {name}")
         require(digest(directory / name) == meta["sha256"], f"artifact hash mismatch: {name}")
     timings["artifact_hash_check"] = time.perf_counter() - started
+    started = time.perf_counter()
+    trace, index_status = read_index(directory, manifest, NativeTrace) if use_index else (None, "disabled")
+    timings["verified_index_load"] = time.perf_counter() - started
+    timings["verified_index_status"] = index_status
+    if trace is not None:
+        # Retain cheap archive and electrical-view checks. Expensive lifecycle
+        # replay and ABC proof have already established this exact indexed state.
+        validation = _check_saved_reference(directory, manifest)
+        _check_instance_artifact(directory, manifest, trace, validation)
+        timings["record_replay_and_netlist_check"] = 0.0
+        timings["abc_artifact_check_and_proof"] = 0.0
+        timings["instance_view_reconstruction"] = 0.0
+        timings["saved_reference_check"] = time.perf_counter() - started - timings["verified_index_load"]
+        return manifest, trace, validation
     started = time.perf_counter()
     trace = NativeTrace(directory / "yosys.jsonl")
     require(trace.records[0]["run_id"] == manifest["run_id"], "native run ID mismatch")
@@ -626,21 +663,37 @@ def load_native(directory, manifest, timings=None):
     trace.compare_abc_artifacts(directory)
     timings["abc_artifact_check_and_proof"] = time.perf_counter() - started
     started = time.perf_counter()
+    validation = _check_saved_reference(directory, manifest)
+    timings["saved_reference_check"] = time.perf_counter() - started
+    from .hierarchy import instance_view
+    started=time.perf_counter()
+    trace = instance_view(trace,json.loads((directory/'after.json').read_text())['modules'],manifest['configuration']['top'])
+    _check_instance_artifact(directory, manifest, trace, validation)
+    build_lookup(trace)
+    timings['instance_view_reconstruction']=time.perf_counter()-started
+    return manifest, trace, validation
+
+
+def _check_saved_reference(directory, manifest):
     require(json.loads((directory / "after.json").read_text())["modules"] ==
             json.loads((directory / "baseline.json").read_text())["modules"], "native stock comparison mismatch")
     validation = json.loads((directory / "validation.json").read_text())
     require(validation.get("valid") is True and validation.get("run_id") == manifest["run_id"], "native validation failed")
-    timings["saved_reference_check"] = time.perf_counter() - started
-    from .hierarchy import instance_view, electrical_design
-    started=time.perf_counter()
-    trace = instance_view(trace,json.loads((directory/'after.json').read_text())['modules'],manifest['configuration']['top'])
+    return validation
+
+
+def _check_instance_artifact(directory, manifest, trace, validation):
+    from .hierarchy import electrical_design
     if validation.get('checks',{}).get('instance_view_equivalence'):
         require('instance-view.json' in manifest['artifacts'] and 'instance_equivalence.log' in manifest['artifacts'],
                 'instance view proof artifacts missing')
         require(electrical_design(trace,manifest['configuration']['top'])==json.loads((directory/'instance-view.json').read_text()),
                 'reconstructed instance view differs from the verified artifact')
-    timings['instance_view_reconstruction']=time.perf_counter()-started
-    return manifest, trace, validation
+    else:
+        actual = json.loads((directory / 'after.json').read_text())['modules'][manifest['configuration']['top']]
+        actual['cells'] = {n:c for n,c in actual['cells'].items() if c['type'] != '$scopeinfo'}
+        require(electrical_design(trace, manifest['configuration']['top']) == {'modules': {manifest['configuration']['top']: actual}},
+                'indexed electrical view differs from the recorded final netlist')
 
 
 def query_native(args, manifest, trace):
@@ -692,7 +745,11 @@ def query_native(args, manifest, trace):
         if reverse: require(bool(seeds), 'object has no recorded sources in the selected instance')
     design = trace.design
     final = []
-    for ref in sorted(trace.final):
+    lookup = getattr(trace, 'lookup_index', None)
+    final_refs = trace.final
+    if lookup is not None and not reverse:
+        final_refs = set().union(*(lookup['sources_to_final'].get(s, []) for s in seeds))
+    for ref in sorted(final_refs):
         row = trace.objects[ref]
         if (reverse and object_ref != ref) or (not reverse and not seeds.intersection(row["origins"])):
             continue
@@ -705,6 +762,10 @@ def query_native(args, manifest, trace):
         output_bits = {b for port, bits in selected["connections"].items()
                        if selected["port_directions"][port] == "output" for b in bits if isinstance(b, int)}
         consumers = final[-1]["consumers"]
+        if lookup is not None:
+            consumers.extend(lookup['consumer_rows'][i] for i in sorted({i for bit in output_bits
+                for i in lookup['consumers'].get(bit, [])}))
+            continue
         for name, cell in design["cells"].items():
             for port, bits in cell["connections"].items():
                 if cell["port_directions"][port] == "input":

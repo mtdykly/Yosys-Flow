@@ -63,6 +63,10 @@ def execute(job, directory):
     try:
         if job['kind'] in {'full', 'stock_old'}:
             result = full(job, directory/'full')
+        elif job['kind'] == 'qualification':
+            from .epfl import qualify
+            result = qualify(job['fixture'], directory/'qualification', job['yosys'],
+                             job['qualification_timeout'])
         elif job['kind'] == 'baseline':
             from yosys_flow.cli import parser
             from yosys_flow.runner import run
@@ -85,6 +89,17 @@ def execute(job, directory):
                 'passed', 'reused_equivalent', 'unchanged'} else None
     except Exception as exc:
         result = {'status': 'failed', 'failure': classify(job['kind'], exc)}
+    if (job.get('library') and job['kind'] in {'full', 'incremental'} and
+            result['status'] in {'passed', 'reused_equivalent', 'unchanged'} and result.get('netlist')):
+        from .liberty_area import measure
+        # The generic generation cutoff above stays unchanged. This global
+        # mapping is an area evaluation, not an incremental mapped-cell flow.
+        try:
+            result['library_area'] = measure(result['netlist'], job['top'], job['library'],
+                                             directory/'library-area', job['yosys'])
+        except Exception as exc:
+            result['library_area'] = {'status': 'failed', 'cell_area': None,
+                                     'failure': {'code': 'area_measurement_error', 'detail': str(exc)}}
     result['worker_seconds'] = time.perf_counter()-started
     # ru_maxrss is a per-process high water mark, NOT simultaneous tree usage.
     result['max_process_peak_rss_kib'] = max(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,

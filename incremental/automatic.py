@@ -281,15 +281,17 @@ def run(args):
         'selection_mode':selection_mode,'minimal_region_claimed':False,
         'new_full_synthesis_used_only_as_validation_oracle':True,'timings':{},'attempts':[],
         'timing_scope':{
-            'selection_contract_binding_seconds':'source selection, contract verification and patch/binding construction',
-            'patch_export_seconds':'write patch/contract/bindings and export reviewable Verilog',
+            'baseline_replay_seconds':'legacy field name: archive hash checks, verified-index restore or raw replay, and archived frontend parsing; see baseline_load for the actual path',
+            'selection_contract_binding_seconds':'source selection, replacement-plan verification and patch/binding construction',
+            'patch_export_seconds':'write patch/plan/bindings and export reviewable Verilog',
             'region_contract_patch_binding_seconds':'sum of selection and patch export; do not add these twice',
             'netlist_generation_seconds':'all automatic preparation plus local synthesis, binding, splice and complete JSON/IL/Verilog export; includes selection evidence, excludes post-generation validation',
             'post_generation_validation_seconds':'post-export correctness validation only; excluded from generation time',
             'incremental_candidate_ready_seconds':'online preparation and checked candidate construction; excludes new full synthesis and its validation oracle'}}
     try:
         require(selection_mode in {'fine','module'},'selection_mode must be fine or module')
-        context=ContractContext(args.base_run);top=context.baseline['module']
+        context=ContractContext(args.base_run,compact=True);top=context.baseline['module']
+        report['baseline_load']=context.load_timings
         require('frontend.il' in context.manifest['artifacts'],'automatic mode requires archived pre-proc frontend.il')
         old=rtlil.parse((context.directory/'frontend.il').read_text())
         report['base_run']=str(context.directory);report['old_frontend_sha256']=digest(context.directory/'frontend.il')
@@ -349,7 +351,11 @@ def run(args):
                 else:raise PlanningBlocked('expansion_budget','Region expansion limit reached')
             report['timings']['selection_contract_binding_seconds']=time.perf_counter()-step
             export_started=time.perf_counter()
-            write_json(out/'region.contract.json',contract);write_json(out/'bindings.json',bindings)
+            plan_path=out/'replacement-plan.json'
+            write_json(plan_path,contract);write_json(out/'bindings.json',bindings)
+            report['replacement_plan']={'path':plan_path.name,'sha256':digest(plan_path),
+                'contract_id':contract['contract_id'],'schema_version':contract['schema_version'],
+                'bytes':plan_path.stat().st_size}
             write_json(out/'patch-specification.json',spec);(out/'patch.il').write_text(patch)
             # Verilog is a reviewable form of the local semantics, not a text
             # slice of incomplete always blocks.
@@ -359,10 +365,11 @@ def run(args):
             report['timings']['region_contract_patch_binding_seconds']=time.perf_counter()-step
             stage='replacement'
             report['timings']['automatic_preparation_seconds']=time.perf_counter()-started
-            result=replace._run(SimpleNamespace(base_run=args.base_run,contract=str(out/'region.contract.json'),
+            result=replace._run(SimpleNamespace(base_run=args.base_run,contract=str(plan_path),
                 bindings=str(out/'bindings.json'),patch_rtl=str(out/'patch.il'),patch_top='__auto_patch',
                 patch_is_rtlil=True,new_frontend=str(work/'new.frontend.il'),baseline_from_archive=True,
                 new_source=args.new_source,out=str(out/'replacement'),yosys=args.yosys,
+                expected_plan_sha256=report['replacement_plan']['sha256'],
                 additional_input_hashes=frozen_inputs),validated_context=context)
             report.update(status='passed',selected_scopes=scopes,checks=result['checks'],splice=result['splice'])
             report.update(new_full_synthesis_executed=True,local_synthesis_executed=True)

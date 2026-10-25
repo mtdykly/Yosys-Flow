@@ -33,11 +33,13 @@ def parser():
     benchmark.add_argument('--cases',nargs='+',choices=list(anubis.CASES))
     benchmark.add_argument('--native-yosys',default=str(ROOT/'build/native/install/bin/yosys'))
     benchmark.add_argument('--automatic',action='store_true',help='仅把旧记录和完整新版交给 auto，不提供目标实例或 patch')
-    compare = commands.add_parser('compare',help='ANUBIS 组合功能修改的 F / P-module / P-fine 对比（不含独立 M）')
+    compare = commands.add_parser('compare',help='ANUBIS / EPFL 组合功能修改的全量与增量对比（不含独立 M）')
     compare.add_argument('--mode',choices=['retained','flatten','both'],default='retained')
-    compare.add_argument('--suite',choices=['anubis-functional','diagnostic'],default='anubis-functional',
-                         help='默认只测 ANUBIS 组合功能修改；diagnostic 显式启用 NOC、合成控制与状态负例')
-    compare.add_argument('--cases',nargs='+',help='所选 suite 中的固定案例；默认 compare_local9 和 control_local2')
+    compare.add_argument('--suite',choices=['anubis-functional','epfl-functional','diagnostic'],default='anubis-functional',
+                         help='ANUBIS 或 EPFL 构造的组合功能修改；diagnostic 显式启用 NOC、合成控制与状态负例')
+    compare.add_argument('--cases',nargs='+',help='所选 suite 中的固定案例；默认该套件全部主案例')
+    compare.add_argument('--methods',nargs='+',choices=['F','P-module','P-fine'],
+                         help='必须包含 F；EPFL 默认 F P-fine，其他套件默认三种方法')
     compare.add_argument('--native-yosys',default=str(ROOT/'build/native/install/bin/yosys'))
     compare.add_argument('--repeats',type=positive_count,default=5,help='每个方法至少 3 次，默认 5')
     compare.add_argument('--precheck',choices=['on','off','both'],default='off',
@@ -45,7 +47,10 @@ def parser():
     compare.add_argument('--seed',type=int,default=20261024)
     compare.add_argument('--cpu',type=int,help='串行绑定一个允许的 CPU；默认取当前 affinity 的最小编号')
     compare.add_argument('--job-timeout',type=positive_seconds,default=600.0)
+    compare.add_argument('--archive-byte-limit',type=positive_count,
+                         help='可选：每个测量进程输出目录的逻辑字节上限；按秒采样，超限保留部分证据并报告 resource_limit')
     compare.add_argument('--fallback-full',action='store_true',help='失败后实际执行 F，另报尝试加回退成本')
+    compare.add_argument('--liberty',help='可选 Liberty 库：对成功的最终 generic 网表统一映射并估算单元面积；映射和验证时间另列')
     survey = commands.add_parser('anubis-nochange',help='盘点全部 ANUBIS NOC 宏，单独测量组合模块等价证明')
     survey.add_argument('--cases',nargs='+',help='清单 ID，例如 dlx_noc1 fpu_noc3；默认全部 30 个宏')
     survey.add_argument('--inventory-only',action='store_true',help='只校验并输出完整变体清单')

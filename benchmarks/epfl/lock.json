@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/lsils/benchmarks",
+  "commit": "82d8cc6910419298e713a46644ed59fd3df53038",
+  "files": {
+    "arithmetic/adder.v": "f72c822735b73eddb017c4ed2483c91afda3facda61a00776e7580062c184deb",
+    "arithmetic/bar.v": "4e791833d89833dc8cd6ebe81eb63b4cfa64df8dbb231bd9ace09d0159d2bc11",
+    "random_control/arbiter.v": "8154309e62fd8fd2a6cc1369ffc24a4426b9fa050e5047e5f1d148a057ac6975",
+    "LICENSE": "83e4dd21429a91fb7cea67a476032a9641425e5355df2e0f589a738b6ec9fd2c",
+    "README.md": "a4a2bd66edd41df70052bc32a2169f63b701ab78bd0e324c8bb55009a32c1db4"
+  }
+}

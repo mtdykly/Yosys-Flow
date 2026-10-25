@@ -81,6 +81,17 @@ class AutomaticTests(unittest.TestCase):
         self.assertEqual(result['changes'][0]['ir_changes'][0]['new'],[['connect','\\B','1']])
         self.assertTrue((out/'patch.il').is_file());self.assertTrue((out/'patch.v').is_file())
         self.assertTrue((out/'bindings.json').is_file())
+        plan_path=out/'replacement-plan.json'
+        plan=json.loads(plan_path.read_text())
+        self.assertEqual(plan['schema_version'],2)
+        self.assertEqual(plan['report_type'],'replacement_plan')
+        self.assertLess(plan_path.stat().st_size,2_000_000)
+        self.assertFalse((out/'region.contract.json').exists())
+        self.assertFalse((out/'replacement/contract.json').exists())
+        self.assertFalse((out/'replacement/replacement-plan.json').exists())
+        replacement=json.loads((out/'replacement/report.json').read_text())
+        self.assertEqual(Path(replacement['selection_document']['path']),plan_path)
+        self.assertEqual(replacement['selection_document']['sha256'],result['replacement_plan']['sha256'])
         self.assertIn('read_rtlil',(out/'replacement/work/local-synth.ys').read_text())
         self.assertNotIn('new.frontend.il',(out/'replacement/work/local-synth.ys').read_text())
         self.assertIn('new.frontend.il',(out/'replacement/work/new-reference.ys').read_text())
@@ -141,7 +152,7 @@ class AutomaticTests(unittest.TestCase):
         self.assertEqual(module['checks'].keys(),fine['checks'].keys())
         self.assertGreater(module['splice']['removed_cells'],fine['splice']['removed_cells'])
         self.assertLess(module['splice']['reused_cells'],fine['splice']['reused_cells'])
-        self.assertTrue((out/'region.contract.json').is_file())
+        self.assertTrue((out/'replacement-plan.json').is_file())
         self.assertTrue((out/'replacement/work/whole-equivalence.log').is_file())
 
     def test_same_call_context_handoff_preserves_proofs_and_standalone_replay(self):
@@ -156,17 +167,17 @@ class AutomaticTests(unittest.TestCase):
                 result,out=self.execute('bypass_noc1','handoff-'+mode,selection_mode=mode)
             self.assertEqual(result['status'],'passed',result.get('failure'))
             self.assertTrue(all(result['checks'].values()))
-            self.assertEqual(len(created),2)  # initial replay and independent final audit
+            self.assertEqual(len(created),2)  # independent initial and final archive loads
             self.assertIsNot(created[0],created[1])
             replacement=json.loads((out/'replacement/report.json').read_text())
             self.assertEqual(replacement['baseline_context_source'],'same_automatic_call')
             self.assertEqual(replacement['timings']['baseline_load_and_evidence_replay_seconds'],0)
             self.assertGreater(replacement['timings']['baseline_artifact_recheck_seconds'],0)
             self.assertGreater(replacement['timings']['final_baseline_revalidation_seconds'],0)
-        # Independent callers still replay at entry, even after an automatic
-        # call in this process. No cross-edit or global cache is introduced.
+        # Independent callers load and validate the archive at entry as well,
+        # restoring its verified index when available.
         fixture,base=self.cases['bypass_noc1']
-        args=SimpleNamespace(base_run=str(base),contract=str(out/'region.contract.json'),
+        args=SimpleNamespace(base_run=str(base),contract=str(out/'replacement-plan.json'),
             bindings=str(out/'bindings.json'),patch_rtl=str(out/'patch.il'),patch_top='__auto_patch',
             patch_is_rtlil=True,new_frontend=str(out/'work/new.frontend.il'),baseline_from_archive=True,
             new_source=[str(fixture/'new.v')],out=str(self.root/'handoff-standalone'),yosys='yosys')
@@ -175,9 +186,37 @@ class AutomaticTests(unittest.TestCase):
         self.assertEqual(direct['status'],'passed')
         self.assertTrue(all(direct['checks'].values()))
         self.assertEqual(len(created),2)
-        self.assertEqual(direct['baseline_context_source'],'fresh_archive_replay')
+        self.assertEqual(direct['baseline_context_source'],'fresh_archive_load')
         self.assertGreater(direct['timings']['baseline_load_and_evidence_replay_seconds'],0)
         self.assertNotIn('baseline_artifact_recheck_seconds',direct['timings'])
+
+    def test_missing_optional_index_replays_through_automatic_handoff(self):
+        _,original=self.cases['bypass_noc1']
+        base=self.root/'without-index';shutil.copytree(original,base)
+        (base/'verified-index.json.gz').unlink()
+        result,_=self.execute('bypass_noc1','replay-without-index',base=base)
+        self.assertEqual(result['status'],'passed',result.get('failure'))
+        self.assertEqual(result['baseline_load']['verified_index_status'],'missing')
+        self.assertTrue(all(result['checks'].values()))
+
+    def test_plan_reference_is_bound_to_the_bytes_actually_validated(self):
+        original=ContractContext.validate
+        plan=self.root/'plan-changed/replacement-plan.json'
+        changed=[]
+        def mutate_after_read(context,document,*args,**kwargs):
+            value=original(context,document,*args,**kwargs)
+            if plan.is_file() and not changed:
+                changed.append(True)
+                with plan.open('a') as stream:stream.write(' ')
+            return value
+        with patch.object(ContractContext,'validate',mutate_after_read):
+            result,out=self.execute('bypass_noc1','plan-changed')
+        self.assertTrue(changed)
+        self.assertEqual(result['status'],'failed')
+        replacement=json.loads((out/'replacement/report.json').read_text())
+        self.assertIn('replacement plan changed',replacement['failure']['detail'])
+        self.assertEqual(replacement['selection_document']['sha256'],result['replacement_plan']['sha256'])
+        self.assertFalse((out/'incremental.v').exists())
 
     def test_context_handoff_rechecks_all_archive_bytes_before_local_synthesis(self):
         _,base=self.cases['bypass_noc1'];original=statements.plan
@@ -222,7 +261,9 @@ class AutomaticTests(unittest.TestCase):
         with patch.object(replace,'_run',side_effect=corrupt):
             result,out=self.execute('bypass_noc1','handoff-resealed-contract')
         self.assertEqual(result['status'],'failed',result)
-        self.assertIn('differs from replayed',result['failure']['detail'])
+        # The frozen automatic-plan hash now rejects the replacement before
+        # semantic replay, even when the attacker reseals the document itself.
+        self.assertIn('replacement plan changed since automatic selection',result['failure']['detail'])
         self.assertFalse((out/'replacement/work/local-synth.ys').exists())
         self.assertFalse((out/'incremental.json').exists())
 
@@ -275,11 +316,11 @@ class AutomaticTests(unittest.TestCase):
         self.assertEqual(result['selected_scopes'],['benchmark'])
         specification=json.loads((out/'patch-specification.json').read_text())
         self.assertTrue(specification['additional_input_bits'])
-        contract=json.loads((out/'region.contract.json').read_text())
+        contract=json.loads((out/'replacement-plan.json').read_text())
         self.assertEqual(contract['derivation']['kind'],'extend_inputs')
         self.assertTrue(all(result['checks'].values()))
         exported=extract(flow_parser().parse_args(['extract',str(self.cases['bypass_noc1'][1]),
-            '--contract',str(out/'region.contract.json'),'--out',str(out/'old-region.v')]))
+            '--contract',str(out/'replacement-plan.json'),'--out',str(out/'old-region.v')]))
         self.assertTrue(all(exported['validation'].values()))
         boundary=json.loads(Path(exported['provenance']).read_text())['boundary']
         self.assertEqual({b['original_bit'] for b in boundary if b['reason']=='new_edit_dependency'},
@@ -366,7 +407,7 @@ class AutomaticTests(unittest.TestCase):
         result,out=self.execute('bypass_noc1','contract-extension-check')
         self.assertEqual(result['status'],'passed',result.get('failure'))
         context=ContractContext(self.cases['bypass_noc1'][1])
-        doc=json.loads((out/'region.contract.json').read_text())
+        doc=json.loads((out/'replacement-plan.json').read_text())
         internal=next(b['original_bit'] for b in doc['boundary'] if b['direction']=='output' and b['reason']!='selected_source_connection')
         with self.assertRaisesRegex(TraceError,'driven inside'):
             context.build({'kind':'extend_inputs','parent':doc,'input_bits':[internal]})

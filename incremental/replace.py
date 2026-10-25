@@ -4,6 +4,7 @@ No automatic RTL diff or dependency discovery: callers supply a local RTL spec,
 all port bindings and the complete new RTL as an independent validation oracle.
 """
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -235,31 +236,33 @@ def prove_local_outputs(stitched, contract, patch, bindings, added_names):
 
 
 def run(args):
-    """Standalone replacement always replays its supplied baseline archive."""
+    """Standalone replacement independently validates its supplied archive."""
     return _run(args)
 
 
 def _recheck_context_archive(context, directory):
     """Recheck bytes before reusing one automatic call's replayed context.
 
-    This is not a persistent cache. The initial full replay and the final fresh
-    replay remain required; this check avoids repeating the same replay between
-    source selection and local synthesis, while detecting changed evidence.
+    This reuses only this call's context. Entry and final archive loads may
+    restore a verified persistent index; both still check all archived bytes.
     """
     require(context.directory == Path(directory).resolve(),
             'validated context belongs to a different baseline directory')
     manifest = context.directory/'manifest.json'
     expected = context.baseline['manifest_sha256']
     require(digest(manifest) == expected, 'baseline manifest hash mismatch during context handoff')
+    from yosys_flow.persistent_index import INDEX_NAME
     for name, meta in context.baseline['artifacts'].items():
         require(Path(name).name == name, 'invalid native artifact path')
         path = context.directory/name
+        if name == INDEX_NAME and not path.is_file():
+            continue  # optional acceleration; the raw archive was replayed
         require(path.is_file() and digest(path) == meta['sha256'], 'artifact hash mismatch: '+name)
     require(digest(manifest) == expected, 'baseline manifest hash mismatch during context handoff')
 
 
 def _run(args, *, validated_context=None):
-    """Private handoff for an already replayed context in this automatic call."""
+    """Private handoff for a validated context in this automatic call."""
     started = time.perf_counter()
     timings = {}
     out = Path(args.out).resolve()
@@ -267,7 +270,7 @@ def _run(args, *, validated_context=None):
     if validated_context is None:
         context = ContractContext(args.base_run)
         timings['baseline_load_and_evidence_replay_seconds'] = time.perf_counter()-started
-        context_source = 'fresh_archive_replay'
+        context_source = 'fresh_archive_load'
     else:
         context = validated_context
         _recheck_context_archive(context,args.base_run)
@@ -275,7 +278,11 @@ def _run(args, *, validated_context=None):
         timings['baseline_artifact_recheck_seconds'] = time.perf_counter()-started
         context_source = 'same_automatic_call'
     step = time.perf_counter()
-    contract = context.validate(json.loads(Path(args.contract).read_text()))
+    plan_bytes = Path(args.contract).read_bytes()
+    plan_hash = hashlib.sha256(plan_bytes).hexdigest()
+    require(getattr(args,'expected_plan_sha256',plan_hash)==plan_hash,
+            'replacement plan changed since automatic selection')
+    contract = context.validate(json.loads(plan_bytes))
     timings['contract_validation_seconds'] = time.perf_counter()-step
     archived=getattr(args,'baseline_from_archive',False)
     if archived:
@@ -301,17 +308,25 @@ def _run(args, *, validated_context=None):
     work = out/'work'; work.mkdir()
     report = {'schema_version':1, 'status':'running', 'base_run':str(context.directory),
         'baseline_context_source':context_source,
+        'baseline_load':context.load_timings,
         'contract_id':contract['contract_id'], 'baseline':contract['baseline'],
         'input_sha256':source_hashes, 'bindings':bindings, 'yosys':version.strip(),
         'yosys_sha256':digest(binary), 'semantic_domain':'two_state_combinational',
-        'source_selection':'old_recorded_region_contract', 'automatic_RTL_diff':False,
+        'source_selection':('old_recorded_replacement_plan' if contract['schema_version']==2
+                            else 'old_recorded_region_contract'), 'automatic_RTL_diff':False,
         'base_netlist_view':context.trace.view_rule, 'output_representation':'flat_generic_gate_netlist',
         'complete_causal_history':False, 'safe_for_arbitrary_future_edits':False,
         'new_design_synthesis_used_only_as_validation_oracle':True, 'timings':timings}
     if archived:
         report['baseline_input_policy']='archived_hashed_frontend_and_netlist'
         report['changed_or_missing_old_files']=context.input_changes()
-    write_json(out/'contract.json',contract)
+    if validated_context is None:
+        write_json(out/('replacement-plan.json' if contract['schema_version']==2 else 'contract.json'),contract)
+    else:
+        # The automatic run owns the plan. Reference its frozen bytes instead
+        # of writing the same evidence a second time in this subdirectory.
+        report['selection_document']={'path':str(Path(args.contract).resolve()),
+            'sha256':plan_hash,'schema_version':contract['schema_version']}
     write_json(out/'bindings.json',bindings)
     stage = 'local_synthesis'
     try:
@@ -372,6 +387,7 @@ def _run(args, *, validated_context=None):
         run_yosys(binary,work,'verilog-equivalence',equivalence_script('candidate.json','readback.json',top))
         timings['verilog_roundtrip_seconds'] = time.perf_counter()-step
         require(all(digest(p) == h for p,h in source_hashes.items()), 'experiment source changed while running')
+        require(digest(args.contract)==plan_hash,'replacement plan changed while running')
         require(digest(context.directory/'manifest.json') == contract['baseline']['manifest_sha256'], 'baseline changed')
         # Revalidate every archived artifact; never mutate the baseline run.
         stage = 'baseline_revalidation'; step = time.perf_counter()
@@ -386,7 +402,8 @@ def _run(args, *, validated_context=None):
             'emitted_Verilog_equivalent':True,'baseline_unchanged':True})
         report['artifacts'] = {str(p.relative_to(out)):digest(p) for p in sorted(out.rglob('*')) if p.is_file()}
         timings['total_checked_experiment_seconds'] = time.perf_counter()-started
-        report['timing_scope'] = {'netlist_generation_seconds':'replay, region/contract decisions, local synthesis, binding, splice and complete JSON/IL/Verilog export; excludes caller preparation and all subsequent validation',
+        report['timing_scope'] = {'baseline_load_and_evidence_replay_seconds':'legacy field name: fresh archive load via verified index or raw replay; zero for a context passed by this automatic call',
+            'netlist_generation_seconds':'archive load, region/plan decisions, local synthesis, binding, splice and complete JSON/IL/Verilog export; excludes caller preparation and all subsequent validation',
             'post_generation_validation_seconds':'local output proof, candidate checks, independent full reference, whole equivalence, roundtrip and final archive audit; excluded from generation time',
             'replacement_ready_seconds':'generation plus local output proof and candidate checks; excludes caller query/contract generation',
             'total_checked_experiment_seconds':'includes independent new full synthesis and all validation; not an incremental speedup claim'}

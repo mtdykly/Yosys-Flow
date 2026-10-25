@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "name": "Nangate Open Cell Library, typical",
+  "repository": "https://github.com/The-OpenROAD-Project/OpenROAD-flow-scripts",
+  "commit": "3b1b103a27caa9f3b95a7dde6b29e512e9b2c070",
+  "source_directory": "flow/platforms/nangate45",
+  "cache_directory": "build/technology/nangate45",
+  "purpose": "Research-only standard-cell mapping and area estimation; the platform is intentionally non-manufacturable.",
+  "license": {
+    "path": "LICENSE",
+    "identifier": "Apache-2.0",
+    "note": "The license distributed with this pinned OpenROAD platform is retained with the unchanged library and its original notices."
+  },
+  "corner": {
+    "name": "typical",
+    "process": "TypTyp",
+    "temperature_celsius": 25,
+    "voltage_volts": 1.1
+  },
+  "liberty": {
+    "path": "lib/NangateOpenCellLibrary_typical.lib",
+    "sha256": "8d540a4d4cf6d09d27c87ad067857a9c0c2eeb023ab7a56e058cd3113db4e9b1"
+  },
+  "area": {
+    "unit": "um^2",
+    "basis": "Liberty cell area cross-checked against LEF cell width times height in micrometres.",
+    "measurement": "Sum of mapped instance counts times Liberty cell area; excludes placement whitespace, routing, clock distribution and physical-only cells.",
+    "liberty_cells": 135,
+    "lef_cells": 135,
+    "matching_cells": 134,
+    "exceptions": {
+      "FILLCELL_X2": {
+        "liberty_area": 0.266,
+        "lef_width_um": 0.38,
+        "lef_height_um": 1.4,
+        "lef_area_um2": 0.532,
+        "note": "Physical filler with no logic function; not an ABC mapping target. Do not interpret its Liberty area as physical footprint."
+      }
+    },
+    "example": {
+      "cell": "AND2_X1",
+      "liberty_area": 1.064,
+      "lef_width_um": 0.76,
+      "lef_height_um": 1.4
+    }
+  },
+  "files": {
+    "lib/NangateOpenCellLibrary_typical.lib": "8d540a4d4cf6d09d27c87ad067857a9c0c2eeb023ab7a56e058cd3113db4e9b1",
+    "lef/NangateOpenCellLibrary.macro.mod.lef": "a43aea339f12a57a63497783e508ba16f3da2dc056d3247dec7d99707c2dedef",
+    "LICENSE": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+    "README.md": "0e3c8a8cbe5429552764c6531dc454d64f6aa7c1f7128175b5f06070a3de578d"
+  }
+}

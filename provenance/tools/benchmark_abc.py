@@ -35,6 +35,7 @@ def sample(case, directory, native, stock):
     timings={}; started=time.perf_counter()
     manifest,trace,validation=load_run(out,timings=timings)
     timings['load_and_validate_total']=time.perf_counter()-started
+    load_status=timings.pop('verified_index_status','not_reported')
     module=json.loads((out/'after.json').read_text())['modules']['demo']
     costs=inventory(out,trace)
     max_inputs=max((r['input_count'] for r in costs['abc_regions']),default=0)
@@ -98,6 +99,7 @@ def sample(case, directory, native, stock):
         queries.append(query_report)
     result={'case':case['name'],'run_directory':str(out),'traced_synthesis_invocations':1,
             'stock_reference_synthesis_invocations':1, 'final_cell_count':len(module['cells']),
+            'archive_load':{'verified_index_status':load_status},
             'input_sha256':digest(source),'tools':manifest['tool'],'scripts':{n:digest(out/n) for n in ('traced.ys','baseline.ys')},
             'timings_seconds':{'run_total_including_validation_and_stock':run_seconds,**manifest['timings_seconds'],**timings},
             'inventory':costs,'queries':queries,'contract_passed':all(q['contract_passed'] for q in queries),
@@ -113,7 +115,13 @@ def summarize(samples):
     result=[]
     for name,rows in groups.items():
         median=lambda values: statistics.median(values)
-        timings={k:median([r['timings_seconds'][k] for r in rows]) for k in rows[0]['timings_seconds']}
+        # Older samples may have mixed a cache-status string into this map.
+        # Preserve categorical outcomes separately; never take their median.
+        keys=set.intersection(*(set(r['timings_seconds']) for r in rows))
+        timings={k:median([r['timings_seconds'][k] for r in rows]) for k in sorted(keys)
+                 if all(type(r['timings_seconds'][k]) in (int,float) for r in rows)}
+        statuses=Counter(r.get('archive_load',{}).get('verified_index_status',
+                         r['timings_seconds'].get('verified_index_status','not_reported')) for r in rows)
         result.append({'case':name,'samples':len(rows),'contract_passed':all(r['contract_passed'] for r in rows),
             'abc_input_counts':[r['input_count'] for r in rows[0]['inventory']['abc_regions']],
             'native_trace_bytes_median':median([r['inventory']['native_trace_bytes'] for r in rows]),
@@ -122,6 +130,7 @@ def summarize(samples):
             'sample_max_rss_kib_median':median([r['sample_max_rss_kib'] for r in rows if r.get('sample_max_rss_kib') is not None])
                                        if any(r.get('sample_max_rss_kib') is not None for r in rows) else None,
             'timings_seconds_median':timings,
+            'verified_index_status_counts':dict(statuses),
             'queries':[{'line':q['line'],'exact_in_all_samples':all(r['queries'][i]['exact_cell_selection'] for r in rows),
                         'missing_cells_count':len(q['missing_cells']),'extra_cells_count':len(q['extra_cells']),
                         'candidate_cell_count':q['candidate_cell_count'],'precision_counts':q['precision_counts'],

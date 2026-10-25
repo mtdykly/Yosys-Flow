@@ -13,7 +13,7 @@ from yosys_flow.cli import parser
 from yosys_flow.common import TraceError, digest, write_json
 from yosys_flow.native import NativeTrace
 from yosys_flow import native, persistent_index
-from yosys_flow.persistent_index import INDEX_NAME, _decode, _encode, _json_bytes
+from yosys_flow.persistent_index import LEGACY_NAME as INDEX_NAME, _decode, _encode, _json_bytes
 from yosys_flow.runner import load_run, query_loaded, run
 
 
@@ -54,8 +54,9 @@ endmodule
         for mode in ("retained", "flatten", "m1"):
             out = cls.root / mode
             extra = ["--flatten"] if mode == "flatten" else ["--flow", "m1"] if mode == "m1" else []
-            run(parser().parse_args(["run", "--source", str(cls.source), "--top", "demo",
-                                    "--out", str(out), "--native-yosys", str(NATIVE), *extra]))
+            with patch("yosys_flow.persistent_index.write_index", persistent_index.write_legacy_index):
+                run(parser().parse_args(["run", "--source", str(cls.source), "--top", "demo",
+                                        "--out", str(out), "--native-yosys", str(NATIVE), *extra]))
             cls.runs[mode] = out
 
     @classmethod

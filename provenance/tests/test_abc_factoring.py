@@ -98,7 +98,7 @@ endmodule
         self.assertEqual(manifest['configuration']['passes'],['synth -top demo'])
         self.assertTrue(validation['checks']['stock_flow_exact_match'])
         summary=trace.abc_internal[0]
-        self.assertEqual(summary['schema'],4)
+        self.assertEqual(summary['schema'],5)
         self.assertEqual(summary['verified_entry_copies'],4)
         self.assertEqual(summary['entry_copies'],4)
         self.assertGreater(summary['mapped_clones'],0)

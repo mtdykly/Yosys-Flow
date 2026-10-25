@@ -41,7 +41,8 @@ def resolve_bit(bit, module):
 
 class NativeTrace:
     def __init__(self, path):
-        self.records = [json.loads(line) for line in Path(path).read_text().splitlines()]
+        with Path(path).open() as stream:
+            self.records = [json.loads(line) for line in stream]
         require(bool(self.records) and self.records[0].get("record_type") == "run_begin" and
                 self.records[0].get("schema_version") == 2, "invalid native trace header")
         require(self.records[-1].get("record_type") == "run_end", "incomplete native trace")
@@ -334,8 +335,10 @@ class NativeTrace:
                 nodes[row["node"]] = row
                 self.events.append(row)
             elif kind == "abc_region":
-                require(row.get("internal_trace_schema") in {None, 1, 2, 3, 4}, "unsupported ABC internal trace schema")
-                if "abc_internal_v4" in self.records[0].get("features", []):
+                require(row.get("internal_trace_schema") in {None, 1, 2, 3, 4, 5}, "unsupported ABC internal trace schema")
+                if "abc_internal_v5" in self.records[0].get("features", []):
+                    require(row.get("internal_trace_schema") == 5, "missing declared ABC internal v5 evidence")
+                elif "abc_internal_v4" in self.records[0].get("features", []):
                     require(row.get("internal_trace_schema") == 4, "missing declared ABC internal v4 evidence")
                 elif "abc_internal_v3" in self.records[0].get("features", []):
                     require(row.get("internal_trace_schema") == 3, "missing declared ABC internal v3 evidence")
@@ -358,7 +361,7 @@ class NativeTrace:
                         require(len(row[key]) == len(set(row[key])) and
                                 all(isinstance(i, int) and 0 <= i < len(row["signals"]) for i in row[key]), "invalid ABC boundary index")
                     expected_artifacts = {"input.blif", "output.blif", "script"}
-                    if row.get("internal_trace_schema") in {1, 2, 3, 4}: expected_artifacts.add("input.blif.flow.jsonl")
+                    if row.get("internal_trace_schema") in {1, 2, 3, 4, 5}: expected_artifacts.add("input.blif.flow.jsonl")
                     require(set(row["artifacts"]) == expected_artifacts and
                             all(Path(p).name == p for p in row["artifacts"].values()), "invalid ABC artifact paths")
                     invocations[iid] = row
@@ -415,7 +418,7 @@ class NativeTrace:
             require(all(p.is_file() and p.stat().st_size > 0 for p in files.values()), "missing ABC evidence artifact")
             from .abc_provenance import validate_artifacts
             validate_artifacts(self, region, files)
-            if region.get("internal_trace_schema") in {1, 2, 3, 4}:
+            if region.get("internal_trace_schema") in {1, 2, 3, 4, 5}:
                 from .abc_internal import analyze
                 proof, summary = analyze(files["input.blif.flow.jsonl"], files["script"].read_text(), region,
                                          self.abc_imports.get(region["invocation_id"], {}), files["input.blif"].read_text())
@@ -623,7 +626,7 @@ def run_native(args):
 
 
 def load_native(directory, manifest, timings=None, *, use_index=True):
-    from .persistent_index import INDEX_NAME, read_index, build_lookup
+    from .persistent_index import INDEX_NAMES, read_index, build_lookup
     timings = timings if timings is not None else {}
     started = time.perf_counter()
     require(manifest.get("status") == "complete", "native run is incomplete or failed")
@@ -633,7 +636,7 @@ def load_native(directory, manifest, timings=None, *, use_index=True):
         require(Path(name).name == name, "invalid native artifact path")
         # A missing optional index can be rebuilt from the complete raw archive.
         # Existing but corrupted indexes fail closed, just like raw artifacts.
-        if name == INDEX_NAME and not (directory / name).is_file():
+        if name in INDEX_NAMES and not (directory / name).is_file():
             continue
         require((directory / name).is_file(), f"missing native artifact: {name}")
         require(digest(directory / name) == meta["sha256"], f"artifact hash mismatch: {name}")
@@ -697,6 +700,9 @@ def _check_instance_artifact(directory, manifest, trace, validation):
 
 
 def query_native(args, manifest, trace):
+    from .graph_index import walk
+    from .sqlite_index import store_for, selected as indexed_rows
+    store = store_for(trace)
     reverse = args.object is not None
     expression_selection = False
     module_name = manifest["configuration"]["top"]
@@ -722,7 +728,9 @@ def query_native(args, manifest, trace):
         require(column is None or (end_line, end_column or column) >= (args.line, column), "reversed source range")
         source = Path(args.source).resolve()
         start, end = (args.line, column or 0), (end_line, (end_column or column) if column else 10**9)
-        seeds = {sid for sid, row in trace.sources.items() if Path(row["file"]).resolve() == source and
+        source_rows = trace.sources.items() if store is None else (
+            (sid,trace.sources[sid]) for sid in store.source_ids(source,args.line,end_line))
+        seeds = {sid for sid, row in source_rows if Path(row["file"]).resolve() == source and
                  (row["line"], row["column"]) <= end and (row["end_line"], row["end_column"]) > start}
         if column is not None:
             # A point inside a nested expression also overlaps the containing
@@ -747,7 +755,9 @@ def query_native(args, manifest, trace):
     final = []
     lookup = getattr(trace, 'lookup_index', None)
     final_refs = trace.final
-    if lookup is not None and not reverse:
+    if reverse:
+        final_refs = {object_ref} if object_ref in trace.final else set()
+    elif lookup is not None:
         final_refs = set().union(*(lookup['sources_to_final'].get(s, []) for s in seeds))
     for ref in sorted(final_refs):
         row = trace.objects[ref]
@@ -778,7 +788,13 @@ def query_native(args, manifest, trace):
     connections = []
     selected_output_bits = {bit for cell in final for port, bits in design["cells"][unescape(cell["name"])]["connections"].items()
                             if design["cells"][unescape(cell["name"])]["port_directions"][port] == "output" for bit in bits}
-    for ref, row in trace.assignments.items():
+    assignment_refs = trace.assignments
+    origin_assignment_refs = trace.assignments
+    if lookup is not None:
+        origin_assignment_refs = set().union(*(lookup['sources_to_assignments'].get(s, []) for s in seeds))
+        assignment_refs = ({object_ref} if object_ref in trace.assignments else set()) if reverse else origin_assignment_refs
+    for ref in sorted(assignment_refs):
+        row = trace.assignments[ref]
         if (reverse and object_ref != ref) or (not reverse and not seeds.intersection(row["origins"])):
             continue
         lhs_bits = [resolve_bit(b, design) for b in row["lhs"]]
@@ -788,23 +804,24 @@ def query_native(args, manifest, trace):
             connections.append({**row, "lhs_bits": lhs_bits, "rhs_bits": [resolve_bit(b, design) for b in row["rhs"]]})
     changed = [row["path"] for row in manifest["inputs"]
                if not Path(row["path"]).is_file() or digest(row["path"]) != row["sha256"]]
-    reachable, selected_edges = set(seeds), []
-    for edge in trace.edges:
-        if edge["from"] in reachable:
-            reachable.add(edge["to"])
-            selected_edges.append(edge)
+    reachable, traversed = walk(trace.edges,seeds)
+    selected_edges = [edge for _,edge in traversed]
     require(all(r["ref"] in reachable for r in final + connections), "selected object has no continuous source evidence path")
     # Include all supporting process inputs of selected objects, including
     # shared sources not selected by this source position.
-    supporting = {r["ref"] for r in final + connections}
-    for edge in reversed(trace.edges):
-        if edge["to"] in supporting:
-            supporting.add(edge["from"])
+    supporting, _ = walk(trace.edges,{r['ref'] for r in final+connections},reverse=True)
     proof_nodes = [r for ref, r in trace.process_nodes.items() if ref in supporting or ref in reachable]
     proof_actions = {r["action"] for r in proof_nodes if "action" in r}
     evidence_ids = {e["event_id"] for e in selected_edges}
-    eliminated = [{**row, "origins": trace.objects[row["ref"]]["origins"]} for row in trace.removals
+    removal_rows = trace.removals if store is None else (r for _,r in store.select('removals','origin',seeds))
+    eliminated = [{**row, "origins": trace.objects[row["ref"]]["origins"]} for row in removal_rows
                   if seeds.intersection(trace.objects[row["ref"]]["origins"])]
+    events = trace.events
+    if store is not None:
+        event_rows = dict(store.select('events','seq',evidence_ids))
+        event_rows.update(store.select('events','ref',reachable))
+        event_rows.update(store.select('events','origin',seeds))
+        events = [event_rows[i] for i in sorted(event_rows)]
     return {"run_id": manifest["run_id"], "direction": "reverse" if reverse else "forward", "matched": bool(seeds),
             "instance":instance, "instance_catalog":trace.instance_catalog, "netlist_view":trace.view_rule,
             "recorded_flatten_events":list(trace.flatten_events.values()),
@@ -813,23 +830,23 @@ def query_native(args, manifest, trace):
             "retired_cells": eliminated,
             "process_actions": [r for r in trace.process_actions.values() if r["ref"] in proof_actions or seeds.intersection(r["origins"])],
             "process_proof_nodes": proof_nodes,
-            "process_discards": [r for r in trace.process_discards if seeds.intersection(r["origins"])],
+            "process_discards": [r for _,r in indexed_rows(trace,'process_discards','origin',seeds)],
             "action_level_refs": [r["ref"] for r in final if r["precision"] == "process_action"],
-            "retired_connections": [r for r in trace.assignments.values() if not r["lhs"] and seeds.intersection(r["origins"])],
-            "techmap_bit_maps": [r for r in trace.techmap_bits if r["ref"] in supporting],
+            "retired_connections": [trace.assignments[ref] for ref in sorted(origin_assignment_refs) if not trace.assignments[ref]["lhs"] and seeds.intersection(trace.assignments[ref]["origins"])],
+            "techmap_bit_maps": [r for _,r in indexed_rows(trace,'techmap_bits','ref',supporting)],
             "abc_refinement_fallbacks": trace.abc_fallbacks,
-            "abc_internal": getattr(trace, "abc_internal", []),
+            "abc_internal": list(getattr(trace, "abc_internal", [])),
             "joint_cut_proven_refs": [r["ref"] for r in final if r["precision"] == "abc_internal_joint_cut"],
             "cut_proven_refs": [r["ref"] for r in final if r["precision"] == "abc_internal_cut"],
-            "abc_associations": [r for r in trace.abc_associations if r["ref"] in supporting],
-            "abc_regions": [r for r in trace.regions if seeds.intersection(r["origins"])],
+            "abc_associations": [r for _,r in indexed_rows(trace,'abc_associations','ref',supporting)],
+            "abc_regions": [r for _,r in indexed_rows(trace,'regions','origin',seeds)],
             "resolution": "cells_found" if final else "connections_found" if connections else "source_not_mapped" if not seeds else "no_final_object_with_recorded_binding",
             "empty_result_means_no_effect": False,
             "association_precision": sorted({r["precision"] for r in final + connections}),
             "cell_level_refs": [r["ref"] for r in final if r["precision"] == "cell"],
             "candidate_cell_refs": [r["ref"] for r in final if r["precision"] not in {"cell", "process_action", "abc_internal_cut", "abc_internal_joint_cut"}],
             "end_to_end_exact": False,
-            "edges": selected_edges, "events": [r for r in trace.events if r["seq"] in evidence_ids or
+            "edges": selected_edges, "events": [r for r in events if r["seq"] in evidence_ids or
                 (r["record_type"] == "connection_state" and r["ref"] in reachable) or
                 (r["record_type"] in {"process_action", "process_action_detail", "process_discard"} and seeds.intersection(r["origins"]))],
             "coverage": manifest["coverage"], "coverage_gaps": manifest["coverage_gaps"], "endpoint": manifest["endpoint"],

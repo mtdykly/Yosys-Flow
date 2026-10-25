@@ -62,11 +62,13 @@ equal constant values must not invent aliasing between unrelated outputs.
             'scope':'electrical_edges_of_selected_cells_only', 'source_completeness_proven':False}
 
 
-def group_closure(trace, selected_refs):
-    """Carry actual recorded group members through version/merge edges to final cells."""
-    associations = trace.abc_associations
+def recorded_groups(trace):
+    """Build once offline; keep only the final membership needed for closure."""
     groups, members = {}, defaultdict(set)
-    for item in associations:
+    node_refs = defaultdict(set)
+    for item in trace.abc_associations:
+        if item['ref'] in trace.objects:
+            node_refs[item['invocation_id'],item['mapped_node']].add(item['ref'])
         for group in item.get('joint_groups', []):
             key = (item['invocation_id'],group['group_id'])
             groups[key] = group
@@ -84,24 +86,39 @@ def group_closure(trace, selected_refs):
     unresolved = defaultdict(set)
     for key, group in groups.items():
         for node in group['mapped_nodes']:
-            seeds = {e['ref'] for e in associations if e['invocation_id']==key[0] and
-                     e['mapped_node']==node and e['ref'] in trace.objects}
+            seeds = node_refs[key[0],node]
             final = set().union(*(descendants(ref) for ref in seeds))
             members[key].update(final)
             if not final: unresolved[key].add(node)
-    closure, touched = set(selected_refs), set()
-    changed = True
-    while changed:
-        changed = False
-        for key, refs in members.items():
-            if refs & closure:
-                touched.add(key)
-                if not refs <= closure: closure.update(refs); changed = True
+    return [{'invocation_id':k[0], 'group_id':k[1], 'final_cell_refs':sorted(members[k]),
+             'members_without_final_cell':sorted(unresolved[k])} for k in sorted(groups)]
+
+
+def group_closure(trace, selected_refs):
+    """Carry actual recorded group members through version/merge edges to final cells."""
+    from .sqlite_index import store_for
+    store = store_for(trace)
+    if store is None:
+        by_ref = defaultdict(list)
+        for group in recorded_groups(trace):
+            for ref in group['final_cell_refs']: by_ref[ref].append(group)
+        lookup = lambda refs: (g for ref in refs for g in by_ref[ref])
+    else:
+        lookup = store.groups
+    closure, touched, frontier = set(selected_refs), {}, set(selected_refs)
+    while frontier:
+        following = set()
+        for group in lookup(frontier):
+            key = (group['invocation_id'],group['group_id'])
+            if key in touched: continue
+            touched[key] = group
+            following.update(set(group['final_cell_refs'])-closure)
+        closure.update(following)
+        frontier = following
     return {'selected_refs':sorted(selected_refs), 'required_final_cell_refs':sorted(closure),
             'additional_required_cell_refs':sorted(closure-set(selected_refs)),
-            'complete_for_recorded_groups':closure==set(selected_refs) and not any(unresolved[k] for k in touched),
-            'groups':[{'invocation_id':k[0], 'group_id':k[1], 'final_cell_refs':sorted(members[k]),
-                       'members_without_final_cell':sorted(unresolved[k])} for k in sorted(touched)],
+            'complete_for_recorded_groups':closure==set(selected_refs) and not any(g['members_without_final_cell'] for g in touched.values()),
+            'groups':[touched[k] for k in sorted(touched)],
             'scope':'recorded_groups_and_recorded_descendants_only', 'selection_expanded':False}
 
 
@@ -113,18 +130,29 @@ def inventory(directory, trace):
         row = {'invocation_id':region['invocation_id'], 'input_count':len(region['input_ports']),
                'output_count':len(region['output_ports']), 'input_cell_count':len(region['inputs']),
                'internal':summaries.get(region['invocation_id']), 'event_counts':{}, 'snapshot_count':0,
-               'snapshot_node_count_sum':0, 'snapshot_node_count_max':0, 'trace_bytes':0}
+               'snapshot_node_count_sum':0, 'snapshot_node_count_max':0, 'encoded_node_count_sum':0,
+               'checkpoint_count':0, 'delta_count':0, 'trace_bytes':0}
         name = region.get('artifacts',{}).get('input.blif.flow.jsonl')
         if name:
-            counts = Counter(); path = directory/name
+            counts = Counter(); path = directory/name; epochs = {}
             row['trace_bytes'] = path.stat().st_size
             with path.open() as stream:
                 for line in stream:
                     event = json.loads(line); counts[event['kind']] += 1
                     if 'nodes' in event:
                         row['snapshot_count'] += 1
-                        row['snapshot_node_count_sum'] += len(event['nodes'])
-                        row['snapshot_node_count_max'] = max(row['snapshot_node_count_max'],len(event['nodes']))
+                        row['encoded_node_count_sum'] += len(event['nodes'])
+                        nodes = {n['id'] for n in event['nodes']}
+                        if event.get('encoding') == 'delta':
+                            row['delta_count'] += 1
+                            previous = epochs[event['network_epoch']]
+                            previous.difference_update(event['deleted_nodes']); previous.update(nodes)
+                            size = len(previous)
+                        else:
+                            row['checkpoint_count'] += 1; size = len(nodes)
+                            if 'network_epoch' in event: epochs[event['network_epoch']] = nodes
+                        row['snapshot_node_count_sum'] += size
+                        row['snapshot_node_count_max'] = max(row['snapshot_node_count_max'],size)
             row['event_counts'] = dict(sorted(counts.items()))
         result.append(row)
     return {'native_trace_bytes':(directory/'yosys.jsonl').stat().st_size,

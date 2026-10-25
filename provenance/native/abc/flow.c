@@ -21,6 +21,57 @@ static unsigned flow_clone_count;
 static Abc_Ntk_t *flow_clone_ntk;
 static Vec_Int_t *flow_clone_links;
 static char flow_path[4096];
+/* Encoding state only: never used as evidence that two ABC objects are copies.
+ * Each decoded snapshot retains its original (sequence, object ID) identity.
+ * Reset across commands/managers and checkpoint every 128 observations. */
+typedef struct Flow_NodeState_ {
+    const char *op;
+    int fanins[3], count;
+    unsigned seen;
+} Flow_NodeState;
+static Flow_NodeState *flow_nodes;
+static int flow_nodes_size;
+static void *flow_manager;
+static const char *flow_rep;
+static unsigned flow_snapshot, flow_epoch, flow_observations;
+static int flow_delta;
+static void flow_reset_nodes(void) {
+    ABC_FREE(flow_nodes); flow_nodes_size=0; flow_manager=NULL;
+    flow_snapshot=0; flow_observations=0; flow_rep=NULL;
+}
+static void flow_encoding(void *manager, const char *rep, const char *kind, unsigned seq) {
+    int same=flow_manager==manager && flow_rep && !strcmp(flow_rep,rep);
+    const char *full=getenv("YOSYS_FLOW_ABC_FULL_SNAPSHOTS");
+    flow_delta=same && !strcmp(kind,"history_network") && flow_observations<128 && !(full && !strcmp(full,"1"));
+    if (!flow_delta) { flow_reset_nodes(); ++flow_epoch; }
+    fprintf(flow_file,",\"encoding\":\"%s\",\"network_epoch\":%u",flow_delta?"delta":"checkpoint",flow_epoch);
+    if (flow_delta) fprintf(flow_file,",\"base_snapshot\":%u",flow_snapshot);
+    flow_manager=manager; flow_rep=rep; flow_snapshot=seq; ++flow_observations;
+}
+static int flow_changed(int id, const char *op, int count, int a, int b, int c) {
+    Flow_NodeState *old;
+    int changed, size;
+    if (id>=flow_nodes_size) {
+        size=flow_nodes_size?flow_nodes_size:64;
+        while (size<=id) size*=2;
+        flow_nodes=ABC_REALLOC(Flow_NodeState,flow_nodes,size);
+        memset(flow_nodes+flow_nodes_size,0,(size-flow_nodes_size)*sizeof(Flow_NodeState));
+        flow_nodes_size=size;
+    }
+    old=flow_nodes+id;
+    changed=!flow_delta || !old->seen || strcmp(old->op,op) || old->count!=count ||
+            old->fanins[0]!=a || old->fanins[1]!=b || old->fanins[2]!=c;
+    old->op=op; old->count=count; old->fanins[0]=a; old->fanins[1]=b; old->fanins[2]=c; old->seen=flow_snapshot;
+    return changed;
+}
+static void flow_deleted(void) {
+    int i,first=1;
+    fputs(",\"deleted_nodes\":[",flow_file);
+    for(i=0;i<flow_nodes_size;i++) if(flow_nodes[i].seen && flow_nodes[i].seen!=flow_snapshot) {
+        fprintf(flow_file,"%s%d",first?"":",",i); first=0; flow_nodes[i].seen=0;
+    }
+    fputc(']',flow_file);
+}
 static void flow_string(const char *s) {
     const unsigned char *p = (const unsigned char *)(s ? s : "");
     fputc('"', flow_file);
@@ -82,7 +133,8 @@ static void flow_ntk(Abc_Ntk_t *p, const char *kind) {
 static unsigned flow_gia(Gia_Man_t *p, const char *kind) {
     Gia_Obj_t *o; int i, first=1; unsigned seq;
     if (!flow_file || !p) return 0;
-    seq=flow_start(kind); fputs(",\"representation\":\"gia\",\"pis\":[",flow_file);
+    seq=flow_start(kind); flow_encoding(p,"gia",kind,seq);
+    fputs(",\"representation\":\"gia\",\"pis\":[",flow_file);
     Gia_ManForEachCi(p,o,i) { if(i) fputc(',',flow_file); fprintf(flow_file,"%d",Gia_ObjId(p,o)); }
     fputs("],\"pos\":[",flow_file);
     Gia_ManForEachCo(p,o,i) { if(i) fputc(',',flow_file); fprintf(flow_file,"%d",Gia_ObjId(p,o)); }
@@ -94,6 +146,9 @@ static unsigned flow_gia(Gia_Man_t *p, const char *kind) {
     Gia_ManForEachObj(p,o,i) {
         const char *op = i==0 ? "zero" : Gia_ObjIsCi(o) ? "pi" : Gia_ObjIsCo(o) || Gia_ObjIsBuf(o) ? "buf" :
             Gia_ObjIsMux(p,o) ? "mux" : Gia_ObjIsXor(o) ? "xor" : "and";
+        int count=Gia_ObjIsCo(o)||Gia_ObjIsBuf(o)?1:Gia_ObjIsAnd(o)?(Gia_ObjIsMux(p,o)?3:2):0;
+        int a=count?Gia_ObjFaninLit0(o,i):0, b=count>1?Gia_ObjFaninLit1(o,i):0, c=count>2?Gia_ObjFaninLit2(p,i):0;
+        if (!flow_changed(i,op,count,a,b,c)) continue;
         flow_node(i,op,&first); fputs(",\"fanins\":[",flow_file);
         if (Gia_ObjIsCo(o) || Gia_ObjIsBuf(o)) fprintf(flow_file,"%d",Gia_ObjFaninLit0(o,i));
         else if (Gia_ObjIsAnd(o)) {
@@ -102,20 +157,21 @@ static unsigned flow_gia(Gia_Man_t *p, const char *kind) {
         }
         fputs("]}",flow_file);
     }
-    fputc(']',flow_file); flow_end(); return seq;
+    fputc(']',flow_file); flow_deleted(); flow_end(); return seq;
 }
 void Flow_CommandBefore(Abc_Frame_t *p, int argc, char **argv) {
-    if (argc && !strcmp(argv[0],"version")) printf("Yosys-Flow ABC internal trace v4 (e026ed5380f3bdc3beea2ff9ffc23236fc549d5b)\n");
+    if (argc && !strcmp(argv[0],"version")) printf("Yosys-Flow ABC internal trace v5 (e026ed5380f3bdc3beea2ff9ffc23236fc549d5b)\n");
     if (!flow_file && getenv("YOSYS_FLOW_ABC_TRACE") && argc == 2 && !strcmp(argv[0],"read_blif")) {
         if (snprintf(flow_path,sizeof(flow_path),"%s.flow.jsonl",argv[1]) >= (int)sizeof(flow_path)) exit(2);
         flow_file=fopen(flow_path,"wx");
         if (!flow_file) { perror("ABC provenance open"); exit(2); }
-        flow_seq=flow_command=0;
+        flow_seq=flow_command=flow_epoch=0; flow_reset_nodes();
         flow_entry_ntk=flow_strash_ntk=NULL; flow_entry_gia=NULL;
         flow_entry_snapshot=flow_strash_snapshot=flow_gia_snapshot=0;
-        flow_start("begin"); fputs(",\"schema\":4,\"abc_commit\":\"e026ed5380f3bdc3beea2ff9ffc23236fc549d5b\"",flow_file); flow_end();
+        flow_start("begin"); fputs(",\"schema\":5,\"abc_commit\":\"e026ed5380f3bdc3beea2ff9ffc23236fc549d5b\"",flow_file); flow_end();
     }
     if (!flow_file || !strcmp(argv[0],"echo")) return;
+    flow_reset_nodes();
     flow_cleanup_from=NULL; flow_cleanup_snapshot=0;
     flow_clone_count=0; flow_is_put=!strcmp(argv[0],"&put");
     flow_is_strash=!strcmp(argv[0],"strash"); flow_is_get=!strcmp(argv[0],"&get");
@@ -146,19 +202,24 @@ void Flow_WriteBlif(Abc_Ntk_t *p, const char *file) {
 }
 static unsigned flow_aig(Aig_Man_t *p, const char *kind) {
     Aig_Obj_t *o; int i, first=1; unsigned seq;
-    seq=flow_start(kind); fputs(",\"representation\":\"aig\",\"pis\":[",flow_file);
+    seq=flow_start(kind); flow_encoding(p,"aig",kind,seq);
+    fputs(",\"representation\":\"aig\",\"pis\":[",flow_file);
     Aig_ManForEachCi(p,o,i) { if(i) fputc(',',flow_file); fprintf(flow_file,"%d",o->Id); }
     fputs("],\"pos\":[",flow_file);
     Aig_ManForEachCo(p,o,i) { if(i) fputc(',',flow_file); fprintf(flow_file,"%d",o->Id); }
     fputs("],\"nodes\":[",flow_file);
     Aig_ManForEachObj(p,o,i) {
         const char *op = Aig_ObjIsConst1(o)?"one":Aig_ObjIsCi(o)?"pi":Aig_ObjIsCo(o)||Aig_ObjIsBuf(o)?"buf":Aig_ObjIsExor(o)?"xor":"and";
+        int count=(o->pFanin0!=NULL)+(o->pFanin1!=NULL);
+        int a=o->pFanin0?2*Aig_ObjFanin0(o)->Id+Aig_ObjFaninC0(o):0;
+        int b=o->pFanin1?2*Aig_ObjFanin1(o)->Id+Aig_ObjFaninC1(o):0;
+        if (!flow_changed(o->Id,op,count,a,b,0)) continue;
         flow_node(o->Id,op,&first); fputs(",\"fanins\":[",flow_file);
         if (o->pFanin0) fprintf(flow_file,"%d",2*Aig_ObjFanin0(o)->Id+Aig_ObjFaninC0(o));
         if (o->pFanin1) fprintf(flow_file,",%d",2*Aig_ObjFanin1(o)->Id+Aig_ObjFaninC1(o));
         fputs("]}",flow_file);
     }
-    fputc(']',flow_file); flow_end(); return seq;
+    fputc(']',flow_file); flow_deleted(); flow_end(); return seq;
 }
 void Flow_AigReplace(Aig_Man_t *p, Aig_Obj_t *old, Aig_Obj_t *next) {
     unsigned snap;

@@ -146,7 +146,7 @@ class AnubisIntegrationTests(unittest.TestCase):
         original=[json.loads(s) for s in filename.read_text().splitlines()]
         script=Path(str(filename).replace('.input.blif.flow.jsonl','.script')).read_text()
         _,_,_,summary=read_evidence(filename,script)
-        self.assertEqual(summary['schema'],4)
+        self.assertEqual(summary['schema'],5)
         self.assertGreater(summary['cleanup_deleted_objects'],0)
         self.assertFalse(summary['complete_rewrite_history'])
         for change in ('polarity','mapping','disposition','constant','chain'):

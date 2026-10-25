@@ -288,6 +288,13 @@ def run(args):
             'netlist_generation_seconds':'all automatic preparation plus local synthesis, binding, splice and complete JSON/IL/Verilog export; includes selection evidence, excludes post-generation validation',
             'post_generation_validation_seconds':'post-export correctness validation only; excluded from generation time',
             'incremental_candidate_ready_seconds':'online preparation and checked candidate construction; excludes new full synthesis and its validation oracle'}}
+    def checkpoint():
+        # A killed worker cannot publish its final report. Keep completed phase
+        # timings separate from the currently running (possibly timed-out) phase.
+        write_json(out/'progress.json',{'stage':stage,'elapsed_seconds':time.perf_counter()-started,
+            'completed_timings':report['timings'],'baseline_load':report.get('baseline_load'),
+            'selection_strategy':report.get('selection_strategy')})
+    checkpoint()
     try:
         require(selection_mode in {'fine','module'},'selection_mode must be fine or module')
         context=ContractContext(args.base_run,compact=True);top=context.baseline['module']
@@ -298,6 +305,7 @@ def run(args):
         report['changed_or_missing_old_files']=context.input_changes()
         report['timings']['baseline_replay_seconds']=time.perf_counter()-started
         stage='new_frontend';step=time.perf_counter()
+        checkpoint()
         new,coarse,new_inputs=prepare(context,args,work)
         report['new_inputs_sha256']=new_inputs;report['new_frontend_sha256']=digest(work/'new.frontend.il')
         report['new_coarse_sha256']=digest(work/'new.coarse.json')
@@ -305,9 +313,11 @@ def run(args):
                        str(work/'new.coarse.json'):report['new_coarse_sha256']}
         report['timings']['new_frontend_and_scope_check_seconds']=time.perf_counter()-step
         stage='difference';step=time.perf_counter()
+        checkpoint()
         difference,oc,nc=rtlil.compare(old,new,top);write_json(out/'difference.json',difference)
         report['changes']=difference['changes'];report['timings']['IR_difference_seconds']=time.perf_counter()-step
         stage='equivalence_precheck'
+        checkpoint()
         report['equivalence_precheck']=equivalence.precheck(old,new,difference,oc,nc,work,args,coarse)
         report['timings']['equivalence_precheck_seconds']=report['equivalence_precheck']['elapsed_seconds']
         scopes=sorted(report['equivalence_precheck']['remaining_scopes'])
@@ -319,6 +329,7 @@ def run(args):
             report['timings']['incremental_candidate_ready_seconds']=time.perf_counter()-started
         else:
             stage='region_and_binding';step=time.perf_counter()
+            checkpoint()
             from . import statements
             report['statement_plan']={}
             if selection_mode=='fine':
@@ -334,6 +345,7 @@ def run(args):
                 report['selection_strategy']='statement_dependency_slice'
             else:
                 report['selection_strategy']='module_fallback' if selection_mode=='fine' else 'module_scope_ablation'
+                checkpoint()
                 for attempt in range(65):
                     row={'scopes':scopes};report['attempts'].append(row)
                     try:
@@ -350,6 +362,8 @@ def run(args):
                         scopes=next_scopes
                 else:raise PlanningBlocked('expansion_budget','Region expansion limit reached')
             report['timings']['selection_contract_binding_seconds']=time.perf_counter()-step
+            stage='patch_export'
+            checkpoint()
             export_started=time.perf_counter()
             plan_path=out/'replacement-plan.json'
             write_json(plan_path,contract);write_json(out/'bindings.json',bindings)
@@ -365,6 +379,7 @@ def run(args):
             report['timings']['region_contract_patch_binding_seconds']=time.perf_counter()-step
             stage='replacement'
             report['timings']['automatic_preparation_seconds']=time.perf_counter()-started
+            checkpoint()
             result=replace._run(SimpleNamespace(base_run=args.base_run,contract=str(plan_path),
                 bindings=str(out/'bindings.json'),patch_rtl=str(out/'patch.il'),patch_top='__auto_patch',
                 patch_is_rtlil=True,new_frontend=str(work/'new.frontend.il'),baseline_from_archive=True,

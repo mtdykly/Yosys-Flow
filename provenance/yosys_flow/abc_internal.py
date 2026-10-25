@@ -61,10 +61,10 @@ def evaluate(node, args, mask):
 
 
 class Network:
-    def __init__(self, record):
+    def __init__(self, record, nodes=None):
         self.record = record
-        self.nodes = {n['id']: n for n in record['nodes']}
-        require(len(self.nodes) == len(record['nodes']) and all(isinstance(i, int) and i >= 0 for i in self.nodes), 'duplicate/invalid ABC internal object')
+        self.nodes = {n['id']: n for n in record['nodes']} if nodes is None else nodes
+        require((nodes is not None or len(self.nodes) == len(record['nodes'])) and all(type(i) is int and i >= 0 for i in self.nodes), 'duplicate/invalid ABC internal object')
         self.pis = record.get('pis', sorted(i for i, n in self.nodes.items() if n['op'] == 'pi'))
         self.pos = record.get('pos', [])
         require(len(self.pis) == len(set(self.pis)) and set(self.pis) == {i for i, n in self.nodes.items() if n['op'] == 'pi'}, 'invalid ABC internal inputs')
@@ -146,12 +146,52 @@ def validate_cleanup(row, before, after):
         require(av==bv^(mask if target&1 else 0), 'ABC cleanup mapping changes local function/polarity')
 
 
+def decode_network(row, networks, epochs, schema):
+    """Lossless transport decoding, never an inference of causal object identity."""
+    encoding = row.get('encoding')
+    if encoding is None:
+        require(schema < 5 or row['representation'] == 'ntk', 'missing ABC snapshot encoding')
+        return Network(row)
+    require(schema >= 5 and encoding in {'checkpoint', 'delta'}, 'invalid ABC snapshot encoding')
+    epoch = row.get('network_epoch')
+    require(type(epoch) is int and epoch > 0, 'invalid ABC network epoch')
+    deleted = row.get('deleted_nodes')
+    require(isinstance(deleted, list) and all(type(i) is int and i >= 0 for i in deleted) and
+            len(set(deleted)) == len(deleted), 'invalid ABC deleted node set')
+    if encoding == 'checkpoint':
+        require(epoch not in epochs and 'base_snapshot' not in row and not deleted,
+                'invalid ABC checkpoint identity')
+        net = Network(row)
+    else:
+        base = row.get('base_snapshot')
+        require(row['kind'] == 'history_network' and base in networks and epochs.get(epoch) == base,
+                'ABC delta has missing or stale base snapshot')
+        before = networks[base]
+        require(before.record.get('network_epoch') == epoch and
+                before.record['command_id'] == row['command_id'] and
+                before.record['representation'] == row['representation'], 'ABC delta crosses network scope')
+        changes = {n['id']: n for n in row['nodes']}
+        require(len(changes) == len(row['nodes']) and set(deleted) <= before.nodes.keys() and
+                not set(deleted).intersection(changes), 'invalid ABC delta disposition')
+        # Empty observations share immutable node dictionaries; changed snapshots
+        # share unchanged node payloads. Neither expands the raw JSON event rows.
+        nodes = before.nodes
+        if changes or deleted:
+            nodes = dict(nodes)
+            for i in deleted: del nodes[i]
+            nodes.update(changes)
+        net = Network(row, nodes)
+    epochs[epoch] = row['seq']
+    return net
+
+
 def read_evidence(path, script):
-    rows = [json.loads(line) for line in path.read_text().splitlines()]
-    require(bool(rows) and rows[0]['kind'] == 'begin' and rows[0].get('schema') in {1, 2, 3, 4} and
+    with path.open() as stream:
+        rows = [json.loads(line) for line in stream]
+    require(bool(rows) and rows[0]['kind'] == 'begin' and rows[0].get('schema') in {1, 2, 3, 4, 5} and
             rows[0].get('abc_commit') == ABC_COMMIT, 'unsupported ABC internal trace')
     require(rows[-1]['kind'] == 'end' and rows[-1].get('status') == 0, 'incomplete ABC internal trace')
-    networks, commands, cuts = {}, [], []
+    networks, commands, cuts, epochs = {}, [], [], {}
     current, command_id, rewrites = None, 0, 0
     for seq, row in enumerate(rows, 1):
         require(row['seq'] == seq, 'ABC internal event sequence mismatch')
@@ -165,7 +205,7 @@ def read_evidence(path, script):
             require(row['command_id'] == command_id, 'ABC internal command ID mismatch')
         if kind in NETWORKS | {'history_network'}:
             require(current is not None, 'ABC internal network outside command')
-            networks[seq] = Network(row)
+            networks[seq] = decode_network(row, networks, epochs, rows[0]['schema'])
         elif kind == 'mapped_cut':
             require(current is not None and current[0] == '&nf', 'ABC mapping cut outside &nf')
             require(row['snapshot'] in networks and networks[row['snapshot']].record['kind'] == 'mapping_network', 'ABC cut has unknown network')

@@ -16,14 +16,16 @@ import tempfile
 
 from .common import ROOT, TraceError, digest, require, unescape
 
-INDEX_NAME = "verified-index.json.gz"
+INDEX_NAME = "verified-index.sqlite3"
+LEGACY_NAME = "verified-index.json.gz"
+INDEX_NAMES = {INDEX_NAME, LEGACY_NAME}
 SCHEMA = 1
 _TAG = "$verified_index_type"
 # These modules create, refine, validate or project the stored trace. Changes to
 # online contract presentation do not invalidate otherwise unchanged evidence.
 _SEMANTIC_FILES = ("native.py", "common.py", "hierarchy.py", "persistent_index.py",
                    "abc_provenance.py", "abc_internal.py", "abc_joint.py",
-                   "abc_lineage.py", "boolean.py")
+                   "abc_lineage.py", "boolean.py", "sqlite_index.py", "graph_index.py", "diagnostics.py")
 _FIELDS = {
     "records", "sources", "objects", "assignments", "events", "edges", "regions",
     "removals", "process_nodes", "process_actions", "process_discards",
@@ -153,6 +155,8 @@ def build_lookup(trace):
     for name, net in trace.design["netnames"].items():
         for offset, bit in enumerate(net["bits"]):
             aliases.setdefault(bit, []).append({"name": name, "offset": offset})
+    from .graph_index import EdgeList
+    trace.edges = EdgeList(trace.edges)
     trace.lookup_index = {"sources_to_final": sources_to_final,
                           "sources_to_assignments": sources_to_assignments,
                           "consumers": consumers, "consumer_rows": consumer_rows,
@@ -166,13 +170,13 @@ def _binding(manifest, artifacts):
     # excluded; the latter would otherwise make the artifact hash recursive.
     excluded = {"artifacts", "verified_index", "timings_seconds", "status"}
     return {"manifest": {key: value for key, value in manifest.items() if key not in excluded},
-            "artifacts": {name: meta for name, meta in artifacts.items() if name != INDEX_NAME}}
+            "artifacts": {name: meta for name, meta in artifacts.items() if name not in INDEX_NAMES}}
 
 
 def artifact_inventory(directory):
     return {path.name: {"sha256": digest(path), "size_bytes": path.stat().st_size}
             for path in sorted(Path(directory).iterdir())
-            if path.is_file() and path.name not in {"manifest.json", INDEX_NAME, INDEX_NAME + ".tmp"}}
+            if path.is_file() and path.name not in {"manifest.json", *INDEX_NAMES, *(n+".tmp" for n in INDEX_NAMES)}}
 
 
 def require_evidence_unchanged(expected, current):
@@ -180,7 +184,7 @@ def require_evidence_unchanged(expected, current):
         require(current.get(name) == metadata, f"validated evidence changed before index signing: {name}")
 
 
-def write_index(directory, manifest, trace, *, verified_artifacts):
+def write_legacy_index(directory, manifest, trace, *, verified_artifacts):
     """Called only after baseline replay, ABC checks and stock proofs pass."""
     directory = Path(directory)
     build_lookup(trace)
@@ -195,18 +199,18 @@ def write_index(directory, manifest, trace, *, verified_artifacts):
     key = _authentication_key(create=True)
     envelope["authentication"] = {"algorithm": "hmac-sha256", "key_id": hashlib.sha256(key).hexdigest(),
                                   "signature": _signature(key, envelope)}
-    target = directory / INDEX_NAME
+    target = directory / LEGACY_NAME
     temporary = target.with_name(target.name + ".tmp")
     temporary.write_bytes(gzip.compress(_json_bytes(envelope), compresslevel=1, mtime=0))
     require_evidence_unchanged(verified_artifacts, artifact_inventory(directory))
     os.replace(temporary, target)
-    return {"artifact": INDEX_NAME, "schema_version": SCHEMA, "implementation": envelope["implementation"]}
+    return {"artifact": LEGACY_NAME, "schema_version": SCHEMA, "implementation": envelope["implementation"]}
 
 
-def read_index(directory, manifest, trace_class):
+def read_legacy_index(directory, manifest, trace_class):
     """Return (trace, status); original artifacts must already be hash-checked."""
-    path = Path(directory) / INDEX_NAME
-    if INDEX_NAME not in manifest["artifacts"]:
+    path = Path(directory) / LEGACY_NAME
+    if LEGACY_NAME not in manifest["artifacts"]:
         return None, "not_archived"
     if not path.is_file():
         return None, "missing"
@@ -248,3 +252,15 @@ def read_index(directory, manifest, trace_class):
         raise
     except (ValueError, TypeError, KeyError, IndexError, OSError, EOFError, RecursionError) as exc:
         raise TraceError(f"invalid verified-index artifact: {exc}") from exc
+
+
+def write_index(directory, manifest, trace, *, verified_artifacts):
+    from .sqlite_index import write
+    return write(directory, manifest, trace, verified_artifacts)
+
+
+def read_index(directory, manifest, trace_class):
+    if INDEX_NAME in manifest['artifacts']:
+        from .sqlite_index import read
+        return read(directory, manifest, trace_class)
+    return read_legacy_index(directory, manifest, trace_class)

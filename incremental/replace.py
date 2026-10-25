@@ -251,11 +251,11 @@ def _recheck_context_archive(context, directory):
     manifest = context.directory/'manifest.json'
     expected = context.baseline['manifest_sha256']
     require(digest(manifest) == expected, 'baseline manifest hash mismatch during context handoff')
-    from yosys_flow.persistent_index import INDEX_NAME
+    from yosys_flow.persistent_index import INDEX_NAMES
     for name, meta in context.baseline['artifacts'].items():
         require(Path(name).name == name, 'invalid native artifact path')
         path = context.directory/name
-        if name == INDEX_NAME and not path.is_file():
+        if name in INDEX_NAMES and not path.is_file():
             continue  # optional acceleration; the raw archive was replayed
         require(path.is_file() and digest(path) == meta['sha256'], 'artifact hash mismatch: '+name)
     require(digest(manifest) == expected, 'baseline manifest hash mismatch during context handoff')

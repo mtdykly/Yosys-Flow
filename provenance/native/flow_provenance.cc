@@ -225,7 +225,7 @@ RegionScope::RegionScope(const Region &region, RTLIL::Module *module, const RTLI
         J::array inputs; for (int n : fanins.at(i)) if (n >= 0) inputs.push_back(n);
         nodes.push_back(J::object{{"id", i}, {"fanins", inputs}, {"cell", region.node_cells.at(signals[i], "")}});
     }
-    emit({{"input_nodes", nodes}, {"record_type", "abc_region"}, {"internal_trace_schema", 4}, {"module", module->name.str()}, {"invocation_id", active_region},
+    emit({{"input_nodes", nodes}, {"record_type", "abc_region"}, {"internal_trace_schema", 5}, {"module", module->name.str()}, {"invocation_id", active_region},
         {"inputs", region.inputs}, {"origins", ids(region.origins)}, {"signals", signal(signals)},
         {"input_ports", input_ports}, {"output_ports", output_ports}, {"artifacts", artifacts}, {"executable", executable},
         {"precision", "abc_region_candidate"}});
@@ -505,7 +505,7 @@ struct Start : Pass {
         if (existing.good()) log_cmd_error("Refusing to overwrite native provenance output.\n");
         output.open(args[1]);
         if (!output) log_cmd_error("Cannot open provenance output.\n");
-        emit({{"record_type", "run_begin"}, {"schema_version", 2}, {"run_id", args[2]}, {"profile", "native-combinational"}, {"features", J::array{"process_action_proofs", "conservative_precision_merge", "abc_node_correspondence", "conservative_derivation", "techmap_output_bits", "combinational_only", "abc_internal_v4"}}});
+        emit({{"record_type", "run_begin"}, {"schema_version", 2}, {"run_id", args[2]}, {"profile", "native-combinational"}, {"features", J::array{"process_action_proofs", "conservative_precision_merge", "abc_node_correspondence", "conservative_derivation", "techmap_output_bits", "combinational_only", "abc_internal_v5"}}});
     }
 } Start;
 struct Stop : Pass {

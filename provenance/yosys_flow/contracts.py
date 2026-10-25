@@ -17,6 +17,8 @@ from .extract import slice_module, extend_inputs
 from .native import resolve_bit
 from .region_functions import verify_outputs
 from .runner import load_run, query_loaded
+from .graph_index import walk, incoming, has_path
+from .sqlite_index import selected as indexed_rows
 
 SELECTOR_KEYS = ('source','line','end_line','column','end_column','object','instance')
 EXACT_PRECISIONS = {'cell','bit_range','process_action','abc_internal_cut','abc_internal_joint_cut'}
@@ -104,28 +106,28 @@ class ContractContext:
 
     def cell(self, ref):
         require(ref in self.trace.final, 'contract cell is not live in this baseline')
+        row = self.trace.objects[ref]
+        state = row['state']
+        # Closure may add cells not present in the initial query. Validate their
+        # continuous path, but do not build and discard a whole reverse-query
+        # report (events, proofs and retired objects) for each final cell.
+        require(has_path(self.trace.edges,row['origins'],ref), 'selected object has no continuous source evidence path')
+        result = {k:state[k] for k in ('module','name','type')}
+        result.update(ref=ref, precision=row['precision'], origin_ids=row['origins'])
+        result.update({k:row[k] for k in ('definition_ref','definition_module','definition_name',
+                                         'instance','instance_aliases') if k in row})
+        cell = self.module['cells'][unescape(state['name'])]
+        bits = {b for p,bs in cell['connections'].items() if cell['port_directions'][p]=='output'
+                for b in bs if isinstance(b,int)}
         if self.compact:
-            row = self.trace.objects[ref]
-            state = row['state']
-            # Preserve the reverse query's source-path check even for cells
-            # added by joint-group closure rather than the initial selector.
-            reachable = set(row['origins'])
-            for edge in self.trace.edges:
-                if edge['from'] in reachable: reachable.add(edge['to'])
-            require(ref in reachable, 'selected object has no continuous source evidence path')
-            result = {k:state[k] for k in ('module','name','type')}
-            result.update(ref=ref, precision=row['precision'], origin_ids=row['origins'])
-            result.update({k:row[k] for k in ('definition_ref','definition_module','definition_name',
-                                             'instance','instance_aliases') if k in row})
             if self._users is None: _,self._users = endpoints(self.module)
-            cell = self.module['cells'][unescape(state['name'])]
-            bits = {b for p,bs in cell['connections'].items() if cell['port_directions'][p]=='output'
-                    for b in bs if isinstance(b,int)}
             result['consumers'] = [u for b in sorted(bits) for u in self._users[b]]
             return result
-        selector = dict.fromkeys(SELECTOR_KEYS)
-        selector['object'] = ref
-        return self.query(selector)['final_cells'][0]
+        result['all_origins'] = [self.trace.sources[s] for s in row['origins']]
+        lookup = self.trace.lookup_index
+        result['consumers'] = [lookup['consumer_rows'][i] for i in sorted({i for bit in bits
+                              for i in lookup['consumers'].get(bit,[])})]
+        return result
 
     def connection(self, ref):
         require(ref in self.trace.assignments and self.trace.assignments[ref]['lhs'], 'contract connection is not live')
@@ -266,12 +268,11 @@ class ContractContext:
                 'port_directions':{unescape(k):v for k,v in state['port_directions'].items()},
                 'connections':{unescape(k):[resolve_bit(b,self.module) for b in bs] for k,bs in state['connections'].items()}}
         functions = verify_outputs(recorded,sliced['modules']['region']['cells'],boundary)
-        supporting = refs | connections
-        supporting = set(supporting)
-        for edge in reversed(self.trace.edges):
-            if edge['to'] in supporting: supporting.add(edge['from'])
-        edges = [e for e in self.trace.edges if e['to'] in supporting]
-        associations = [r for r in self.trace.abc_associations if r['ref'] in supporting]
+        supporting, _ = walk(self.trace.edges,refs|connections,reverse=True)
+        indexed_edges = incoming(self.trace.edges,supporting)
+        edges = [e for _,e in indexed_edges]
+        indexed_associations = indexed_rows(self.trace,'abc_associations','ref',supporting)
+        associations = [r for _,r in indexed_associations]
         origin_ids = {s for c in cells for s in c['origin_ids']} | {s for c in connection_rows for s in c['origins']}
         invocation_ids = {a['invocation_id'] for a in associations}
         provenance = {'record_event_ids':sorted({e['event_id'] for e in edges}),
@@ -284,15 +285,15 @@ class ContractContext:
             # joint-group history or raw edge is copied into an online plan.
             provenance.update(evidence_encoding='baseline_replay_references_v1',
                 source_ids=sorted(origin_ids),
-                supporting_edge_indices=[i for i,e in enumerate(self.trace.edges) if e['to'] in supporting],
+                supporting_edge_indices=[i for i,e in indexed_edges],
                 abc_associations=[{'ref':a['ref'],'invocation_id':a['invocation_id'],'evidence_index':i}
-                                  for i,a in enumerate(self.trace.abc_associations) if a['ref'] in supporting],
+                                  for i,a in indexed_associations],
                 abc_internal=[{'invocation_id':r['invocation_id'],'evidence_index':i}
-                              for i,r in enumerate(self.trace.abc_internal) if r['invocation_id'] in invocation_ids])
+                              for i,r in indexed_rows(self.trace,'abc_internal','invocation_id',invocation_ids)])
         else:
             provenance.update(sources=[self.trace.sources[s] for s in sorted(origin_ids)],
                 supporting_edges=edges, abc_associations=associations,
-                abc_internal=[r for r in self.trace.abc_internal if r['invocation_id'] in invocation_ids])
+                abc_internal=[r for _,r in indexed_rows(self.trace,'abc_internal','invocation_id',invocation_ids)])
         by_name = {unescape(c['name']):c for c in cells}
         outputs = []
         for proof in functions['outputs']:

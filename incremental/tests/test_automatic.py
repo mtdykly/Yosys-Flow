@@ -193,7 +193,7 @@ class AutomaticTests(unittest.TestCase):
     def test_missing_optional_index_replays_through_automatic_handoff(self):
         _,original=self.cases['bypass_noc1']
         base=self.root/'without-index';shutil.copytree(original,base)
-        (base/'verified-index.json.gz').unlink()
+        (base/'verified-index.sqlite3').unlink()
         result,_=self.execute('bypass_noc1','replay-without-index',base=base)
         self.assertEqual(result['status'],'passed',result.get('failure'))
         self.assertEqual(result['baseline_load']['verified_index_status'],'missing')

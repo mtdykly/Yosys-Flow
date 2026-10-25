@@ -82,7 +82,7 @@ def main():
               'sequential_experiment_directory': str((out/'sequential').resolve()),
               'acceptance_layers': {
                   'record_consistency': ['test_native', 'test_synth', 'test_cli', 'test_hierarchy',
-                                         'test_persistent_index'],
+                                         'test_persistent_index', 'test_sqlite_index', 'test_abc_delta'],
                   'source_selection': ['test_process', 'test_selection', 'test_abc_internal', 'test_abc_factoring',
                                        'test_boolean', 'test_abc_scale', 'test_diagnostics', 'test_contracts'],
                   'region_contracts': ['test_contracts', 'test_plans', 'test_hierarchy'],

@@ -64,7 +64,7 @@ cell 引用形如 `native:cell_17@2`，连接引用形如 `native:connection_18`
 
 `techmap_bit_map` 引用真实派生父对象及子对象，端口位范围和双方信号必须与捕获状态一致。组合单元的输出位对应不等于算术内部门的位级来源，查询仍保留实际父对象来源。
 
-新日志声明 `abc_internal_v4`、`abc_region.internal_trace_schema=4`，额外归档 `input.blif.flow.jsonl`。这是 ABC 内部格式的版本；外层原生 JSONL 仍为 v2。内部日志头必须与声明一致；旧 schema 1/2/3 及相应 feature 声明仍可读取。事件包含命令、网络快照、AIG 替换、Nf 选中 cut 和实际对象转换；schema 2 增加 `proved_equivalence`、`history_copy`、独立作用域的 `history_network` 和每命令事件计数。等价只记录成功采用的结构/SAT 合并及代表/choice，仿真候选不算证明。
+新日志声明 `abc_internal_v5`、`abc_region.internal_trace_schema=5`，额外归档 `input.blif.flow.jsonl`。这是 ABC 内部格式的版本；外层原生 JSONL 仍为 v2。内部日志头必须与声明一致；旧 schema 1/2/3/4 及相应 feature 声明仍可读取。事件包含命令、网络快照、AIG 替换、Nf 选中 cut 和实际对象转换；schema 2 增加 `proved_equivalence`、`history_copy`、独立作用域的 `history_network` 和每命令事件计数。等价只记录成功采用的结构/SAT 合并及代表/choice，仿真候选不算证明。
 
 schema 3 新增以下记录和约束：
 
@@ -74,6 +74,8 @@ schema 3 新增以下记录和约束：
 - `command_end.entry_copies` / `mapped_clones`：分别校验该命令的实际记录数量。
 
 schema 4 的 `history_copy.reason=fraig_cleanup_copy` 连接 sweep 的后快照与清理后的 GIA；`links` 是实际存活对象到目标 literal 的映射，`deleted` 是实际未复制对象。两者必须完整划分旧对象集，目标映射覆盖全部新对象，常量、端口和每个节点的独立扇入函数均校验。清理结果还必须匹配同一 `&fraig` 的命令结束网络；没有这条记录的 schema 4 日志不能通过。`cleanup_copies`、`cleanup_deleted_objects` 报告数量。
+
+schema 5 保留以上事件和快照身份，对 AIG/GIA 增加 `encoding=checkpoint/delta`、`network_epoch`；差量另含 `base_snapshot` 与 `deleted_nodes`。checkpoint 的 `nodes` 为完整节点集，delta 的 `nodes` 只含新增或结构变化的节点。差量只能接续同命令、同表示、同 epoch 的最近快照；删除必须引用已有节点，重建后扇入引用、端口、极性及实际关系验证不变。命令或 manager 切换以及每 128 次历史观察重新保存检查点；NTK 仍为完整快照。epoch 仅服务编码，不能据此认定跨快照对象的因果身份。详见[记录与查询存储](storage.md)。
 
 `abc_internal` 报告验证与回退详情，包括 `verified_entry_copies`、`entry_lineage.scope=entry_to_fraig_cleanup`（schema 3 为 `entry_to_fraig`）、`mapped_clones`、`equivalence_groups`；旧格式缺少入口链时 `entry_lineage.available=false`，不补造路径。超过证明规模等早期回退可能尚未建立 `entry_lineage`，应结合 `fallback_reason` 读取。`abc_associations` 附单门证明事件编号或 `joint_groups` 的原始成员、组内门、边界、真实映射事件和阶段功能见证。以实际 fraig 等价根为依据的组另含 `basis=recorded_fraig_equivalence` 和 `entry_lineage`，后者保存两个入口根的复制路径、等价事件、sweep 事件及汇合 literal；schema 4 另保存清理事件及清理后 literal/删除状态。被清理删除的根不作为存活等价组锚点。最终门组仍按局部功能对应验证，不表示下游完整因果历史。详见 [abc-internals.md](abc-internals.md)。
 
@@ -127,8 +129,10 @@ schema 4 的 `history_copy.reason=fraig_cleanup_copy` 连接 sweep 的后快照�
 
 ## 已验证来源索引
 
-`verified-index.json.gz` 是压缩 JSON 派生产物，包含通过原始重放与验证后的 trace 状态，以及源码到最终对象/连接、驱动者、消费者和别名索引。manifest 的 `artifacts` 保存其字节数与哈希，`verified_index` 保存格式及实现身份，`timings_seconds.verified_index_build` 记录首次建档成本。默认 synth 与原生开发检查点均可生成。
+`verified-index.sqlite3` 是通过原始重放与验证后生成的 SQLite 派生产物。源码位置、对象版本、正反向转换边、事件、最终对象关联、驱动者、消费者和别名均可按键查找；重复载荷按内容摘要去重、逐条压缩。加载采用只读连接与有界缓存，不恢复整份 Python trace。最终电气设计和少量上下文仍一次读入，原始文件仍完整计算哈希。manifest 的 `artifacts` 保存数据库字节数与哈希，`verified_index` 保存格式、实现身份及认证，`timings_seconds.verified_index_build` 记录首次建档成本。默认 synth 与原生开发检查点均可生成。
 
 加载时仍校验所有原始产物，索引还绑定实现、归档身份及本机认证；本机密钥位于忽略提交的 `build/.verified-index-auth-key`，不打包进运行目录。索引不存在、版本不兼容或缺少相同本机密钥时从原始日志重放；损坏或认证不符不能作为有效索引使用。索引不是可脱离旧证据独立信任的文件。
 
 读取计时中的 `verified_index_status` 区分 `hit` 与回退原因，`verified_index_load` 记录实际加载。命中时原重放、ABC 和实例视图重建计时为 0，哈希检查时间仍保留；`yosys_flow validate` 和 `load_run(..., use_index=False)` 显式完整复核原始记录。旧归档无需重新综合，也不会因一次读取被自动补写索引。
+
+旧 `verified-index.json.gz` 的读取兼容保留；新建档只写 SQLite。格式不适用时读取原始记录，新版本实现指纹变化也会触发重放。索引不是原始转换事件的替代品；表结构与按需访问规则见[存储说明](storage.md)。

@@ -25,7 +25,8 @@ _TAG = "$verified_index_type"
 # online contract presentation do not invalidate otherwise unchanged evidence.
 _SEMANTIC_FILES = ("native.py", "native_storage.py", "common.py", "hierarchy.py", "persistent_index.py",
                    "abc_provenance.py", "abc_internal.py", "abc_joint.py",
-                   "abc_lineage.py", "boolean.py", "sqlite_index.py", "graph_index.py", "diagnostics.py")
+                   "abc_lineage.py", "boolean.py", "index_store.py", "sqlite_index.py", "gzip_index.py",
+                   "graph_index.py", "diagnostics.py")
 _FIELDS = {
     "records", "sources", "objects", "assignments", "events", "edges", "regions",
     "removals", "process_nodes", "process_actions", "process_discards",
@@ -255,12 +256,24 @@ def read_legacy_index(directory, manifest, trace_class):
 
 
 def write_index(directory, manifest, trace, *, verified_artifacts):
-    from .sqlite_index import write
+    backend = manifest.get('configuration',{}).get('index_backend','sqlite')
+    require(backend in {'sqlite','gzip'}, 'unsupported index backend')
+    if backend == 'gzip':
+        from .gzip_index import write
+    else:
+        from .sqlite_index import write
     return write(directory, manifest, trace, verified_artifacts)
 
 
 def read_index(directory, manifest, trace_class):
-    if INDEX_NAME in manifest['artifacts']:
+    descriptor = manifest.get('verified_index',{})
+    artifact = descriptor.get('artifact')
+    # The manifest chooses its bound backend, even if a second index file is
+    # retained for inspection. A missing chosen index falls back to raw replay.
+    if artifact == LEGACY_NAME and descriptor.get('backend')=='gzip' and LEGACY_NAME in manifest['artifacts']:
+        from .gzip_index import read
+        return read(directory, manifest, trace_class)
+    if INDEX_NAME in manifest['artifacts'] and artifact != LEGACY_NAME:
         from .sqlite_index import read
         return read(directory, manifest, trace_class)
     return read_legacy_index(directory, manifest, trace_class)

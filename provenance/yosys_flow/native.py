@@ -477,6 +477,8 @@ class NativeTrace:
 
 def run_native(args):
     require(args.flow in {"synth", "m1", "m1-opt"}, "unsupported native flow")
+    index_backend = getattr(args,'index_backend','sqlite')
+    require(index_backend in {'sqlite','gzip'}, 'unsupported index backend')
     out = Path(args.out).resolve()
     require(not out.exists(), f"output directory already exists: {out}")
     native, stock = shutil.which(args.native_yosys), shutil.which(args.yosys)
@@ -525,7 +527,8 @@ def run_native(args):
                 "endpoint": "; ".join(passes), "coverage": "partial", "coverage_gaps": gaps,
                 "safe_for_incremental_reuse": False, "inputs": [], "artifacts": {}, "timings_seconds": {},
                 "configuration": {"top": top, "sources": list(map(str, sources)), "include_dirs": list(map(str, includes)),
-                                  "defines": args.define, "parameters": args.param, "passes": passes, "flatten":flatten},
+                                  "defines": args.define, "parameters": args.param, "passes": passes, "flatten":flatten,
+                                  "index_backend":index_backend},
                 "tool": {"versions": versions, "native_executable": str(Path(native).resolve()),
                          "native_sha256": digest(native), "stock_executable": str(Path(stock).resolve())}}
     write_json(out / "manifest.json", manifest)
@@ -633,7 +636,7 @@ def run_native(args):
                                  for p in sorted(out.iterdir()) if p.is_file() and p.name != "manifest.json"}
         manifest["status"] = "complete"
         write_json(out / "manifest.json", manifest)
-        return {"run_directory": str(out), "status": "complete", **validation}
+        return {"run_directory": str(out), "status": "complete", "index_backend":index_backend, **validation}
     except BaseException as exc:
         manifest.update(status="failed", error=str(exc))
         write_json(out / "manifest.json", manifest)

@@ -28,7 +28,19 @@ make test
 
 ## 首次建档的可复用索引
 
-新建归档在来源、网表和独立对照检查通过后保存 `verified-index.sqlite3`，供查询和自动增量按需读取旧来源状态、转换边及连接索引。它绑定原始产物与实现版本，并由本机密钥认证；每次仍核对原始产物哈希。旧归档缺索引、实现变化或异机无认证密钥时回退完整重放，不自动修改归档；内容损坏拒绝。旧 `verified-index.json.gz` 仍有兼容读取路径。ABC schema 5 压缩重复的 AIG/GIA 历史网络，保存检查点和节点差量；原生 JSONL 使用共享来源/成员数组，SQLite schema 2 共享大型数组载荷，查询图避免展开重复的 ABC 多对多边。原始 JSONL、ABC 证据和最终网表继续保留，索引只是验证加速副本，不能消除候选或边界问题。`yosys_flow validate` 强制完整重放，`contract-validate` 则可用已认证索引重建区域声明。格式、限制和验收见[存储说明](docs/storage.md)。
+新建归档在来源、网表和独立对照检查通过后生成索引。默认 `--index-backend sqlite` 保存 `verified-index.sqlite3`，按需读取；`--index-backend gzip` 保存去重后的 `verified-index.json.gz`，加载到内存后查询。每次建档只生成选中的一种索引；查询、导出、契约和自动增量从 manifest 自动识别后端，不需要再次传入选项。
+
+```bash
+# 默认 SQLite，可省略 --index-backend
+python3 -m yosys_flow run --source provenance/examples/comb.v --top demo \
+  --out runs/comb-sqlite --index-backend sqlite
+# 使用相同来源记录与验证规则的去重 gzip
+python3 -m yosys_flow run --source provenance/examples/comb.v --top demo \
+  --out runs/comb-gzip --index-backend gzip
+python3 -m yosys_flow query runs/comb-gzip --source provenance/examples/comb.v --line 4
+```
+
+两种后端共用来源、转换边、共享数组和查询视图，索引绑定原始产物与实现版本，并由本机密钥认证；每次仍核对原始产物哈希。旧归档缺索引、实现变化或异机无认证密钥时回退完整重放，不自动修改归档；内容损坏拒绝。旧 gzip schema 1 保留兼容读取，新 gzip schema 2 直接写压缩文件，不创建中间 SQLite 数据库。ABC schema 5 保存检查点和节点差量；原生 JSONL 使用共享来源/成员数组，两个索引后端共用大型数组及关系去重。原始 JSONL、ABC 证据和最终网表继续保留，索引只是验证加速副本，不能消除候选或边界问题。`yosys_flow validate` 强制完整重放，`contract-validate` 则可用已认证索引重建区域声明。格式、取舍和验收见[存储说明](docs/storage.md)。
 
 自动增量按需生成轻量 `replacement-plan.json`，引用旧证据并重新确定本次边界。完整 v1 契约、合并和导出继续作为独立接口，详见 [区域契约与替换计划](docs/region-contracts.md)；首次与在线分工见 [自动流程](../incremental/automatic.md#首次建档与在线替换计划)。
 

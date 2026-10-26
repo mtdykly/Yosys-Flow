@@ -25,6 +25,8 @@ def parser():
     execute.add_argument("-D", "--define", action="append", default=[])
     execute.add_argument("--param", action="append", default=[], help="顶层参数 NAME=VALUE")
     execute.add_argument("--flatten", action="store_true", help="显式执行 synth -flatten；默认保留层次")
+    execute.add_argument("--index-backend", choices=("sqlite", "gzip"), default="sqlite",
+                         help="验证后生成的来源索引：默认 SQLite 按需读取；gzip 使用相同去重数据，整包加载到内存")
     development = execute.add_argument_group("开发检查点")
     development.add_argument("--flow", choices=("synth", "m1", "m1-opt"), default="synth",
                              help="默认 synth；m1 为 proc 检查点，m1-opt 为基础优化检查点；共用原生记录器，来源覆盖仍为 partial")

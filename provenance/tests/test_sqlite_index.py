@@ -11,7 +11,7 @@ from unittest.mock import patch
 from test_native import NATIVE
 from yosys_flow.cli import parser
 from yosys_flow.common import TraceError, digest, write_json
-from yosys_flow.graph_index import EdgeList, walk, has_path
+from yosys_flow.graph_index import EdgeList, walk, has_path, has_paths
 from yosys_flow.diagnostics import group_closure
 from yosys_flow.contracts import ContractContext
 from yosys_flow.runner import load_run, query_loaded, run
@@ -33,6 +33,8 @@ class GraphTests(unittest.TestCase):
                 self.assertEqual(walk(edges,seeds,reverse=reverse),(expected,sorted(chosen)))
                 if not reverse:
                     for target in range(20):self.assertEqual(has_path(edges,seeds,target),target in expected)
+                    for targets in (set(range(20)), set(rng.sample(range(20),10)), expected):
+                        self.assertEqual(has_paths(edges,seeds,targets),targets <= expected)
 
 
 @unittest.skipUnless(NATIVE.is_file(),'native Yosys not built')
@@ -101,6 +103,19 @@ endmodule
                 expected=query_loaded(args,context.manifest,context.trace)['final_cells'][0]
                 with patch.object(context,'query',side_effect=AssertionError('redundant reverse report')):
                     self.assertEqual(context.cell(ref),expected)
+
+    def test_compact_selection_keeps_members_and_source_paths_without_full_report(self):
+        for mode in ('retained','flatten'):
+            out=self.runs[mode];m,trace,_=load_run(out)
+            args=parser().parse_args(['query',str(out),'--source',str(self.source),'--line','2','--instance','demo/first'])
+            full=query_loaded(args,m,trace)
+            with patch('yosys_flow.graph_index.walk',side_effect=AssertionError('expanded selection history')):
+                small=query_loaded(args,m,trace,compact=True)
+            self.assertEqual(small,{'seeds':full['seeds'],'final_connections':full['final_connections'],
+                'final_cells':[{k:v for k,v in c.items() if k not in {'all_origins','consumers'}} for c in full['final_cells']]})
+            with patch('yosys_flow.graph_index.has_path',return_value=False):
+                with self.assertRaisesRegex(TraceError,'continuous source evidence path'):
+                    query_loaded(args,m,trace,compact=True)
 
     def test_sql_uses_edge_and_source_indexes_and_is_readonly(self):
         _,trace,_=load_run(self.runs['retained']);con=store_for(trace).connection

@@ -3,7 +3,8 @@
 The reference is the replayed FINAL object state, not an invented RTL function.
 Source correspondence is reported separately by contracts.py.
 """
-from .boolean import BDD, ProofBudgetExceeded
+from collections import Counter
+from .boolean import BDD, ProofBudgetExceeded, signal_order
 from .common import require
 
 
@@ -103,21 +104,23 @@ def encode_function(function, input_ports):
             'support':sorted({n['input_port'] for n in nodes})}
 
 
-def ordered_inputs(boundary):
-    """Interleave actual bus bit positions; never change signal identities."""
+def ordered_inputs(boundary, cells=None):
+    """Prioritize high-fanout controls, then interleave high operand bits."""
+    fanout = Counter(b for cell in (cells or {}).values() for p, bs in cell['connections'].items()
+                     if cell['port_directions'][p] == 'input' for b in bs)
     def key(row):
         aliases=[a for a in row.get('aliases',[]) if not a.get('hide_name',True)]
         if aliases:
-            alias=min(aliases,key=lambda a:(a.get('source_index',a['offset']),a['name']))
-            return (alias.get('source_index',alias['offset']),alias['name'],row['port'])
-        return (0,row['port'],row['port'])
+            alias=min(aliases,key=lambda a:signal_order(a['name'],a.get('source_index',a['offset'])))
+            return (fanout[row['original_bit']] < 16, *signal_order(alias['name'],alias.get('source_index',alias['offset'])),row['port'])
+        return (fanout[row['original_bit']] < 16, *signal_order(row['port']),row['port'])
     return sorted((b for b in boundary if b['direction']=='input'),key=key)
 
 
 def verify_outputs(recorded_cells, final_cells, boundary):
     """Check EVERY cut output against final netlist at independent cut inputs."""
     manager = BDD()
-    inputs = ordered_inputs(boundary)
+    inputs = ordered_inputs(boundary, recorded_cells)
     variables = {}
     setup_error = None
     try: variables = dict(zip([b['original_bit'] for b in inputs],manager.variables(len(inputs))))

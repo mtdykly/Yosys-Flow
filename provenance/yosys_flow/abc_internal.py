@@ -3,7 +3,7 @@
 A cut match proves a local Boolean correspondence, NOT a complete causal rewrite
 history. Boundary input dependencies are not attributed to the mapped gate.
 """
-from collections import Counter
+from collections import Counter, defaultdict
 import json
 import shlex
 
@@ -355,15 +355,18 @@ def analyze(path, script, region, imports, input_blif=None):
         # variable permutation: PI identities still come from recorded names
         # and conversion links, never from this heuristic.
         if bdd is not None:
-            def signal_order(index):
+            from .boolean import signal_order
+            input_fanout = Counter(i for node in region['input_nodes'] for i in node['fanins'])
+            def input_order(index):
                 name = first.names[index]
                 sid = int(name.removeprefix('ys__n'))
                 signal = region['signals'][sid]
-                return (signal.get('offset',0),signal.get('wire',''),index) if isinstance(signal,dict) else (0,str(signal),index)
-            order = sorted(range(len(first.pis)),key=signal_order)
+                position = signal_order(signal.get('wire',''),signal.get('offset',0)) if isinstance(signal,dict) else signal_order(str(signal))
+                return (input_fanout[sid] < 16, *position, index)
+            order = sorted(range(len(first.pis)),key=input_order)
             ranks = {index:rank for rank,index in enumerate(order)}
             input_variables = [input_variables[ranks[i]] for i in range(len(first.pis))]
-            report['input_variable_order'] = {'rule':'recorded_signal_bit_offset_then_wire',
+            report['input_variable_order'] = {'rule':'high_fanout_then_recorded_high_bit_or_scalar_index_then_wire',
                 'pi_names':[first.names[i] for i in order]}
         require(set(first.names) == {f'ys__n{i}' for i in region['input_ports']}, 'ABC internal input boundary mismatch')
         input_names = first.names
@@ -448,8 +451,13 @@ def analyze(path, script, region, imports, input_blif=None):
         if len(conversions)!=1 or len(netlist_maps)!=1: raise Unsupported('ambiguous_mapping_conversion')
         gm, nm = conversions[0], netlist_maps[0]
         mapped_ntk, source_ntk = nets[gm['after']], nets[nm['before']]
+        structures = {}
         def structure(net):
-            return {i:{k:v for k,v in n.items() if k!='name'} for i,n in net.nodes.items()}
+            # Nodes are immutable after transport decoding. Cache the same
+            # comparison view used by every selected mapping cut.
+            if id(net.nodes) not in structures:
+                structures[id(net.nodes)] = {i:{k:v for k,v in n.items() if k!='name'} for i,n in net.nodes.items()}
+            return structures[id(net.nodes)]
         require(structure(mapped_ntk)==structure(source_ntk), 'ABC mapped network changed before export')
         require(structure(nets[nm['after']])==structure(final), 'ABC netlist changed during export')
         expected_roots = {lit for lit,node in gm['links'] if mapped_ntk.nodes[node]['op']=='sop' and mapped_ntk.nodes[node]['fanins']}
@@ -468,18 +476,37 @@ def analyze(path, script, region, imports, input_blif=None):
                     'ABC mapped clone changed before conversion')
             literal_by_node[new]=literal_by_node[old]
         literal_by_gate = {copied[node]: lit for node,lit in literal_by_node.items() if node in copied}
+        stage_functions = {}
+        for stage in stages:
+            by_function = defaultdict(list)
+            for i, value in evaluated[stage.record['seq']][0].items(): by_function[value].append(i)
+            stage_functions[stage.record['seq']] = by_function
+        witness_cache = {}
         def witnesses(root):
+            if root in witness_cache: return witness_cache[root]
             result = []
+            value, inverted = initial[root], mask ^ initial[root]
             for stage in stages:
                 vals, _ = evaluated[stage.record['seq']]
-                nodes = [i for i,v in vals.items() if v in {initial[root], mask^initial[root]}]
+                by_function = stage_functions[stage.record['seq']]
+                members = set(by_function.get(value, ())) | set(by_function.get(inverted, ()))
+                # Preserve the original witness order, independently of hashes.
+                nodes = [i for i in vals if i in members]
                 if not nodes:
                     witness_failures[root] = {'reason':'stage_function_witness_missing','entry_root':root,
                         'snapshot':stage.record['seq'],'command_id':stage.record['command_id'],
                         'command':report['commands'][stage.record['command_id']-1]}
+                    witness_cache[root] = []
                     return []
                 result.append({'snapshot': stage.record['seq'], 'nodes': nodes})
+            witness_cache[root] = result
             return result
+        roots_by_function = defaultdict(list)
+        root_order = {root:i for i,root in enumerate(original)}
+        for root in original: roots_by_function[initial[root]].append(root)
+        cuts_by_literal = defaultdict(list)
+        for cut in cuts: cuts_by_literal[cut['root_literal']].append(cut)
+        checked_mapping_snapshots = set()
         gate_by_name, mapping_by_name = {}, {}
         phase = 'local_correspondence'
         for name, imported in imports.items():
@@ -492,9 +519,10 @@ def analyze(path, script, region, imports, input_blif=None):
             require(gate['gate'] == imported['type'].lstrip('\\'), 'ABC exported gate type mismatch')
             input_functions = [fv[lit//2] ^ (mask if lit&1 else 0) for lit in gate['fanins']]
             mapping=[]
-            for cut in cuts:
-                if cut['root_literal'] != literal_by_gate.get(target): continue
-                require(structure(nets[cut['snapshot']]) == structure(nets[gm['before']]), 'ABC GIA changed after mapping')
+            for cut in cuts_by_literal.get(literal_by_gate.get(target), ()):
+                if cut['snapshot'] not in checked_mapping_snapshots:
+                    require(structure(nets[cut['snapshot']]) == structure(nets[gm['before']]), 'ABC GIA changed after mapping')
+                    checked_mapping_snapshots.add(cut['snapshot'])
                 vals,_=evaluated[cut['snapshot']]
                 value=vals[cut['root_literal']//2] ^ (mask if cut['root_literal']&1 else 0)
                 leaves=[vals[lit//2] ^ (mask if lit&1 else 0) for lit in cut['leaves']]
@@ -502,8 +530,9 @@ def analyze(path, script, region, imports, input_blif=None):
                 mapping.append(cut['seq'])
             gate_by_name[name], mapping_by_name[name] = target, mapping
             matches = []; reasons = []; matched_function = False
-            for root, cell in original.items():
-                if initial[root] not in {fv[target], mask^fv[target]}: continue
+            roots = sorted(set(roots_by_function.get(fv[target], ())) |
+                           set(roots_by_function.get(mask ^ fv[target], ())), key=root_order.__getitem__)
+            for root in roots:
                 matched_function = True
                 polarity = int(initial[root] != fv[target])
                 match = prove_cut(first, root, initial, input_functions, gate, polarity, mask,

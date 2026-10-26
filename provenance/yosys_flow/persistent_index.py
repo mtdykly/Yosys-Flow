@@ -23,7 +23,7 @@ SCHEMA = 1
 _TAG = "$verified_index_type"
 # These modules create, refine, validate or project the stored trace. Changes to
 # online contract presentation do not invalidate otherwise unchanged evidence.
-_SEMANTIC_FILES = ("native.py", "common.py", "hierarchy.py", "persistent_index.py",
+_SEMANTIC_FILES = ("native.py", "native_storage.py", "common.py", "hierarchy.py", "persistent_index.py",
                    "abc_provenance.py", "abc_internal.py", "abc_joint.py",
                    "abc_lineage.py", "boolean.py", "sqlite_index.py", "graph_index.py", "diagnostics.py")
 _FIELDS = {

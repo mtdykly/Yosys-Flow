@@ -25,6 +25,6 @@ def query(args):
     return query_loaded(args, manifest, trace)
 
 
-def query_loaded(args, manifest, trace):
+def query_loaded(args, manifest, trace, *, compact=False):
     """Reuse an already validated native run for export."""
-    return query_native(args, manifest, trace)
+    return query_native(args, manifest, trace, compact=compact)

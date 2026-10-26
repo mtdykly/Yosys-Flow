@@ -69,3 +69,32 @@ def has_path(edges, sources, target):
             if seen.get(parent,-1)<i:
                 seen[parent]=i;queue.append((parent,i))
     return False
+
+
+def has_paths(edges, sources, targets):
+    """Check a selection together, without enumerating its evidence report.
+
+    Many outputs can share the same large candidate ancestry. Repeating a
+    reverse search for each output would revisit it N times. This forward scan
+    retains chronological bounds and stops once every requested target is seen.
+    """
+    targets, sources = set(targets), set(sources)
+    if len(targets) <= 8:
+        return all(has_path(edges, sources, target) for target in targets)
+    if not hasattr(edges, 'adjacent'): edges = EdgeList(edges)
+    reached, queued, heap = set(sources), set(), []
+    missing = targets - reached
+    def push(node, bound):
+        for i, edge in edges.adjacent(node):
+            if i > bound and i not in queued:
+                queued.add(i)
+                heapq.heappush(heap, (i, edge))
+    for node in reached: push(node, -1)
+    while missing and heap:
+        i, edge = heapq.heappop(heap)
+        target = edge['to']
+        if target not in reached:
+            reached.add(target)
+            missing.discard(target)
+            if missing: push(target, i)
+    return not missing

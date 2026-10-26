@@ -98,10 +98,10 @@ class ContractContext:
 
     def query(self, selector):
         require(set(selector)==set(SELECTOR_KEYS), 'invalid contract selector fields')
-        key = fingerprint(selector)
+        key = (self.compact,fingerprint(selector))
         if key not in self.queries:
             args = SimpleNamespace(directory=str(self.directory),**selector)
-            self.queries[key] = query_loaded(args,self.manifest,self.trace)
+            self.queries[key] = query_loaded(args,self.manifest,self.trace,compact=self.compact)
         return self.queries[key]
 
     def cell(self, ref):
@@ -339,7 +339,8 @@ class ContractContext:
             'expansion':{'added_cell_refs':sorted(refs-requested), 'reason':'recorded_joint_group_closure',
                          'upstream_cone_added':False},
             'boundary':boundary, 'outputs':outputs, 'electrical_cut':cut, 'recorded_group_closure':closed,
-            'other_recorded_sources':[self.trace.sources[s] for s in sorted(origin_ids-source_ids)],
+            **({'other_recorded_source_ids':sorted(origin_ids-source_ids)} if self.compact else
+               {'other_recorded_sources':[self.trace.sources[s] for s in sorted(origin_ids-source_ids)]}),
             'provenance':provenance, 'conditions':conditions,
             'verification':{'status':'verified_old_region' if not blockers else 'partial_old_region',
                 'blockers':blockers, 'all_output_functions':functions,
@@ -347,8 +348,6 @@ class ContractContext:
                 'scope':'baseline_region_functions_and_reported_evidence_only'},
             'safe_for_incremental_reuse':False, 'end_to_end_exact':False, 'synthesis_invocations':0}
         if self.compact:
-            result.pop('other_recorded_sources')
-            result['other_recorded_source_ids'] = sorted(origin_ids-source_ids)
             # Output functions are retained once, in outputs. The validation
             # summary refers to those same ports rather than embedding the DAG
             # a second time (which can dominate an arithmetic region's plan).

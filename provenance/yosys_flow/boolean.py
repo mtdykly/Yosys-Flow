@@ -5,6 +5,21 @@ manager makes function equality canonical. Resource exhaustion is unknown, not
 inequality; callers must retain candidate provenance in that case.
 """
 
+import re
+
+
+def signal_order(name, offset=0):
+    """Variable-order heuristic only; identities and boundary bindings stay intact.
+
+    Gate benchmarks often spell bus bits as escaped scalar names (a[12]).
+    Grouping operands makes an adder exponential. Higher bits first also lets
+    carry-prefix functions share their lower-bit suffix instead of rebuilding it.
+    """
+    name = name.lstrip('\\')
+    match = re.fullmatch(r'(.*)\[([0-9]+)\]', name) if offset == 0 else None
+    return (-int(match[2]), match[1], name) if match else (-offset, name, name)
+
+
 MAX_BDD_NODES = 100_000
 MAX_BDD_WORK = 1_000_000
 

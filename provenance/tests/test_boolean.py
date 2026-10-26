@@ -3,7 +3,9 @@ import random
 import unittest
 
 from yosys_flow.abc_internal import Network, cut_domain, prove_cut
-from yosys_flow.boolean import BDD, ProofBudgetExceeded
+from yosys_flow.boolean import BDD, ProofBudgetExceeded, signal_order
+from yosys_flow.region_functions import verify_outputs
+from yosys_flow.common import TraceError
 
 
 def assignment_value(function, row):
@@ -15,6 +17,78 @@ def assignment_value(function, row):
 
 
 class BooleanTests(unittest.TestCase):
+    def test_barrel_outputs_use_independent_control_first_functions(self):
+        width = 32
+        data = list(range(2, width+2)); selects = list(range(width+2, width+7))
+        boundary = [{'direction':'input','original_bit':bit,'port':f'{stem}_{i}',
+                     'aliases':[{'name':f'{stem}[{i}]','offset':0,'hide_name':False}]}
+                    for stem, bits in [('a',data),('s',selects)] for i, bit in enumerate(bits)]
+        cells = {}; outputs = data; counter = width+7
+        for i, select in enumerate(selects):
+            previous = outputs; outputs = []
+            for j in range(width):
+                cells[str(counter)] = {'type':'$_MUX_','parameters':{},
+                    'port_directions':{'A':'input','B':'input','S':'input','Y':'output'},
+                    'connections':{'A':[previous[j]],'B':[previous[(j+(1<<i))%width]],'S':[select],'Y':[counter]}}
+                outputs.append(counter); counter += 1
+        boundary += [{'direction':'output','original_bit':bit,'port':f'y_{i}'} for i,bit in enumerate(outputs)]
+        proof = verify_outputs(cells,cells,boundary)
+        self.assertTrue(proof['all_outputs_verified'])
+        self.assertEqual(set(proof['input_order'][:5]), {f's_{i}' for i in range(5)})
+        for shift in range(width):
+            for bit in range(width):
+                values = {f'a_{i}':int(i==bit) for i in range(width)}
+                values.update({f's_{i}':(shift>>i)&1 for i in range(5)})
+                for i,row in enumerate(proof['outputs']):
+                    f=row['function']; nodes={n['id']:n for n in f['nodes']}; node=f['root']
+                    while node>1:
+                        n=nodes[node]; node=n['high'] if values[n['input_port']] else n['low']
+                    self.assertEqual(node, int((i+shift)%width==bit))
+
+    def test_escaped_scalar_adder_order_and_independent_arithmetic(self):
+        width=128
+        boundary=[];cells={};outputs=[];counter=2
+        a=[];b=[]
+        for stem,bits in (('a',a),('b',b)):
+            for i in range(width):
+                bits.append(counter)
+                boundary.append({'direction':'input','original_bit':counter,'port':f'{stem}_{i}',
+                    'aliases':[{'name':f'\\{stem}[{i}]','offset':0,'source_index':0,'hide_name':False}]})
+                counter+=1
+        def gate(kind,left,right):
+            nonlocal counter
+            output=counter;counter+=1
+            cells[str(output)]={'type':kind,'parameters':{},'connections':{'A':[left],'B':[right],'Y':[output]},
+                                'port_directions':{'A':'input','B':'input','Y':'output'}}
+            return output
+        carry='0'
+        for i in range(width):
+            prop=gate('$_XOR_',a[i],b[i])
+            outputs.append(gate('$_XOR_',prop,carry))
+            carry=gate('$_OR_',gate('$_AND_',a[i],b[i]),gate('$_AND_',prop,carry))
+        outputs.append(carry)
+        boundary += [{'direction':'output','original_bit':bit,'port':f'y_{i}'} for i,bit in enumerate(outputs)]
+        proof=verify_outputs(cells,cells,boundary)
+        self.assertTrue(proof['all_outputs_verified'])
+        self.assertEqual(proof['input_order'][:6],['a_127','b_127','a_126','b_126','a_125','b_125'])
+        self.assertLess(proof['resources']['nodes'],100_000)
+        rng=random.Random(94)
+        for left,right in [(0,0),((1<<width)-1,1),*((rng.getrandbits(width),rng.getrandbits(width)) for _ in range(16))]:
+            values={f'{stem}_{i}':(value>>i)&1 for stem,value in (('a',left),('b',right)) for i in range(width)}
+            actual=0
+            for i,row in enumerate(proof['outputs']):
+                f=row['function'];nodes={n['id']:n for n in f['nodes']};node=f['root']
+                while node>1:
+                    n=nodes[node];node=n['high'] if values[n['input_port']] else n['low']
+                actual|=node<<i
+            self.assertEqual(actual,left+right)
+        wrong={k:dict(v) for k,v in cells.items()};wrong[str(outputs[0])]['type']='$_OR_'
+        # Alter the data XOR too: XOR(a,b) is not OR(a,b), even at bit zero.
+        wrong[str(outputs[0]-1)]['type']='$_OR_'
+        with self.assertRaisesRegex(TraceError,'output function differs'):
+            verify_outputs(cells,wrong,boundary)
+        self.assertGreater(signal_order('\\a[2]'),signal_order('\\a[10]'))
+
     def test_all_three_input_functions_and_boolean_operations(self):
         bdd = BDD()
         inputs = bdd.variables(3)

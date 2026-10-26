@@ -68,6 +68,7 @@ def cones(trace, region):
 def refine(trace, internal=None):
     internal = internal or {}
     replacements = {}
+    member_lists = {}
     trace.abc_associations = []
     trace.abc_fallbacks = []
     for region in trace.regions:
@@ -93,24 +94,39 @@ def refine(trace, internal=None):
                 members = set(cut['inputs'])
             if not members:
                 continue  # Keep original region candidate, never invent an empty proof.
+            member_key = tuple(sorted(members))
+            shared_members = member_lists.setdefault(member_key, list(member_key))
             evidence = {'ref': row['ref'], 'invocation_id': region['invocation_id'],
                         'mapped_node': mapped, 'output_boundaries': sorted(outputs),
-                        'inputs': sorted(members), 'precision': 'abc_output_cone_candidate',
+                        'inputs': shared_members, 'precision': 'abc_output_cone_candidate',
                         'method': 'preserved_output_boundary_cones', 'internal_rewrite_provenance': False}
             if cut:
                 evidence.update(cut)
                 evidence['internal_rewrite_provenance'] = False  # functional cut proof, not complete lineage
             trace.abc_associations.append(evidence)
-            replacements[row['ref']] = (members, row['seq'], cut['precision'] if cut else 'abc_output_cone')
+            replacements[row['ref']] = (member_key, row['seq'], cut['precision'] if cut else 'abc_output_cone', region)
     if not replacements: return
-    trace.edges = [e for e in trace.edges if e['to'] not in replacements]
-    for ref, (inputs, sequence, capture) in replacements.items():
+    trace.edges = [e for e in trace.edges if e['to'] not in replacements and not e.get('abc_member_group')]
+    shared_groups = {}
+    for ref, (inputs, sequence, capture, region) in replacements.items():
+        # Factor only identical member sets in the same invocation. The virtual
+        # node preserves all paths and timestamps; it does not upgrade precision.
+        if len(inputs) >= 32:
+            key = (region['invocation_id'], inputs)
+            if key not in shared_groups:
+                node = region['invocation_id'] + ':members_' + str(len(shared_groups)+1)
+                shared_groups[key] = node
+                trace.edges.extend({'from': i, 'to': node, 'event_id': region['seq'],
+                                    'capture': 'abc_member_set', 'abc_member_group': True,
+                                    'precision': 'abc_region_candidate'} for i in inputs)
+            inputs = (shared_groups[key],)
         trace.edges.extend({'from': i, 'to': ref, 'event_id': sequence, 'capture': capture,
                             'precision': 'abc_output_cone_candidate' if capture == 'abc_output_cone' else capture} for i in sorted(inputs))
     trace.edges.sort(key=lambda e: e['event_id'])
     groups = {}
     for edge in trace.edges: groups.setdefault(edge['to'], []).append(edge)
-    origins = {sid: {sid} for sid in trace.sources}
+    origins = {sid: frozenset({sid}) for sid in trace.sources}
+    source_lists = {}
     precisions = {sid: 'cell' for sid in trace.sources}
     rank = {'cell': 0, 'bit_range': 0, 'process_action': 1, 'abc_internal_cut': 2,
             'abc_internal_joint_cut': 3, 'cell_group_candidate': 4, 'process_signal_candidate': 5, 'abc_output_cone_candidate': 6, 'abc_region_candidate': 7,
@@ -118,7 +134,8 @@ def refine(trace, internal=None):
     objects = {**trace.objects, **trace.assignments, **trace.process_nodes}
     for ref, edges in groups.items():
         # Sources with no incoming edges (pending cells, empty constant routes).
-        sources = set().union(*(origins.get(e['from'], set()) for e in edges))
+        parents = [origins.get(e['from'], frozenset()) for e in edges]
+        sources = parents[0] if all(p is parents[0] for p in parents) else frozenset().union(*parents)
         obj = objects.get(ref)
         raw = obj.get('recorded_precision', obj['precision']) if obj else 'cell'
         p = max((precisions.get(e['from'], 'cell') for e in edges), key=rank.__getitem__)
@@ -132,7 +149,8 @@ def refine(trace, internal=None):
         if obj:
             obj.setdefault('recorded_origins', obj['origins'])
             obj.setdefault('recorded_precision', obj['precision'])
-            obj['origins'] = sorted(sources)
+            if id(sources) not in source_lists: source_lists[id(sources)] = sorted(sources)
+            obj['origins'] = source_lists[id(sources)]
             obj['precision'] = p
         for e in edges: e['precision'] = p
 

@@ -4,6 +4,7 @@
 #include "kernel/register.h"
 #include "libs/json11/json11.hpp"
 #include <fstream>
+#include <memory>
 
 YOSYS_NAMESPACE_BEGIN
 namespace FlowProvenance {
@@ -16,7 +17,6 @@ static int abc_boundary = -1;
 static RTLIL::SigSpec captured_outputs;
 static RTLIL::Design *root_design = nullptr;
 static pool<RTLIL::Module*> pending_modules;
-static Origins active;
 static std::vector<std::string> active_inputs;
 static std::string operation;
 static pool<RTLIL::SigBit> active_outputs;
@@ -27,7 +27,39 @@ static std::string merged_precision(const std::string &, const std::string &);
 static int sequence = 0, source_id = 0, object_id = 0, step_id = 0;
 static std::vector<int> steps;
 static std::vector<std::string> passes;
-struct CellInfo { int id, version = 0; Origins origins; std::string precision, state; };
+// Run-local immutable origin sets: an ABC region can contribute the same large
+// set to thousands of outputs. Do not allocate one tree per output/version.
+static std::map<Origins, std::shared_ptr<const Origins>> origin_pool;
+static std::map<const Origins*, std::weak_ptr<const Origins>> origin_addresses;
+static std::shared_ptr<const Origins> share_origins(const Origins &value) {
+    auto address = origin_addresses.find(&value);
+    if (address != origin_addresses.end()) if (auto shared = address->second.lock()) return shared;
+    auto found = origin_pool.find(value);
+    if (found != origin_pool.end()) return found->second;
+    auto ptr = std::make_shared<const Origins>(value);
+    origin_pool.emplace(value, ptr);
+    origin_addresses.emplace(ptr.get(), ptr);
+    return ptr;
+}
+struct SharedOrigins {
+    std::shared_ptr<const Origins> value;
+    SharedOrigins(const Origins &origins = {}) : value(share_origins(origins)) {}
+    operator const Origins &() const { return *value; }
+    auto begin() const { return value->begin(); }
+    auto end() const { return value->end(); }
+    bool empty() const { return value->empty(); }
+    void clear() { value = share_origins({}); }
+    template<typename It> void insert(It first, It last) {
+        bool changed = false;
+        for (auto it = first; it != last; ++it) if (!value->count(*it)) { changed = true; break; }
+        if (!changed) return;
+        Origins merged = *value;
+        merged.insert(first, last);
+        value = share_origins(merged);
+    }
+};
+static SharedOrigins active;
+struct CellInfo { int id, version = 0; SharedOrigins origins; std::string precision, state; };
 static dict<RTLIL::Cell*, CellInfo> cells;
 struct ConnectionInfo {
     RTLIL::Module *module;
@@ -35,7 +67,7 @@ struct ConnectionInfo {
     std::string ref;
     std::vector<int> offsets;
     int revision = 0;
-    Origins origins;
+    SharedOrigins origins;
     std::string precision;
 };
 static std::vector<ConnectionInfo> connections;
@@ -52,7 +84,41 @@ static void process_created(RTLIL::Cell *cell);
 static void process_retired(RTLIL::Cell *cell);
 static void process_release(RTLIL::Process *proc);
 static void process_temporary(RTLIL::Process *proc, const RTLIL::SigSpec &from, const RTLIL::SigSpec &to);
-static J ids(const Origins &value) { return J::array(value.begin(), value.end()); }
+static void emit(J::object row);
+static int array_id = 0;
+static bool full_arrays = false;
+static std::map<Origins, J> origin_arrays;
+static std::map<const Origins*, J> shared_origin_arrays;
+static std::map<std::vector<std::string>, J> input_arrays;
+static J array_reference(const J::array &values, const std::string &kind) {
+    int id = ++array_id;
+    emit({{"record_type", "shared_array"}, {"id", id}, {"element_kind", kind}, {"values", values}});
+    return J::object{{"$native_array", id}};
+}
+static J ids(const Origins &value) {
+    if (full_arrays || value.size() < 32) return J::array(value.begin(), value.end());
+    auto found = origin_arrays.find(value);
+    if (found != origin_arrays.end()) return found->second;
+    auto encoded = array_reference(J::array(value.begin(), value.end()), "origins");
+    origin_arrays.emplace(value, encoded);
+    return encoded;
+}
+static J ids(const SharedOrigins &value) {
+    if (full_arrays || value.value->size() < 32) return ids(*value.value);
+    auto found = shared_origin_arrays.find(value.value.get());
+    if (found != shared_origin_arrays.end()) return found->second;
+    auto encoded = ids(*value.value);
+    shared_origin_arrays.emplace(value.value.get(), encoded);
+    return encoded;
+}
+static J input_ids(const std::vector<std::string> &value) {
+    if (full_arrays || value.size() < 32) return value;
+    auto found = input_arrays.find(value);
+    if (found != input_arrays.end()) return found->second;
+    auto encoded = array_reference(J::array(value.begin(), value.end()), "inputs");
+    input_arrays.emplace(value, encoded);
+    return encoded;
+}
 bool enabled() { return output.is_open(); }
 bool tracks(RTLIL::Design *design) { return enabled() && design == root_design; }
 static bool tracks(RTLIL::Module *module) { return enabled() && (module->design == root_design || pending_modules.count(module)); }
@@ -119,8 +185,8 @@ void gap(const std::string &reason) {
         emit({{"record_type", "coverage_gap"}, {"reason", reason}});
 }
 Scope::Scope(const Origins &origins, const std::string &p, bool inherit) : previous(active), previous_precision(precision) {
-    if (!inherit) active.clear();
-    active.insert(origins.begin(), origins.end());
+    if (!inherit) active = origins;
+    else active.insert(origins.begin(), origins.end());
     precision = p;
 }
 Scope::~Scope() { active = previous; precision = previous_precision; }
@@ -138,7 +204,8 @@ static void observe(RTLIL::Cell *cell, const std::string &capture) {
           {"capture", capture}, {"operation", operation}});
     info.state = serial;
 }
-static Origins collect_origins(const std::vector<RTLIL::Cell*> &targets) {
+static SharedOrigins collect_origins(const std::vector<RTLIL::Cell*> &targets) {
+    if (targets.size() == 1 && cells.count(targets[0])) return cells.at(targets[0]).origins;
     Origins result;
     for (auto c : targets) if (cells.count(c)) result.insert(cells.at(c).origins.begin(), cells.at(c).origins.end());
     return result;
@@ -226,7 +293,7 @@ RegionScope::RegionScope(const Region &region, RTLIL::Module *module, const RTLI
         nodes.push_back(J::object{{"id", i}, {"fanins", inputs}, {"cell", region.node_cells.at(signals[i], "")}});
     }
     emit({{"input_nodes", nodes}, {"record_type", "abc_region"}, {"internal_trace_schema", 5}, {"module", module->name.str()}, {"invocation_id", active_region},
-        {"inputs", region.inputs}, {"origins", ids(region.origins)}, {"signals", signal(signals)},
+        {"inputs", input_ids(region.inputs)}, {"origins", ids(region.origins)}, {"signals", signal(signals)},
         {"input_ports", input_ports}, {"output_ports", output_ports}, {"artifacts", artifacts}, {"executable", executable},
         {"precision", "abc_region_candidate"}});
 }
@@ -250,7 +317,7 @@ void created(RTLIL::Cell *cell) {
     emit({{"record_type", "cell_create"}, {"ref", ref(cells.at(cell))}, {"origins", ids(active)},
           {"cloned_from", cloning_source}, {"flatten_event", cloning_source.empty() ? "" : flatten_context},
           {"precision", precision}, {"module", cell->module->name.str()}, {"name", cell->name.str()},
-          {"inputs", active_inputs}, {"operation", operation}, {"abc_invocation", active_region}, {"abc_node", abc_node}, {"abc_boundary", abc_boundary}});
+          {"inputs", input_ids(active_inputs)}, {"operation", operation}, {"abc_invocation", active_region}, {"abc_node", abc_node}, {"abc_boundary", abc_boundary}});
     if (cell_scope) cell_scope->generated.emplace_back(cell, cells.at(cell).id);
     process_created(cell);
     if (active.empty() && precision != "process_pending") gap("cell_created_without_semantic_source_binding");
@@ -313,7 +380,7 @@ void assignment(RTLIL::Module *module, const RTLIL::SigSpec &lhs, const RTLIL::S
           {"module", module->name.str()}, {"lhs", signal(lhs)}, {"rhs", signal(rhs)},
           {"flatten_event", cloning_source.empty() ? "" : flatten_context},
           {"source_offsets", cloning_offsets},
-          {"cloned_from", cloned_from}, {"origins", ids(origins)}, {"precision", p}, {"inputs", active_inputs}, {"operation", operation}, {"abc_invocation", active_region}, {"abc_node", abc_node}, {"abc_boundary", abc_boundary}});
+          {"cloned_from", cloned_from}, {"origins", ids(origins)}, {"precision", p}, {"inputs", input_ids(active_inputs)}, {"operation", operation}, {"abc_invocation", active_region}, {"abc_node", abc_node}, {"abc_boundary", abc_boundary}});
 }
 void connected(RTLIL::Module *module, const RTLIL::SigSig &conn) {
     if (!tracks(module) || operation.empty() || active_inputs.empty()) return;
@@ -494,6 +561,8 @@ struct Start : Pass {
         if (args.size() != 3 || enabled() || GetSize(design->modules()) != 0)
             log_cmd_error("flow_start FILE RUN_ID requires an empty design and inactive recorder.\n");
         sequence = source_id = object_id = step_id = 0;
+        array_id = 0; origin_arrays.clear(); shared_origin_arrays.clear(); input_arrays.clear(); origin_addresses.clear(); origin_pool.clear();
+        full_arrays = std::getenv("YOSYS_FLOW_NATIVE_FULL_ARRAYS") != nullptr;
         cells.clear(); actions.clear(); temporaries.clear(); gaps.clear(); active.clear(); steps.clear(); passes.clear();
         source_rows.clear(); cloning_source.clear(); flatten_context.clear(); flatten_sources.clear();
         process_reset();
@@ -505,7 +574,7 @@ struct Start : Pass {
         if (existing.good()) log_cmd_error("Refusing to overwrite native provenance output.\n");
         output.open(args[1]);
         if (!output) log_cmd_error("Cannot open provenance output.\n");
-        emit({{"record_type", "run_begin"}, {"schema_version", 2}, {"run_id", args[2]}, {"profile", "native-combinational"}, {"features", J::array{"process_action_proofs", "conservative_precision_merge", "abc_node_correspondence", "conservative_derivation", "techmap_output_bits", "combinational_only", "abc_internal_v5"}}});
+        emit({{"record_type", "run_begin"}, {"schema_version", 2}, {"run_id", args[2]}, {"profile", "native-combinational"}, {"features", J::array{"process_action_proofs", "conservative_precision_merge", "abc_node_correspondence", "conservative_derivation", "techmap_output_bits", "combinational_only", "abc_internal_v5", "shared_native_arrays_v1"}}});
     }
 } Start;
 struct Stop : Pass {

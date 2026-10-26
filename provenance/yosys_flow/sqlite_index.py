@@ -17,7 +17,8 @@ import zlib
 from .common import TraceError, digest, require
 
 NAME = 'verified-index.sqlite3'
-SCHEMA = 1
+SCHEMA = 2
+SHARED_FIELDS = {'origins', 'recorded_origins', 'inputs', 'values', 'enclosing_controls'}
 EAGER = {'design', 'instance_catalog', 'view_rule', 'final', 'gaps',
          'abc_fallbacks', 'process_connection_proofs', 'hierarchy'}
 
@@ -52,6 +53,8 @@ def write(directory, manifest, trace, verified_artifacts):
         con.executescript('''
             PRAGMA journal_mode=DELETE;
             CREATE TABLE documents(id INTEGER PRIMARY KEY, hash BLOB UNIQUE NOT NULL, data BLOB NOT NULL);
+            CREATE TABLE document_fields(doc INTEGER, field TEXT, value INTEGER,
+                                         PRIMARY KEY(doc,field)) WITHOUT ROWID;
             CREATE TABLE fields(name TEXT PRIMARY KEY, kind TEXT, count INTEGER, doc INTEGER) WITHOUT ROWID;
             CREATE TABLE items(field TEXT, key TEXT, ordinal INTEGER, doc INTEGER,
                                PRIMARY KEY(field,key)) WITHOUT ROWID;
@@ -72,14 +75,31 @@ def write(directory, manifest, trace, verified_artifacts):
         # One offline transaction, no per-event commits. Repeated payloads are
         # stored once; SQL keys remain explicit and searchable outside the blobs.
         con.execute('BEGIN')
-        seen, refs = {}, {}
+        seen, refs, arrays = {}, {}, {}
         def document(value):
-            payload = key(value).encode()
-            sha = hashlib.sha256(payload).digest()
+            # Source/member arrays recur across objects, versions and evidence
+            # rows. Resolve a shared document lazily, never serialize them again
+            # for every row. IDs are only an on-disk encoding, not new evidence.
+            cacheable = isinstance(value, list) and len(value) >= 32
+            if cacheable and id(value) in arrays:
+                return arrays[id(value)][1]
+            links = {}
+            payload_value = value
+            if isinstance(value, dict):
+                links = {k: document(v) for k, v in value.items()
+                         if k in SHARED_FIELDS and isinstance(v, list) and len(v) >= 32}
+                if links: payload_value = {k: v for k, v in value.items() if k not in links}
+            payload = key(payload_value).encode()
+            sha = hashlib.sha256(payload + b'\0fields\0' + key(links).encode()).digest()
             if sha not in seen:
-                seen[sha] = con.execute('INSERT INTO documents(hash,data) VALUES (?,?)',
-                                       (sha,zlib.compress(payload,1))).lastrowid
-            return seen[sha]
+                doc = con.execute('INSERT INTO documents(hash,data) VALUES (?,?)',
+                                  (sha,zlib.compress(payload,1))).lastrowid
+                seen[sha] = doc
+                con.executemany('INSERT INTO document_fields VALUES (?,?,?)',
+                                ((doc, k, v) for k, v in links.items()))
+            doc = seen[sha]
+            if cacheable: arrays[id(value)] = (value, doc)
+            return doc
         def reference(value):
             encoded=key(value)
             if encoded not in refs:
@@ -159,7 +179,14 @@ class Store:
         raw=zlib.decompress(found[0]);self.decoded_records+=1
         from .persistent_index import _decode
         value=_decode(json.loads(raw))
-        if len(raw)<262144:
+        links = self.connection.execute('SELECT field,value FROM document_fields WHERE doc=?',(doc,)).fetchall()
+        for field, child in links:
+            require(isinstance(value,dict) and field in SHARED_FIELDS and field not in value and
+                    type(child) is int and 0 < child < doc, 'invalid SQLite shared field')
+            child_value = self.value(child)
+            require(isinstance(child_value,list), 'SQLite shared field is not an array')
+            value[field] = child_value
+        if len(raw)<1048576:
             self.cache[doc]=(value,len(raw));self.cache_bytes+=len(raw)
             while len(self.cache)>512 or self.cache_bytes>8*1024*1024:
                 _,(_,size)=self.cache.popitem(last=False);self.cache_bytes-=size

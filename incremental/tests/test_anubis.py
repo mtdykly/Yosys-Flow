@@ -134,7 +134,7 @@ class AnubisIntegrationTests(unittest.TestCase):
         self.assertTrue(ordered['all_outputs_verified'])
         # Reproduce the former grouped bit order using the REAL synthesized
         # ANUBIS comparator, not a BDD-only arithmetic model.
-        with patch('yosys_flow.region_functions.ordered_inputs',side_effect=lambda bs:
+        with patch('yosys_flow.region_functions.ordered_inputs',side_effect=lambda bs, cells=None:
                    sorted((b for b in bs if b['direction']=='input'),key=lambda b:b['original_bit'])):
             grouped=verify_outputs(selected,selected,contract['boundary'])
         self.assertFalse(grouped['all_outputs_verified'])

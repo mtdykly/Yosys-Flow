@@ -60,7 +60,11 @@ class NativeTrace:
         precision_rank = {"cell": 0, "process_action": 1, "cell_group_candidate": 2,
                           "process_signal_candidate": 3, "abc_region_candidate": 4, "process_pending": 5}
         conservative_merge = "conservative_precision_merge" in self.records[0].get("features", [])
-        for sequence, row in enumerate(self.records, 1):
+        from .native_storage import Arrays
+        arrays = Arrays(self.records[0].get("features", []))
+        checked_origins = {}
+        for sequence, captured in enumerate(self.records, 1):
+            row = arrays.decode(captured)
             require(row.get("seq") == sequence, "native sequence discontinuity")
             kind = row["record_type"]
             if kind == "run_begin":
@@ -72,10 +76,16 @@ class NativeTrace:
                 stack.append(sid)
             else:
                 require(row["step_id"] == (stack[-1] if stack else 0), "native record has wrong step ID")
+            if kind == "shared_array":
+                arrays.define(row, self.sources)
+                continue
             if "enclosing_controls" in row:
                 require(set(row["enclosing_controls"]) <= self.sources.keys(), "unknown enclosing process control")
             if "origins" in row:
-                require(set(row["origins"]) <= self.sources.keys(), "unknown native source reference")
+                values = row["origins"]
+                if id(values) not in checked_origins:
+                    require(set(values) <= self.sources.keys(), "unknown native source reference")
+                    checked_origins[id(values)] = values
             if kind == "source":
                 require(row["id"] not in self.sources and row["id"] > 0, "duplicate native source ID")
                 if row.get('flatten_event'):
@@ -121,13 +131,14 @@ class NativeTrace:
                 if row.get('flatten_event'):
                     self.check_flatten_clone(row, self.objects)
                 inputs = row.get("inputs", [])
-                if inputs:
+                if inputs and not row.get("abc_invocation"):
                     require(set(inputs) <= self.objects.keys() and ref not in inputs, "unknown or circular native derivation input")
                     expected = set().union(*(set(self.objects[r]["origins"]) for r in inputs))
                     require(set(row["origins"]) == expected, "native creation origins differ from derivation inputs")
                 if row.get("abc_invocation"):
                     region = invocations.get(row["abc_invocation"])
-                    require(region is not None and inputs == region["inputs"] and row["precision"] == "abc_region_candidate",
+                    require(region is not None and inputs == region["inputs"] and
+                            row["origins"] == region["origins"] and row["precision"] == "abc_region_candidate",
                             "native ABC output does not match its region")
                 elif inputs:
                     expected_precision = self.objects[inputs[0]]["precision"] if len(inputs) == 1 else "cell_group_candidate"
@@ -136,7 +147,7 @@ class NativeTrace:
                     require(row["precision"] == expected_precision, "native derivation changed association precision")
                 self.edges += [{"from": source, "to": ref, "event_id": sequence,
                                 "capture": 'flatten_cell_clone' if row.get('flatten_event') else row.get("operation") or ("ast_generation_scope" if row["precision"] == "cell" else "process_target_signal"),
-                                "precision": row["precision"]} for source in (inputs or row["origins"])]
+                                "precision": row["precision"]} for source in ([row["abc_invocation"]] if row.get("abc_invocation") else inputs or row["origins"])]
             elif kind == "process_node":
                 ref, inputs = row["ref"], row["inputs"]
                 require(re.fullmatch(r"native:process_[1-9][0-9]*", ref) and ref not in self.process_nodes,
@@ -205,7 +216,7 @@ class NativeTrace:
                 require(row["precision"] in {"process_action", "process_signal_candidate"} and
                         (row["precision"] != "process_action" or all(self.process_nodes[r]["precision"] == "process_action" for r in inputs)),
                         "process binding incorrectly claims action precision")
-                obj = deepcopy(self.objects[old])
+                obj = dict(self.objects[old])
                 obj.update(row)
                 self.objects[out] = obj
                 live.remove(old); retired.add(old); live.add(out)
@@ -236,8 +247,8 @@ class NativeTrace:
                 stem, version = inputs[0].rsplit("@", 1)
                 require(out == stem + "@" + str(int(version) + 1), "invalid native cell version")
                 require(out not in self.objects, "duplicate native output reference")
-                expected = set().union(*(set(self.objects[r]["origins"]) for r in inputs))
-                require(set(row["origins"]) == expected, "native source propagation does not match event inputs")
+                expected = self.objects[inputs[0]]["origins"] if len(inputs) == 1 else sorted(set().union(*(set(self.objects[r]["origins"]) for r in inputs)))
+                require(row["origins"] == expected, "native source propagation does not match event inputs")
                 expected_precision = self.objects[inputs[0]]["precision"]
                 if kind in {"merge", "cell_contribution"}:
                     other = self.objects[inputs[1]]["precision"]
@@ -259,7 +270,7 @@ class NativeTrace:
                     require(row['state']['module']==event['module'] and row['state']['type']==original['type'] and
                             row['state']['parameters']==original['parameters'] and row['state']['connections']==expected,
                             'flatten cell pins differ from actual wire mapping')
-                obj = deepcopy(self.objects[inputs[0]])
+                obj = dict(self.objects[inputs[0]])
                 obj.update(row)
                 obj["ref"] = out
                 self.objects[out] = obj
@@ -295,17 +306,18 @@ class NativeTrace:
                                                 "offsets": list(range(len(row["lhs"]))), "revision": 0}
                 self.events.append(row)
                 inputs = row.get("inputs", [])
-                if inputs:
+                if inputs and not row.get("abc_invocation"):
                     require(set(inputs) <= self.objects.keys(), "unknown native connection derivation input")
                     require(set(row["origins"]) == set().union(*(set(self.objects[r]["origins"]) for r in inputs)),
                             "native connection origins differ from derivation inputs")
                 if row.get("abc_invocation"):
                     region = invocations.get(row["abc_invocation"])
-                    require(region is not None and inputs == region["inputs"] and row["precision"] == "abc_region_candidate",
+                    require(region is not None and inputs == region["inputs"] and
+                            row["origins"] == region["origins"] and row["precision"] == "abc_region_candidate",
                             "native ABC connection does not match its region")
                 self.edges += [{"from": source, "to": row["ref"], "event_id": sequence,
                                 "capture": 'flatten_connection_clone' if row.get('flatten_event') else "hierarchy_parameter_clone" if cloned_from else row.get("operation") or "assignment_generation", "precision": row["precision"]}
-                               for source in (row['origins'] if row.get('flatten_event') else [cloned_from] if cloned_from else inputs or row["origins"])]
+                               for source in (row['origins'] if row.get('flatten_event') else [cloned_from] if cloned_from else [row["abc_invocation"]] if row.get("abc_invocation") else inputs or row["origins"])]
             elif kind == "connection_state":
                 require(row["ref"] in self.assignments, "unknown connection migration")
                 obj = self.assignments[row["ref"]]
@@ -365,6 +377,9 @@ class NativeTrace:
                     require(set(row["artifacts"]) == expected_artifacts and
                             all(Path(p).name == p for p in row["artifacts"].values()), "invalid ABC artifact paths")
                     invocations[iid] = row
+                    self.edges += [{"from": r, "to": iid, "event_id": sequence,
+                                    "capture": "abc_region_inputs", "precision": row["precision"]}
+                                   for r in row["inputs"]]
                 self.regions.append(row)
                 self.events.append(row)
             elif kind in {"checkpoint", "run_end"}:
@@ -391,7 +406,7 @@ class NativeTrace:
                     if obj["precision"] == "process_action" and not obj.get("inputs") and not obj.get("cloned_from")), "missing process connection proof")
 
         # Effective query associations must never mutate the captured log.
-        self.objects = deepcopy(self.objects)
+        self.objects = {ref: dict(obj) for ref, obj in self.objects.items()}
         from .abc_provenance import refine
         refine(self)
 
@@ -699,8 +714,8 @@ def _check_instance_artifact(directory, manifest, trace, validation):
                 'indexed electrical view differs from the recorded final netlist')
 
 
-def query_native(args, manifest, trace):
-    from .graph_index import walk
+def query_native(args, manifest, trace, *, compact=False):
+    from .graph_index import walk, has_paths
     from .sqlite_index import store_for, selected as indexed_rows
     store = store_for(trace)
     reverse = args.object is not None
@@ -766,8 +781,10 @@ def query_native(args, manifest, trace):
         state = row["state"]
         final.append({"ref": ref, "module": state["module"], "name": state["name"], "type": state["type"],
                       "precision": row["precision"], "origin_ids": row["origins"],
-                      "all_origins": [trace.sources[s] for s in row["origins"]], "consumers": []})
+                      **({} if compact else {"all_origins": [trace.sources[s] for s in row["origins"]], "consumers": []})})
         final[-1].update({k:row[k] for k in ('definition_ref','definition_module','definition_name','instance','instance_aliases') if k in row})
+        if compact:
+            continue
         selected = design["cells"][unescape(state["name"])]
         output_bits = {b for port, bits in selected["connections"].items()
                        if selected["port_directions"][port] == "output" for b in bits if isinstance(b, int)}
@@ -802,6 +819,14 @@ def query_native(args, manifest, trace):
             continue
         if lhs_bits:
             connections.append({**row, "lhs_bits": lhs_bits, "rhs_bits": [resolve_bit(b, design) for b in row["rhs"]]})
+    if compact:
+        # Internal selection result, not an abbreviated public evidence report.
+        # Check the SAME selected-source path without expanding all descendants,
+        # source rows and discarded historical events. Contract building checks
+        # closure, all electrical outputs and supporting evidence separately.
+        require(has_paths(trace.edges,seeds,(r['ref'] for r in final+connections)),
+                'selected object has no continuous source evidence path')
+        return {'seeds':sorted(seeds), 'final_cells':final, 'final_connections':connections}
     changed = [row["path"] for row in manifest["inputs"]
                if not Path(row["path"]).is_file() or digest(row["path"]) != row["sha256"]]
     reachable, traversed = walk(trace.edges,seeds)

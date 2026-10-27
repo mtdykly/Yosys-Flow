@@ -200,14 +200,23 @@ class StatementTests(unittest.TestCase):
         self.assertLess(result['splice']['removed_cells'],result['splice']['base_cells'])
         return result,out
 
-    def test_comparator_and_nested_process_candidates_are_not_promoted(self):
+    def test_candidates_need_independent_source_cut_proof_and_keep_precision(self):
         for name in ('direct','process'):
             with self.subTest(name=name):
                 result,out=self.results[name]
                 self.assertEqual({r['wire'] for r in result['statement_plan']['seeds']},{'\\rsr31'})
-                self.assertEqual(result['status'],'blocked',result.get('failure'))
-                self.assertIn('candidate_source_associations',result['statement_plan']['reason'])
-                self.assertFalse((out/'incremental.v').exists())
+                self.assertEqual(result['status'],'passed',result.get('failure'))
+                doc=json.loads((out/'replacement-plan.json').read_text())
+                proof=doc['verification']['source_region_function_proof']
+                self.assertEqual(proof['status'],'verified')
+                self.assertTrue(proof['all_outputs'])
+                self.assertTrue(doc['verification']['candidate_refs'])
+                self.assertFalse(doc['end_to_end_exact'])
+                self.assertFalse(doc['provenance']['complete_causal_history'])
+                context=ContractContext(self.baselines[name])
+                self.assertEqual(context.validate(doc),doc)
+                bad=deepcopy(doc);bad['verification']['source_region_function_proof']['anchors']=[]
+                with self.assertRaises(TraceError):context.validate(seal(bad))
 
     def test_one_process_preserves_if_case_semantics_and_other_target(self):
         for name in ('process_if','process_case'):

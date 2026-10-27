@@ -13,11 +13,21 @@ from .failures import classify
 
 
 def archive_sizes(base):
-    files = [p for p in base.rglob('*') if p.is_file()]
+    files = [p for p in base.rglob('*') if p.is_file() and not p.is_symlink()]
+    index = [p for p in files if p.name in {'verified-index.sqlite3', 'verified-index.json.gz'}]
+    abc = [p for p in files if '.abc_' in p.name]
+    native = [p for p in files if p.name == 'yosys.jsonl']
+    descriptors = [p for p in files if p.name.startswith('verified-index.') and p not in index]
     return {'archive_bytes': sum(p.stat().st_size for p in files),
             'jsonl_bytes': sum(p.stat().st_size for p in files if p.suffix == '.jsonl'),
             # Native artifact names are yosys.jsonl.abc_N.*, not abc-*.
-            'abc_evidence_bytes': sum(p.stat().st_size for p in files if '.abc_' in p.name)}
+            'abc_evidence_bytes': sum(p.stat().st_size for p in abc),
+            'native_jsonl_bytes': sum(p.stat().st_size for p in native),
+            'raw_record_bytes': sum(p.stat().st_size for p in native + abc),
+            'index_bytes': sum(p.stat().st_size for p in index),
+            'index_descriptor_bytes': sum(p.stat().st_size for p in descriptors),
+            'index_files': {p.name: p.stat().st_size for p in index},
+            'archive_file_count': len(files)}
 
 
 def full(job, directory):
@@ -73,6 +83,7 @@ def execute(job, directory):
             base = directory/'base-run'
             run(parser().parse_args(['run', '--source', job['source'], '--top', job['top'],
                 '--out', str(base), '--yosys', job['yosys'], '--native-yosys', job['native_yosys'],
+                '--index-backend', job.get('index_backend', 'sqlite'),
                 *(['--flatten'] if job['mode'] == 'flatten' else [])]))
             manifest = json.loads((base/'manifest.json').read_text())
             result = {'status': 'passed', 'base_run': str(base),

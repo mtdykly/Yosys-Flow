@@ -43,8 +43,8 @@ def wave(inputs=None, **values):
 
 class EPFLFixtureTests(unittest.TestCase):
     def test_catalog_freezes_two_functional_mutations_per_original_circuit(self):
-        self.assertEqual(len(epfl.select_cases()), 6)
-        for circuit in ('adder', 'bar', 'arbiter'):
+        self.assertEqual(len(epfl.select_cases()), 12)
+        for circuit in ('ctrl', 'router', 'priority', 'adder', 'bar', 'arbiter'):
             cases = [epfl.CASES[f'epfl_{circuit}_{kind}'] for kind in ('local', 'shared')]
             self.assertEqual(cases[0]['upstream_file'], cases[1]['upstream_file'])
             self.assertEqual(cases[0]['mutation']['reachable_output_count'], 1)

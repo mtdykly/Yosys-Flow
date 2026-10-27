@@ -2,12 +2,15 @@
 
 本套件在原始 EPFL 单模块 Verilog 上固定构造新旧版本，检查较大组合网络的来源记录、自动选区和局部复用。ANUBIS 的小案例继续承担回归作用，两套结果分别统计。本套件不代表原作者提供了这些修改，也不代替行为级 `always`、层次设计或真实提交历史的验收。
 
-上游提交、源文件哈希和获取步骤见 [EPFL 基准说明](../benchmarks/epfl/README.md)，六处修改见 [cases.json](../benchmarks/epfl/cases.json)。原始接口、信号名、单模块结构和无关代码均保留；没有添加 wrapper、`keep`、预设切点或手工 patch。
+上游提交、源文件哈希和获取步骤见 [EPFL 基准说明](../benchmarks/epfl/README.md)，当前十二处修改见 [cases.json](../benchmarks/epfl/cases.json)。新增 `ctrl`、`router`、`priority` 后的两后端实验见 [backend-comparison.md](backend-comparison.md)。本文首轮及后续优化结果均保留其当时的三电路、六处修改范围。原始接口、信号名、单模块结构和无关代码均保留；没有添加 wrapper、`keep`、预设切点或手工 patch。
 
 ## 固定修改与资格检查
 
 | 电路 | 原始组合赋值数 | `local` 修改 | `shared` 修改 |
 | --- | ---: | --- | --- |
+| `ctrl` | 175 | `n41`，可达 1 个输出 | `n36`，可达 19 个输出 |
+| `router` | 284 | `n343`，可达 1 个输出 | `n104`，可达 3 个输出 |
+| `priority` | 978 | `n509`，可达 1 个输出 | `n513`，可达 7 个输出 |
 | `adder` | 1,020 | `n386`，可达 1 个输出 | `n389`，可达 128 个输出 |
 | `bar` | 3,336 | `n483`，可达 1 个输出 | `n275`，可达 128 个输出 |
 | `arbiter` | 11,839 | `n721`，可达 1 个输出 | `n388`，可达 43 个输出 |
@@ -24,15 +27,15 @@
 python3 -m incremental.epfl fetch
 
 python3 -m incremental compare --suite epfl-functional \
-  --mode retained --repeats 3 --job-timeout 180 \
-  --archive-byte-limit 1073741824 \
+  --mode retained --methods F P-module P-fine \
+  --index-backend sqlite --repeats 2 --baseline-repeats 2 --job-timeout 360 \
   --liberty build/technology/nangate45/lib/NangateOpenCellLibrary_typical.lib \
   --out runs/comparison-anubis-functional-v4/epfl-study
 ```
 
-库获取步骤见 [Nangate45 说明](../benchmarks/libraries/README.md)。输出目录必须不存在。默认方法为 `F`、`P-fine`，每个方法至少重复三次；需要选区消融时可显式添加 `--methods F P-module P-fine`。ANUBIS 默认仍为三种方法。
+库获取步骤见 [Nangate45 说明](../benchmarks/libraries/README.md)。输出目录必须不存在。默认方法为 `F`、`P-fine`，每个方法至少重复两次，同时报告均值与中位数；需要选区消融时可显式添加 `--methods F P-module P-fine`。ANUBIS 默认仍为三种方法。省略 `--archive-byte-limit` 即不限制输出体积。
 
-本轮只有一种层次设置：原始电路均为单模块，不重复制造保留/展平两组。六对修改 × 两种方法 × 三次重复，共 **36 个预定样本**。同一电路两种修改的旧版本逐字节相同，按完整源 SHA-256、顶层、模式及套件共享旧归档，只准备 **3 份旧建档**；任何一版修改后的网表不会成为另一版的旧基准。
+原始电路均为单模块，不重复制造保留/展平两组。当前命令每个后端有十二对修改 × 三种方法 × 两次重复，共 **72 个预定样本**，六个旧电路各建档两次。同一电路两种修改的旧版本逐字节相同，在同一后端、同一轮次内共享旧归档；任何一版修改后的网表不会成为另一版的旧基准。下文历史首轮是六对修改 × 两种方法 × 三次重复，共 36 个样本，只准备三份旧建档。
 
 主时间仍从完整新版 RTL 与旧归档出发，截止拼接后的完整新版 JSON/RTLIL/Verilog 写出。旧版插桩综合、记录校验、索引生成以及生成后的正确性检查分别报告。面积沿用统一全局 Nangate45 映射评估，映射时间和映射后证明另列；它不表示已经实现标准单元网表的增量替换。完整口径见 [comparison.md](comparison.md)。
 
@@ -50,13 +53,13 @@ python3 -m incremental compare --suite epfl-functional \
 
 ## 产物
 
-`fixtures/` 保存六对完整源代码、变异清单和许可；`qualification/` 保存顶层反例与回放结果；`preparation/` 保存三份共享旧建档；`samples/` 保存各次尝试。`report.json`、`timings.csv`、`stages.csv` 保留完整分母、共享基线引用和各项测量，`implementation/` 固定本轮实际 Python 实现。
+`fixtures/` 保存完整源代码、变异清单和许可；`qualification/` 保存顶层反例与回放结果；`preparation/` 保存各轮共享旧建档；`samples/` 保存各次尝试。`report.json`、`timings.csv`、`stages.csv` 保留完整分母、共享基线引用和各项测量，`implementation/` 固定本轮实际 Python 实现。
 
 构造源码和修改规则属于可提交的基准实现；上游缓存放在忽略的 `build/epfl/`，实测网表及记录放在忽略的 `runs/`。
 
 ## 首轮建档结果
 
-本轮采用上面的 180 秒作业上限与 1 GiB 产物上限。六对版本全部通过完整顶层功能变化资格检查。三个不同旧版本的准备结果如下；准备只各测一次，不是三次重复的中位数。
+历史首轮采用 180 秒作业上限与 1 GiB 产物上限。六对版本全部通过完整顶层功能变化资格检查。三个不同旧版本的准备结果如下；准备只各测一次，不是三次重复的中位数。
 
 | 旧电路 | 普通 generic 综合 | 最终 generic 单元数 | 插桩建档结果 | 已写产物 |
 | --- | ---: | ---: | --- | ---: |

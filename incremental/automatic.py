@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import time
+import tempfile
 from types import SimpleNamespace
 from urllib.parse import quote
 import uuid
@@ -59,41 +60,7 @@ def prepare(context, args, work):
     return rtlil.parse((work/'new.frontend.il').read_text()),coarse,inputs
 
 
-class Endpoints:
-    """Resolve original interface bits using actual recorded port/copy links."""
-    def __init__(self,context): self.context=context;self.cache={};self.evidence=[]
-
-    def bit(self,path,wire,offset,seen=frozenset()):
-        key=(path,wire,offset)
-        if key in self.cache:return self.cache[key]
-        if key in seen:return None
-        c=self.context;wire=unescape(wire);net=None;rule=None
-        if c.trace.view_rule=='electrical_instance_expansion_v1':
-            candidate=c.module['netnames'].get(path+'/'+quote(wire,safe=''))
-            if candidate and candidate.get('definition',{}).get('instance')==path:
-                net=candidate;rule='validated_instance_port_or_wire'
-        elif path==quote(c.baseline['module'],safe=''):
-            net=c.module['netnames'].get(wire);rule='recorded_top_wire'
-        if net and offset<len(net['bits']): result=net['bits'][offset]
-        else:
-            info=c.trace.instance_catalog.get(path);result=None
-            if not info:return None
-            binding=info.get('bindings',{})
-            ports=binding.get('ports',{})
-            if '\\'+wire in ports and offset<len(ports['\\'+wire]):
-                bit=ports['\\'+wire][offset]
-                if isinstance(bit,str):result=bit
-                else:result=self.bit(binding['parent'],bit['wire'],bit['offset'],seen|{key})
-                rule='recorded_hierarchy_port_binding'
-            if result is None and binding:
-                events=[e for e in c.trace.flatten_events.values() if e['instance']==binding['instance_ref']]
-                if len(events)==1 and '\\'+wire in events[0]['wire_map']:
-                    result=self.bit(binding['parent'],events[0]['wire_map']['\\'+wire],offset,seen|{key})
-                    rule='recorded_flatten_wire_map:'+events[0]['ref']
-        if result is not None:
-            self.cache[key]=result
-            self.evidence.append({'instance':path,'wire':wire,'offset':offset,'final_bit':result,'rule':rule})
-        return result
+from yosys_flow.source_endpoints import Endpoints
 
 
 def input_support(modules, name):
@@ -142,7 +109,7 @@ def contract_for(context,old,catalog,scopes):
         selections.append({'selector':selector,'cell_count':len(query['final_cells']),
                            'connection_count':len(query['final_connections'])})
         if query['final_cells'] or query['final_connections']:
-            doc=context.build({'kind':'selection','selector':selector})
+            doc=context.build({'kind':'source_cells' if query['final_cells'] else 'selection','selector':selector})
             if all(p['contract_id']!=doc['contract_id'] for p in parents):parents.append(doc)
     needed(parents,'no_recorded_region','No recorded final objects for changed instance scopes')
     while len(parents)>1:
@@ -151,14 +118,76 @@ def contract_for(context,old,catalog,scopes):
     return parents[0],selections
 
 
+def prove_unselected_outputs(context,old,new,a,b,ports):
+    """Parent fallback must preserve every output omitted from the gate cut.
+
+    Compare complete old/new source cones at the unchanged module interface.
+    Only the requested OUTPUT observations are filtered; inputs are all free.
+    No internal-name or old-constant assumption is made about the new circuit.
+    """
+    from yosys_flow.source_regions import command, prove_design
+    from yosys_flow.contracts import fingerprint
+    binary=context.manifest['tool']['stock_executable']
+    with tempfile.TemporaryDirectory(prefix='unselected-outputs-') as tmp:
+        directory=Path(tmp);design={'modules':{}}
+        for label,modules,module in (('gold',old,a),('gate',new,b)):
+            name=module.name
+            require(name and not any(c.isspace() or c in ';"' for c in name),'unsupported proof module name')
+            (directory/(label+'.il')).write_text(rtlil.extract(modules,[name]))
+            command(binary,directory,'read_rtlil '+label+'.il; hierarchy -check -top '+name+
+                    '; proc; flatten; opt_expr; opt_clean; check -assert; write_json '+label+'.json')
+            result=json.loads((directory/(label+'.json')).read_text())['modules'][name]
+            original_ports=result['ports']
+            result['ports']={n:p for n,p in original_ports.items() if p['direction']=='input'}
+            for i,(port,offset) in enumerate(ports):
+                observed='__observed_'+str(i)
+                while observed in result['ports']:observed='_'+observed
+                result['ports'][observed]={'direction':'output','bits':[original_ports[port]['bits'][offset]]}
+                result['netnames'][observed]={'hide_name':0,'bits':result['ports'][observed]['bits'],'attributes':{}}
+            design['modules'][label]=result
+        prove_design(binary,directory,design)
+        return {'rule':'all_unselected_source_outputs_equal_and_defined_SAT',
+                'outputs':[[p,i] for p,i in ports],'cut_sha256':fingerprint(design)}
+
+
 def patch_for(context,old,new,oc,nc,coarse,scopes,contract):
+    from . import ir_graph
     endpoint=Endpoints(context);outputs={};units=[];extra=set();unused=[]
+    unchanged_unselected=[]
     boundary_inputs={b['original_bit'] for b in contract['boundary'] if b['direction']=='input'}
     old_driven={b for c in contract['region']['cells'] for p,bs in context.module['cells'][unescape(c['name'])]['connections'].items()
                 if context.module['cells'][unescape(c['name'])]['port_directions'][p]=='output' for b in bs}
     for index,path in enumerate(scopes):
         a,b=old[oc[path]],new[nc[path]]
         needed(a.ports()==b.ports(),'changed_local_interface','Module interface changed at '+path)
+        # Gate selection omits source-only padding observations. Every module
+        # output not driven by the selected gates still needs an independent
+        # unchanged-function check, including constants and direct wires.
+        graphs=None;unselected=[]
+        for port,info in a.ports().items():
+            if info['direction']!='output':continue
+            for offset in range(info['width']):
+                bit=endpoint.bit(path,port,offset)
+                if bit in old_driven:continue
+                unselected.append((port,offset,bit))
+        if a.children(old) or b.children(new):
+            if unselected:
+                try:proof=prove_unselected_outputs(context,old,new,a,b,[(p,i) for p,i,_ in unselected])
+                except (TraceError,subprocess.SubprocessError,OSError) as exc:
+                    raise PlanningBlocked('unselected_output_not_proven',str(exc)) from exc
+                unchanged_unselected.append({'instance':path,**proof})
+        else:
+            for port,offset,bit in unselected:
+                try:
+                    if graphs is None:graphs=ir_graph.Graph(a,old),ir_graph.Graph(b,new)
+                    key=('\\'+port,offset)
+                    same=graphs[0].value(key,root=True)==graphs[1].value(key,root=True)
+                except ir_graph.Unsupported as exc:
+                    raise PlanningBlocked('unselected_output_not_proven',str(exc)) from exc
+                needed(same,'changed_connection_requires_rebinding',
+                       f'Unselected module output changed: {path}.{port}[{offset}]')
+                unchanged_unselected.append({'instance':path,'port':port,'offset':offset,
+                    'final_bit':bit,'rule':'unchanged_complete_pre_proc_function'})
         support=set().union(*input_support(coarse,b.name).values())
         unit={'module':b,'instance':path,'ports':b.ports(),'inputs':{},'outputs':{}}
         for number,(port,info) in enumerate(b.ports().items()):
@@ -220,6 +249,7 @@ def patch_for(context,old,new,oc,nc,coarse,scopes,contract):
         'inputs':{b['port']:[b['port']] for b in contract['boundary'] if b['direction']=='input'},
         'outputs':{b['port']:[b['port']] for b in contract['boundary'] if b['direction']=='output'}}
     return contract,text,bindings,{'endpoint_evidence':endpoint.evidence,'additional_input_bits':sorted(extra),
+        'unchanged_unselected_outputs':unchanged_unselected,
         'unused_inputs_tied_zero':unused,'unused_input_proof':'conservative_new_coarse_IR_support',
         'local_modules':[u['module'].name for u in units],'scopes':scopes}
 
@@ -351,8 +381,11 @@ def run(args):
                     try:
                         contract,selections=contract_for(context,old,oc,scopes)
                         row['selections']=selections;row['contract_status']=contract['verification']
-                        needed(contract['verification']['status']=='verified_old_region','old_region_not_proven',str(contract['verification']['blockers']))
                         contract,patch,bindings,spec=patch_for(context,old,new,oc,nc,coarse,scopes,contract)
+                        contract=context.certify_source_cut(contract)
+                        row['contract_status']=contract['verification']
+                        needed(contract['verification']['status']=='verified_old_region','old_region_not_proven',str(contract['verification']))
+                        bindings['contract_id']=contract['contract_id']
                         context.validate(contract)
                         row['status']='ready';break
                     except PlanningBlocked as exc:

@@ -11,6 +11,120 @@
   },
   "cases": [
     {
+      "name": "epfl_ctrl_local",
+      "circuit": "ctrl",
+      "variant": "local",
+      "family": "epfl_mutated",
+      "category": "functional",
+      "expected_change": "functional_change",
+      "upstream_file": "random_control/ctrl.v",
+      "mutation": {
+        "line": 34,
+        "target": "n41",
+        "original": "  assign n41 = ~\\opcode[2]  & ~n40;",
+        "reachable_output_count": 1,
+        "max_source_distance_to_output": 1,
+        "direct_users": 1,
+        "replacement": "  assign n41 = ~\\opcode[2]  | ~n40;"
+      },
+      "new_source_sha256": "9cdac09afcb848439543f9fb2e9aeff1ab09b0bee29bdd022f10d3008376db8d"
+    },
+    {
+      "name": "epfl_ctrl_shared",
+      "circuit": "ctrl",
+      "variant": "shared",
+      "family": "epfl_mutated",
+      "category": "functional",
+      "expected_change": "functional_change",
+      "upstream_file": "random_control/ctrl.v",
+      "mutation": {
+        "line": 29,
+        "target": "n36",
+        "original": "  assign n36 = \\opcode[3]  & \\opcode[4] ;",
+        "reachable_output_count": 19,
+        "max_source_distance_to_output": 9,
+        "direct_users": 8,
+        "replacement": "  assign n36 = \\opcode[3]  | \\opcode[4] ;"
+      },
+      "new_source_sha256": "6c7f3d742f3a7bbf01fa60e1a140b923eb5643e1a97a0360e3d49bae48382c5c"
+    },
+    {
+      "name": "epfl_router_local",
+      "circuit": "router",
+      "variant": "local",
+      "family": "epfl_mutated",
+      "category": "functional",
+      "expected_change": "functional_change",
+      "upstream_file": "random_control/router.v",
+      "mutation": {
+        "line": 313,
+        "target": "n343",
+        "original": "  assign n343 = ~n237 & n342;",
+        "reachable_output_count": 1,
+        "max_source_distance_to_output": 1,
+        "direct_users": 1,
+        "replacement": "  assign n343 = ~n237 | n342;"
+      },
+      "new_source_sha256": "b841d85c2639605ff635d9ba94543983ce7db437aaddf3e62ab68d9d7e993adf"
+    },
+    {
+      "name": "epfl_router_shared",
+      "circuit": "router",
+      "variant": "shared",
+      "family": "epfl_mutated",
+      "category": "functional",
+      "expected_change": "functional_change",
+      "upstream_file": "random_control/router.v",
+      "mutation": {
+        "line": 74,
+        "target": "n104",
+        "original": "  assign n104 = \\dest_x[14]  & ~n101;",
+        "reachable_output_count": 3,
+        "max_source_distance_to_output": 49,
+        "direct_users": 4,
+        "replacement": "  assign n104 = \\dest_x[14]  | ~n101;"
+      },
+      "new_source_sha256": "c5bb8de31f604eaa1da90e82e3f01ae31eb56f8982a2b44d0662f0b470b9caa5"
+    },
+    {
+      "name": "epfl_priority_local",
+      "circuit": "priority",
+      "variant": "local",
+      "family": "epfl_mutated",
+      "category": "functional",
+      "expected_change": "functional_change",
+      "upstream_file": "random_control/priority.v",
+      "mutation": {
+        "line": 493,
+        "target": "n509",
+        "original": "  assign n509 = n507 & ~n508;",
+        "reachable_output_count": 1,
+        "max_source_distance_to_output": 1,
+        "direct_users": 1,
+        "replacement": "  assign n509 = n507 | ~n508;"
+      },
+      "new_source_sha256": "3a672f12ac692f50c391091c10a674fffe56d6089375c3b51b47913306928f29"
+    },
+    {
+      "name": "epfl_priority_shared",
+      "circuit": "priority",
+      "variant": "shared",
+      "family": "epfl_mutated",
+      "category": "functional",
+      "expected_change": "functional_change",
+      "upstream_file": "random_control/priority.v",
+      "mutation": {
+        "line": 497,
+        "target": "n513",
+        "original": "  assign n513 = ~\\A[126]  & ~n512;",
+        "reachable_output_count": 7,
+        "max_source_distance_to_output": 121,
+        "direct_users": 3,
+        "replacement": "  assign n513 = ~\\A[126]  | ~n512;"
+      },
+      "new_source_sha256": "7ee4078a7dd081309fcde54af02c76269f62f108d65b28a41d61e47d93604868"
+    },
+    {
       "name": "epfl_adder_local",
       "circuit": "adder",
       "variant": "local",

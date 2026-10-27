@@ -65,7 +65,7 @@ def verify_corpus(directory=CACHE):
 
 
 def _network(text):
-    """Strict scalar-assign parser for these three pinned structural sources.
+    """Strict scalar-assign parser for the pinned structural sources.
 
     This is only a fixture audit/witness simulator. It is not the incremental
     front end and deliberately rejects constructs outside the pinned format.

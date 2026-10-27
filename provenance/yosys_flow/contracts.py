@@ -152,6 +152,11 @@ class ContractContext:
     def build(self, derivation, depth=0):
         return self._build_mode(derivation,depth,compact=self.compact)
 
+    def certify_source_cut(self, document):
+        if 'candidate_source_associations' not in document['verification']['blockers']:
+            return document
+        return self.build({'kind':'source_cut','parent':document})
+
     def _build_mode(self, derivation, depth, *, compact):
         original = self.compact
         self.compact = compact
@@ -190,6 +195,25 @@ class ContractContext:
         parents = []
         additional_inputs = []
         kind = derivation.get('kind')
+        if kind=='source_cut':
+            from .source_regions import prove
+            require(set(derivation)=={'kind','parent'}, 'invalid source cut derivation')
+            parent=self._parent(derivation['parent'],depth+1)
+            result=deepcopy(parent)
+            result['derivation']={'kind':'source_cut','parent':self._recipe(parent) if self.compact else parent}
+            blockers=result['verification']['blockers']
+            if blockers==['candidate_source_associations']:
+                proof=prove(self,parent)
+                result['verification']['source_region_function_proof']=proof
+                if proof['status']=='verified':
+                    blockers.remove('candidate_source_associations')
+                    result['verification']['status']='verified_old_region'
+                    for output in result['outputs']:
+                        output['rtl_function_of_this_output_proven']=True
+                        output['functional_correspondence']='archived_source_independent_cut_sat'
+            # Keep all candidate refs, original precision and causal-history
+            # flags. This is a separate region-level functional certificate.
+            return seal(result)
         if kind in {'selection','source_cells'}:
             require(set(derivation)=={'kind','selector'}, 'invalid selection derivation')
             selection = self.query(derivation['selector'])

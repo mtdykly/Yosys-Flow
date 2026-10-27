@@ -14,7 +14,7 @@ import time
 from yosys_flow.common import PIN, TraceError, digest, identifier, require, require_combinational, token, unescape, write_json
 from yosys_flow.contracts import ContractContext
 from yosys_flow.hierarchy import electrical_design
-from yosys_flow.region_functions import Circuit, UnsupportedFunction, ordered_inputs
+from yosys_flow.region_functions import Circuit, LogicDAG, UnsupportedFunction, ordered_inputs
 from yosys_flow.boolean import BDD, ProofBudgetExceeded
 from .failures import classify
 
@@ -29,7 +29,11 @@ def all_bits(module):
 def check_network(module):
     """Fail closed on state, unknown semantics, undriven pins and cycles."""
     require_combinational(module)
-    require(all(isinstance(b, int) or b in {'0', '1'} for b in all_bits(module)),
+    live_bits=[b for p in module['ports'].values() for b in p['bits']]
+    live_bits.extend(b for c in module['cells'].values() for bs in c['connections'].values() for b in bs)
+    # Unused debugging aliases can retain X padding after proc/opt. They do
+    # not drive logic. Actual cell pins and top ports must remain two-state.
+    require(all(isinstance(b, int) or b in {'0', '1'} for b in live_bits),
             'replacement requires fully defined two-state signals')
     driven = {}
     for name, port in module['ports'].items():
@@ -215,7 +219,7 @@ def equivalence_script(gold_path, gate_path, top):
 def prove_local_outputs(stitched, contract, patch, bindings, added_names):
     """Independent boundary proof: every spliced output implements the patch."""
     bound = validate_bindings(contract,patch,bindings)
-    manager = BDD()
+    manager = LogicDAG()
     boundary = ordered_inputs(contract['boundary'])
     inputs = dict(zip([b['original_bit'] for b in boundary],manager.variables(len(boundary))))
     local_inputs = {b:inputs[bound[n,i][0]] ^ int(bound[n,i][1]) for n,p in patch['ports'].items() if p['direction']=='input'

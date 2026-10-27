@@ -6,6 +6,9 @@
     "arithmetic/bar.v": "4e791833d89833dc8cd6ebe81eb63b4cfa64df8dbb231bd9ace09d0159d2bc11",
     "random_control/arbiter.v": "8154309e62fd8fd2a6cc1369ffc24a4426b9fa050e5047e5f1d148a057ac6975",
     "LICENSE": "83e4dd21429a91fb7cea67a476032a9641425e5355df2e0f589a738b6ec9fd2c",
-    "README.md": "a4a2bd66edd41df70052bc32a2169f63b701ab78bd0e324c8bb55009a32c1db4"
+    "README.md": "a4a2bd66edd41df70052bc32a2169f63b701ab78bd0e324c8bb55009a32c1db4",
+    "random_control/ctrl.v": "260bec9f6e3e9afac87aa31fc99624d36a115a09371c874eebdff4e4754eccae",
+    "random_control/router.v": "a1f59949ea3077a2e04a75a5c7379a5936e6290703be642ae38b09b11871fa35",
+    "random_control/priority.v": "2b29f270d3f6db4cbf6307cb29d1a1192c82dd9ea08d9a8c7f8d02ef469b32f5"
   }
 }

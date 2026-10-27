@@ -142,6 +142,10 @@ def measured(job, directory, timeout):
         result.update(status='failed', failure={'code': 'worker_exit', 'returncode': process.returncode}, netlist=None)
     result.update(measured_wall_seconds=elapsed, sampled_process_tree_rss_kib=peak,
                   measurement_directory=str(directory))
+    if job.get('kind') == 'baseline':
+        from .experiment_worker import archive_sizes
+        result.update(archive_sizes(directory/'base-run'))
+        result['archive_complete'] = result['status'] == 'passed'
     if byte_limit is not None:
         result.update(output_byte_limit=byte_limit, sampled_output_bytes=peak_bytes)
     write_json(directory/'measurement.json', result)
@@ -189,11 +193,15 @@ def area_summary(samples):
     uniform = len(identities) == 1 and all(next(iter(identities)))
     result = {'outcomes': dict(Counter(r.get('area_status', 'not_requested') for r in samples)),
               'complete_successful_series': bool(samples) and len(valid) == len(samples) and uniform,
-              'successful_medians': {field: None for field in AREA_FIELDS}}
+              'successful_medians': {field: None for field in AREA_FIELDS},
+              'successful_means': {field: None for field in AREA_FIELDS}}
     if uniform:
         result.update(library_sha256=valid[0]['library_sha256'], unit=valid[0]['area_unit'])
         result['successful_medians'] = {
             field: statistics.median([r[field] for r in valid if r.get(field) is not None])
+            if any(r.get(field) is not None for r in valid) else None for field in AREA_FIELDS}
+        result['successful_means'] = {
+            field: statistics.mean([r[field] for r in valid if r.get(field) is not None])
             if any(r.get(field) is not None for r in valid) else None for field in AREA_FIELDS}
     return result
 
@@ -245,7 +253,8 @@ def prepare_area_library(path, directory, yosys):
 
 def prepare_baseline(suite, fixture, mode, directory, common, timeout, cache, tools):
     """The second edit of one original design references the first archive."""
-    key = baseline_identity(suite, fixture, mode)
+    identity = baseline_identity(suite, fixture, mode)
+    key = (identity, common.get('index_backend', 'sqlite'), common.get('baseline_repeat', 1))
     if key in cache:
         return cache[key]
     old_job = {**common, 'kind': 'stock_old', 'source': fixture['base_source'],
@@ -257,7 +266,8 @@ def prepare_baseline(suite, fixture, mode, directory, common, timeout, cache, to
         for tool in manifest['tool'].get('abc', []):
             tools['recorded_abc:'+tool['executable']] = {
                 'path': tool['executable'], 'sha256': tool['sha256'], 'version': tool['version_output']}
-    baseline = {'baseline_id': key, 'baseline_reference': str(directory),
+    baseline = {'baseline_id': identity, 'baseline_reference': str(directory),
+                'index_backend': key[1], 'baseline_repeat': key[2],
                 'source_sha256': digest(fixture['base_source']), 'stock': old, 'recorded': base,
                 'base_cells': None}
     if old['status'] == 'passed' and old.get('netlist'):
@@ -305,6 +315,10 @@ def summarize(rows, baselines):
                  'precheck': precheck, 'samples': len(samples),
                  'outcomes': dict(Counter(r['outcome'] for r in samples)), 'successful_medians': stats,
                  'complete_successful_series': all(r['outcome'] == 'success' for r in samples)}
+        successful = [r for r in samples if r['outcome'] == 'success']
+        entry['successful_means'] = {
+            field: statistics.mean([r[field] for r in successful if r.get(field) is not None])
+            if any(r.get(field) is not None for r in successful) else None for field in stats}
         comparable = entry['complete_successful_series'] and all(r['outcome'] == 'success'
             for r in groups.get((case, mode, 'F', None), []))
         if method != 'F' and comparable and stats['candidate_seconds'] and full.get('candidate_seconds'):
@@ -368,7 +382,10 @@ def run(args):
     from .experiment_metrics import measure_netlist
     out = Path(args.out).resolve()
     require(not out.exists(), 'refusing to overwrite '+str(out))
-    require(args.repeats >= 3, 'comparison requires at least 3 repeats')
+    require(args.repeats >= 1, 'comparison requires at least 1 repeat')
+    baseline_repeats = getattr(args, 'baseline_repeats', 1)
+    require(1 <= baseline_repeats <= args.repeats, 'baseline repeats must be between 1 and online repeats')
+    index_backend = getattr(args, 'index_backend', 'sqlite')
     suite = getattr(args, 'suite', 'anubis-functional')
     cases, names, prepare, catalog = suite_definition(suite, args.cases)
     methods = selected_methods(suite, getattr(args, 'methods', None))
@@ -403,6 +420,8 @@ def run(args):
                         else 'ANUBIS_derived_functional_combinational_edits' if suite == 'anubis-functional'
                         else 'diagnostics_only_not_primary_performance_or_area_comparison'),
               'cases': names, 'repeats': args.repeats, 'seed': args.seed, 'tools': tools,
+              'index_backend': index_backend, 'baseline_repeats': baseline_repeats,
+              'baseline_trials': {},
               'machine': {'platform': platform.platform(), 'python': sys.version, 'cpu': cpu,
                           'allowed_cpus': sorted(os.sched_getaffinity(0)), 'thread_environment': THREAD_ENV,
                           'cpu_model': next((s.strip() for s in Path('/proc/cpuinfo').read_text().splitlines()
@@ -420,7 +439,8 @@ def run(args):
                   'memory': '20ms sampled sum of live process-tree RSS (shared pages may double-count), plus maximum individual process high-water RSS',
                   'counts': 'unweighted instantiated generic leaf cells as a structural area proxy, not Liberty or physical area; unit-gate depth is not physical delay',
                   'reuse_fractions': 'removed_cells and reused_cells divided by base_cells: instantiated generic leaf count of stock old netlist; null when unavailable or zero',
-                  'baseline_reuse': 'suite, top, hierarchy mode and SHA256 of complete old RTL must all match; shared archives are prepared once and explicitly referenced',
+                  'baseline_reuse': 'suite, top, mode, old RTL SHA256, backend and baseline repeat must match; edits share the same old archive within each independent trial; online repeat uses its paired baseline',
+                  'statistics': 'successful_means are arithmetic means of successful samples only; complete_successful_series is required for comparisons; failures and timeouts are not netlist generation times',
                   'qualification': 'EPFL edits must have an offline two-valued top-output counterexample; failed or unknown qualification keeps every scheduled row as blocked; no qualification cost in generation time',
                   'output_byte_limit': 'optional per-job directory logical-byte guard, sampled every second plus final check; can overshoot; resource_limit is separate from proof failure',
                   'ordering': 'serial seeded shuffle of all methods/repeats; fresh processes, same CPU, no parallel jobs or cold-cache claim',
@@ -441,6 +461,7 @@ def run(args):
             mapping_validation='full-output equivalence of mapped JSON and Verilog readback to generic input, no unknown/unmapped cells; failed measurements have null area',
             end_to_end='isolated worker launch through exit, includes generic validations plus optional library mapping and mapping validation')
     common = {'yosys': tools['yosys']['path'], 'native_yosys': tools['native_yosys']['path'], 'cpu': cpu,
+              'index_backend': index_backend,
               'equivalence_timeout': args.equivalence_timeout, 'equivalence_budget': args.equivalence_budget,
               'archive_byte_limit': getattr(args, 'archive_byte_limit', None)}
     modes = ['retained', 'flatten'] if args.mode == 'both' else [args.mode]
@@ -449,6 +470,10 @@ def run(args):
     started = time.perf_counter()
     for name in names:
         fixture = prepare(name, out/'fixtures'/name)
+        fixture['source_size'] = {version: {
+            'physical_lines': len(Path(fixture[version+'_source']).read_text().splitlines()),
+            'bytes': Path(fixture[version+'_source']).stat().st_size}
+            for version in ('base', 'new')}
         fixture['frozen_files'] = {str(p): digest(p) for p in Path(fixture['fixture_manifest']).parent.rglob('*') if p.is_file()}
         report['fixtures'][name] = fixture
         if suite == 'epfl-functional':
@@ -460,14 +485,21 @@ def run(args):
             directory = out/'preparation'/fixture.get('baseline_key', name)/mode
             if suite == 'epfl-functional':
                 directory /= baseline_identity(suite, fixture, mode)[:16]
-            if report['qualifications'].get(name, {}).get('status', 'passed') == 'passed':
-                baseline = prepare_baseline(suite, fixture, mode, directory, common,
-                                            args.job_timeout, baseline_cache, tools)
-            else:
-                baseline = {'baseline_id': baseline_identity(suite, fixture, mode),
-                            'base_cells': None,
-                            'stock': {'status': 'blocked'}, 'recorded': {'status': 'blocked',
-                                'failure': {'code': 'edit_qualification_not_proven'}}}
+            trials = []
+            for trial in range(1, baseline_repeats+1):
+                trial_directory = directory if baseline_repeats == 1 else directory/f'trial-{trial}'
+                if report['qualifications'].get(name, {}).get('status', 'passed') == 'passed':
+                    baseline = prepare_baseline(suite, fixture, mode, trial_directory,
+                        {**common, 'baseline_repeat': trial}, args.job_timeout, baseline_cache, tools)
+                else:
+                    baseline = {'baseline_id': baseline_identity(suite, fixture, mode),
+                                'base_cells': None,
+                                'stock': {'status': 'blocked'}, 'recorded': {'status': 'blocked',
+                                    'failure': {'code': 'edit_qualification_not_proven'}}}
+                trials.append(baseline)
+                print(f'prepared {name} {mode} trial={trial}: old={baseline["stock"]["status"]}, archive={baseline["recorded"]["status"]}', flush=True)
+            baseline = trials[0]
+            report['baseline_trials'][name+'/'+mode] = trials
             report['baselines'][name+'/'+mode] = baseline
             report['unique_baseline_count'] = len(baseline_cache)
             for repeat in range(1, args.repeats+1):
@@ -482,7 +514,7 @@ def run(args):
     write_json(out/'schedule.json', tasks)
     for order, (name, mode, method, precheck, repeat) in enumerate(tasks, 1):
         fixture = report['fixtures'][name]
-        baseline = report['baselines'][name+'/'+mode]
+        baseline = report['baseline_trials'][name+'/'+mode][(repeat-1) % baseline_repeats]
         base = baseline['recorded']
         qualification = report['qualifications'].get(name)
         job = {**common, 'source': fixture['new_source'], 'top': fixture['top'], 'mode': mode,

@@ -309,7 +309,7 @@ class ContractFunctionTests(unittest.TestCase):
         actual = copy.deepcopy(cells); actual['two']['type']='$_OR_'
         with self.assertRaisesRegex(TraceError,'output function differs'): verify_outputs(cells,actual,boundary)
 
-    def test_non_binary_and_budget_limits_are_not_proofs(self):
+    def test_non_binary_rejected_and_budget_uses_independent_structural_certificate(self):
         result = verify_outputs({}, {}, [{'port':'z','direction':'output','original_bit':'x'}])
         self.assertFalse(result['all_outputs_verified'])
         self.assertEqual(result['outputs'][0]['reason'],'non_binary_constant:x')
@@ -317,5 +317,6 @@ class ContractFunctionTests(unittest.TestCase):
         boundary += [{'port':'out','direction':'output','original_bit':2}]
         with patch('yosys_flow.region_functions.BDD',side_effect=lambda:BDD(node_limit=1)):
             result = verify_outputs({}, {}, boundary)
-        self.assertFalse(result['all_outputs_verified'])
-        self.assertEqual(result['outputs'][0]['reason'],'bdd_node_limit_exceeded')
+        self.assertTrue(result['all_outputs_verified'])
+        self.assertEqual(result['outputs'][0]['function']['encoding'],'boolean_dag_v1')
+        self.assertEqual(result['outputs'][0]['proof_method'],'structural_boolean_identity')

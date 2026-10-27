@@ -16,6 +16,27 @@ def assignment_value(function, row):
     return node
 
 
+def evaluate_certificate(function, inputs):
+    if function['encoding']=='boolean_dag_v1':
+        values={0:0,1:1}
+        for node in function['nodes']:
+            op=node['op']
+            if op=='input':value=inputs[node['input_port']]
+            else:
+                args=[values[n] for n in node['args']]
+                if op=='not':value=1-args[0]
+                elif op=='and':value=args[0]&args[1]
+                elif op=='or':value=args[0]|args[1]
+                elif op=='xor':value=args[0]^args[1]
+                else:raise AssertionError(op)
+            values[node['id']]=value
+        return values[function['root']]
+    nodes={n['id']:n for n in function['nodes']};value=function['root']
+    while value>1:
+        node=nodes[value];value=node['high'] if inputs[node['input_port']] else node['low']
+    return value
+
+
 class BooleanTests(unittest.TestCase):
     def test_barrel_outputs_use_independent_control_first_functions(self):
         width = 32
@@ -77,16 +98,13 @@ class BooleanTests(unittest.TestCase):
             values={f'{stem}_{i}':(value>>i)&1 for stem,value in (('a',left),('b',right)) for i in range(width)}
             actual=0
             for i,row in enumerate(proof['outputs']):
-                f=row['function'];nodes={n['id']:n for n in f['nodes']};node=f['root']
-                while node>1:
-                    n=nodes[node];node=n['high'] if values[n['input_port']] else n['low']
+                node=evaluate_certificate(row['function'],values)
                 actual|=node<<i
             self.assertEqual(actual,left+right)
         wrong={k:dict(v) for k,v in cells.items()};wrong[str(outputs[0])]['type']='$_OR_'
         # Alter the data XOR too: XOR(a,b) is not OR(a,b), even at bit zero.
         wrong[str(outputs[0]-1)]['type']='$_OR_'
-        with self.assertRaisesRegex(TraceError,'output function differs'):
-            verify_outputs(cells,wrong,boundary)
+        self.assertFalse(verify_outputs(cells,wrong,boundary)['all_outputs_verified'])
         self.assertGreater(signal_order('\\a[2]'),signal_order('\\a[10]'))
 
     def test_all_three_input_functions_and_boolean_operations(self):

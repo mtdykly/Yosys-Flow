@@ -125,7 +125,7 @@ class AnubisIntegrationTests(unittest.TestCase):
             self.assertTrue(cells)
             self.assertTrue(cells.isdisjoint(neighbor))
 
-    def test_real_compare_contract_proof_is_sensitive_to_operand_order(self):
+    def test_real_compare_uses_structural_certificate_when_grouped_BDD_exhausts_budget(self):
         run=self.root/'compare_local9/retained'
         context=ContractContext(run/'base-run')
         contract=json.loads((run/'region.contract.json').read_text())
@@ -137,7 +137,9 @@ class AnubisIntegrationTests(unittest.TestCase):
         with patch('yosys_flow.region_functions.ordered_inputs',side_effect=lambda bs, cells=None:
                    sorted((b for b in bs if b['direction']=='input'),key=lambda b:b['original_bit'])):
             grouped=verify_outputs(selected,selected,contract['boundary'])
-        self.assertFalse(grouped['all_outputs_verified'])
+        self.assertTrue(grouped['all_outputs_verified'])
+        self.assertEqual(grouped['resources']['backend'],'structural_boolean_dag')
+        self.assertTrue(all(o['function']['encoding']=='boolean_dag_v1' for o in grouped['outputs']))
 
     def test_cleanup_actual_deletions_mapping_polarity_and_chain_corruption(self):
         run=self.root/'compare_local9/retained/base-run'

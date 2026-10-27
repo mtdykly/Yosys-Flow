@@ -41,7 +41,11 @@ def parser():
     compare.add_argument('--methods',nargs='+',choices=['F','P-module','P-fine'],
                          help='必须包含 F；EPFL 默认 F P-fine，其他套件默认三种方法')
     compare.add_argument('--native-yosys',default=str(ROOT/'build/native/install/bin/yosys'))
-    compare.add_argument('--repeats',type=positive_count,default=5,help='每个方法至少 3 次，默认 5')
+    compare.add_argument('--repeats',type=positive_count,default=5,help='每个方法至少 1 次，默认 5；单次结果不代表稳定均值')
+    compare.add_argument('--baseline-repeats',type=positive_count,default=1,
+                         help='离线旧建档独立重复次数，默认 1；与在线重复按序配对，共享相同旧输入')
+    compare.add_argument('--index-backend',choices=['sqlite','gzip'],default='sqlite',
+                         help='旧建档和在线选区使用的索引后端，默认 sqlite')
     compare.add_argument('--precheck',choices=['on','off','both'],default='off',
                          help='主比较默认关闭等价预检查；on 的运行成本计入生成时间；both 对诊断 NOC 测开/关，其余开启；auto 默认不变')
     compare.add_argument('--seed',type=int,default=20261024)

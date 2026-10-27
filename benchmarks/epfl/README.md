@@ -1,6 +1,6 @@
 # EPFL 组合逻辑修改实验
 
-上游是 [EPFL Combinational Benchmark Suite](https://github.com/lsils/benchmarks)，固定提交为 [`82d8cc6910419298e713a46644ed59fd3df53038`](https://github.com/lsils/benchmarks/tree/82d8cc6910419298e713a46644ed59fd3df53038)。`lock.json` 锁定三个原始 Verilog、MIT `LICENSE` 和 README 的 SHA-256；下载缓存放在被 Git 忽略的 `build/epfl/upstream/`。
+上游是 [EPFL Combinational Benchmark Suite](https://github.com/lsils/benchmarks)，固定提交为 [`82d8cc6910419298e713a46644ed59fd3df53038`](https://github.com/lsils/benchmarks/tree/82d8cc6910419298e713a46644ed59fd3df53038)。`lock.json` 锁定六个原始 Verilog、MIT `LICENSE` 和 README 的 SHA-256；下载缓存放在被 Git 忽略的 `build/epfl/upstream/`。
 
 ```bash
 python3 -m incremental.epfl fetch
@@ -10,14 +10,17 @@ python3 -m incremental.epfl fetch
 
 | 原电路 | 源码行数 | assign 数 | 输入/输出位 | local 修改节点 | shared 修改节点 |
 |---|---:|---:|---:|---|---|
+| ctrl | 205 | 175 | 7 / 26 | n41，第 34 行 | n36，第 29 行 |
+| router | 348 | 284 | 60 / 30 | n343，第 313 行 | n104，第 74 行 |
+| priority | 1,101 | 978 | 128 / 8 | n509，第 493 行 | n513，第 497 行 |
 | adder | 1,205 | 1,020 | 256 / 129 | n386，第 183 行 | n389，第 186 行 |
 | bar | 3,739 | 3,336 | 135 / 128 | n483，第 620 行 | n275，第 412 行 |
 | arbiter | 13,189 | 11,839 | 256 / 129 | n721，第 1,683 行 | n388，第 1,350 行 |
 
-`cases.json` 在增量运行前固定六个修改及新版哈希。选择只依据源代码 DAG：`local` 取可到达输出数最少、最长输出距离最短、源码位置最早的内部 AND；`shared` 取可到达输出数最多、直接使用者最多、源码位置最早的内部 AND。三个 local 节点都仅可到达一个输出；三个 shared 节点分别可到达 128、128、43 个输出。这些是**保守拓扑范围**，不是已经证明的实际重综合范围或同一输入下发生变化的输出数。
+`cases.json` 在增量运行前固定十二个修改及新版哈希。选择只依据源代码 DAG：`local` 取可到达输出数最少、最长输出距离最短、源码位置最早的内部 AND；`shared` 取可到达输出数最多、直接使用者最多、源码位置最早的内部 AND。六个 local 节点都仅可到达一个输出；按表格顺序，shared 节点分别可到达 19、3、7、128、128、43 个输出。这些是**保守拓扑范围**，不是已经证明的实际重综合范围或同一输入下发生变化的输出数。
 
 测量前分别执行离线资格检查：对完整新旧顶层建立 Yosys `miter`，所有输入允许任意二值，SAT 搜索 `trigger=1`，再用独立源代码 Boolean DAG 求值器回放所有顶层输出。只有找到并成功回放具体反例才认定为功能修改；保存输入向量、新旧输出和不同输出列表。没有反例、错误、未知或超时均不能算通过。没有 `synth` 或 ABC 参与这项资格检查。该判定针对完整原始组合函数，不额外假设请求、优先级等输入存在系统级约束。
 
-六个案例及失败结果均保留，不按增量是否成功筛选。自动流程仅收到旧综合记录和完整新版 RTL；修改行、拓扑类别和反例只进入实验清单，不作为选区或连接提示。每个原电路的两个案例共享相同旧 RTL 字节及建档，减少重复建档成本。单模块案例只测保留层次模式，不再重复没有意义的展平实验。
+十二个案例及失败结果均保留，不按增量是否成功筛选。自动流程仅收到旧综合记录和完整新版 RTL；修改行、拓扑类别和反例只进入实验清单，不作为选区或连接提示。每个原电路的两个案例在同一重复轮次内共享相同旧 RTL 字节及建档。单模块案例只测保留层次模式，不再重复没有意义的展平实验。行数按完整原始文件的物理行统计，包含注释和空行。
 
 测量入口、计时和工艺库面积口径见 [incremental/comparison.md](../../incremental/comparison.md)。

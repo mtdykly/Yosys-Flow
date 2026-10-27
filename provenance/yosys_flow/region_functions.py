@@ -4,12 +4,74 @@ The reference is the replayed FINAL object state, not an invented RTL function.
 Source correspondence is reported separately by contracts.py.
 """
 from collections import Counter
-from .boolean import BDD, ProofBudgetExceeded, signal_order
+from .boolean import BDD, Function, ProofBudgetExceeded, signal_order
 from .common import require
 
 
 class UnsupportedFunction(Exception):
     pass
+
+
+class LogicDAG:
+    """Collision-free structural Boolean terms, independent boundary variables.
+
+    Equal roots prove equality; unequal roots say nothing about equivalence.
+    This keeps copying/splicing proofs linear without expanding a ROBDD.
+    """
+    def __init__(self):
+        self.nodes = [None, None]
+        self.unique = {}
+
+    @property
+    def one(self): return Function(self, 1)
+
+    def node(self, term):
+        if term not in self.unique:
+            self.unique[term] = len(self.nodes)
+            self.nodes.append(term)
+        return self.unique[term]
+
+    def variables(self, count):
+        return [Function(self, self.node(('input', i))) for i in range(count)]
+
+    def apply(self, op, a, b):
+        a,b = sorted((a,b))
+        if op=='and':
+            if a==0:return 0
+            if a==1 or a==b:return b
+        elif op=='or':
+            if a==0 or a==b:return b
+            if a==1:return 1
+        elif op=='xor':
+            if a==0:return b
+            if a==b:return 0
+            if a==1:
+                if self.nodes[b][0]=='not':return self.nodes[b][1]
+                return self.node(('not',b))
+        else:raise UnsupportedFunction('unsupported Boolean term '+op)
+        return self.node((op,a,b))
+
+    def statistics(self):return {'backend':'structural_boolean_dag','nodes':len(self.unique)}
+
+
+def encode_dag(function, input_ports):
+    manager,root = function.manager,function.node
+    remap,nodes={0:0,1:1},[]
+    stack=[(root,False)]
+    while stack:
+        node,done=stack.pop()
+        if node in remap:continue
+        term=manager.nodes[node]
+        children=() if term[0]=='input' else term[1:]
+        if done:
+            remap[node]=len(nodes)+2
+            row={'id':remap[node],'op':term[0]}
+            if term[0]=='input':row['input_port']=input_ports[term[1]]
+            else:row['args']=[remap[c] for c in children]
+            nodes.append(row)
+        else:stack.extend([(node,True),*((c,False) for c in reversed(children))])
+    return {'encoding':'boolean_dag_v1','root':remap[root],'nodes':nodes,
+            'support':sorted({n['input_port'] for n in nodes if n['op']=='input'})}
 
 
 def gate_function(kind, ports, one):
@@ -117,9 +179,10 @@ def ordered_inputs(boundary, cells=None):
     return sorted((b for b in boundary if b['direction']=='input'),key=key)
 
 
-def verify_outputs(recorded_cells, final_cells, boundary):
+def verify_outputs(recorded_cells, final_cells, boundary, *, structural=False):
     """Check EVERY cut output against final netlist at independent cut inputs."""
-    manager = BDD()
+    structural = structural or len(recorded_cells)>256
+    manager = LogicDAG() if structural else BDD()
     inputs = ordered_inputs(boundary, recorded_cells)
     variables = {}
     setup_error = None
@@ -134,9 +197,15 @@ def verify_outputs(recorded_cells, final_cells, boundary):
             if setup_error: raise ProofBudgetExceeded(setup_error)
             expected = reference.value(output['original_bit'])
             actual = final.value(output['original_bit'])
+            if structural and expected != actual:
+                raise UnsupportedFunction('structural_function_mismatch')
             require(expected == actual, 'region output function differs from recorded objects: '+output['port'])
-            row.update(status='verified', function=encode_function(expected,[b['port'] for b in inputs]))
+            encoder=encode_dag if structural else encode_function
+            row.update(status='verified', function=encoder(expected,[b['port'] for b in inputs]),
+                       proof_method='structural_boolean_identity' if structural else 'robdd_equality')
         except (UnsupportedFunction, ProofBudgetExceeded, RecursionError) as exc:
+            if not structural and isinstance(exc,ProofBudgetExceeded):
+                return verify_outputs(recorded_cells,final_cells,boundary,structural=True)
             row['reason'] = 'function_depth_limit' if isinstance(exc,RecursionError) else str(exc)
         rows.append(row)
     return {'scope':'replayed_final_objects_to_final_netlist_at_independent_boundary',

@@ -365,19 +365,21 @@ class AutomaticTests(unittest.TestCase):
         self.assertEqual(result['failure']['code'],'state_outside_combinational_scope')
         self.assertFalse((out/'incremental.v').exists());self.assertFalse((out/'patch.il').exists())
 
-    def test_candidate_abc_provenance_cannot_be_promoted_by_auto_mode(self):
+    def test_candidate_regions_need_separate_source_proof_in_both_selection_modes(self):
         fixture,_=self.cases['bypass_noc1'];base=self.root/'flat-base'
         baseline_run(flow_parser().parse_args(['run','--source',str(fixture/'base.v'),'--top','benchmark',
             '--out',str(base),'--flatten','--native-yosys',str(NATIVE)]))
-        result,out=self.execute('bypass_noc1','flat-blocked',base=base)
-        self.assertEqual(result['status'],'blocked',result.get('failure'))
-        self.assertEqual(result['failure']['code'],'old_region_not_proven')
-        self.assertEqual(len(result['attempts']),2)
-        self.assertFalse((out/'incremental.v').exists())
-        module,module_out=self.execute('bypass_noc1','flat-module-blocked',base=base,selection_mode='module')
-        self.assertEqual(module['status'],'blocked',module.get('failure'))
-        self.assertEqual(module['failure']['code'],'old_region_not_proven')
-        self.assertFalse((module_out/'incremental.v').exists())
+        for mode in ('fine','module'):
+            result,out=self.execute('bypass_noc1','flat-proven-'+mode,base=base,selection_mode=mode)
+            self.assertEqual(result['status'],'passed',result.get('failure'))
+            doc=json.loads((out/'replacement-plan.json').read_text())
+            self.assertTrue(doc['verification']['candidate_refs'])
+            self.assertEqual(doc['verification']['source_region_function_proof']['status'],'verified')
+            self.assertFalse(doc['end_to_end_exact'])
+            with patch('yosys_flow.source_regions.prove',return_value={'status':'not_proven','reason':'injected_timeout'}):
+                rejected,rejected_out=self.execute('bypass_noc1','flat-no-proof-'+mode,base=base,selection_mode=mode)
+            self.assertEqual(rejected['status'],'blocked',rejected.get('failure'))
+            self.assertFalse((rejected_out/'incremental.v').exists())
 
     def test_modified_archived_frontend_is_rejected(self):
         _,base=self.cases['bypass_noc1'];target=self.root/'tampered-baseline'

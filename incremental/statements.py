@@ -14,6 +14,20 @@ def selector(location,path):
 
 
 def merge(context,parents):
+    # Expansion is a set union, not a history of nested contracts. Replaying
+    # every previous union recursively hit the parent-depth limit on control
+    # cones. Retain the original selectors and added dependencies once; the
+    # combined region and any source certificate are always reverified.
+    stack=list(parents);leaves=[];extra_inputs=set()
+    while stack:
+        parent=stack.pop();recipe=parent['derivation'];kind=recipe['kind']
+        if kind=='union':
+            stack.extend(context._parent(p,0) for p in recipe['parents'])
+        elif kind in {'extend_inputs','source_cut'}:
+            if kind=='extend_inputs':extra_inputs.update(recipe['input_bits'])
+            stack.append(context._parent(recipe['parent'],0))
+        else:leaves.append(parent)
+    parents=leaves
     unique={p['contract_id']:p for p in parents};parents=list(unique.values())
     ir_graph.check(parents,'no mapped old source objects for changed assignment')
     # Source queries often overlap after group closure. Their selectors remain
@@ -28,7 +42,12 @@ def merge(context,parents):
     while len(parents)>1:
         parents=[context.build({'kind':'union','parents':parents[i:i+32]}) if len(parents[i:i+32])>1 else parents[i]
                  for i in range(0,len(parents),32)]
-    return parents[0]
+    result=parents[0]
+    driven={b for row in result['region']['cells'] for p,bs in context.module['cells'][unescape(row['name'])]['connections'].items()
+            if context.module['cells'][unescape(row['name'])]['port_directions'][p]=='output' for b in bs}
+    extra_inputs-=driven
+    if extra_inputs:result=context.build({'kind':'extend_inputs','parent':result,'input_bits':sorted(extra_inputs)})
+    return result
 
 
 def source_selectors(context,graph,change,path):
@@ -223,12 +242,31 @@ def plan(context,old,new,oc,nc,coarse,scopes,report,work,yosys):
         contract=merge(context,parents);report['seed_cell_count']=len(contract['region']['cells'])
         slicer=Slice(context,units,coarse,endpoints)
         refs={unescape(context.trace.objects[r]['state']['name']):r for r in context.trace.final}
+        drivers={b:refs[n] for n,c in context.module['cells'].items() for p,bs in c['connections'].items()
+                 if c['port_directions'][p]=='output' for b in bs if isinstance(b,int)}
         for _ in range(32):
-            ir_graph.check(contract['verification']['status']=='verified_old_region',
-                           'old statement region is not proven: '+str(contract['verification']['blockers']))
             result,missing=slicer.build(contract)
             if result:
-                contract,design,bindings,spec=result;context.validate(contract)
+                contract,design,bindings,spec=result
+                certified=context.certify_source_cut(contract)
+                proof=certified['verification'].get('source_region_function_proof',{})
+                missing_inputs=proof.get('missing_input_bits',[])
+                if missing_inputs:
+                    selected={c['ref'] for c in contract['region']['cells']}
+                    added={drivers[b] for b in missing_inputs if b in drivers}-selected
+                    ir_graph.check(added,'missing source cut cannot be closed by recorded upstream drivers')
+                    extra=[]
+                    for ref in sorted(added):
+                        item=dict.fromkeys(SELECTOR_KEYS);item['object']=ref
+                        extra.append(context.build({'kind':'source_cells','selector':item}))
+                    report['expansions'].append({'reason':'source_input_cut_unproven',
+                        'input_bits':missing_inputs,'added_cell_refs':sorted(added)})
+                    contract=merge(context,[contract,*extra]);continue
+                contract=certified
+                ir_graph.check(contract['verification']['status']=='verified_old_region',
+                               'old statement region is not proven: '+str(contract['verification']))
+                bindings['contract_id']=contract['contract_id']
+                context.validate(contract)
                 write_json(work/'statement-slice.json',design)
                 run_yosys(yosys,work,'statement-slice',
                     'read_json statement-slice.json\nhierarchy -check -top __auto_patch\ncheck -assert\nwrite_rtlil statement-slice.il')

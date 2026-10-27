@@ -22,6 +22,14 @@ def row(method, candidate, end_to_end, cells, *, case='changed', mode='retained'
 
 
 class ExperimentSummaryTests(unittest.TestCase):
+    def test_means_exclude_failures_and_differ_from_medians(self):
+        samples = [row('F', value, value, 10) for value in (1, 2, 9)]
+        samples.append(row('F', 999, 999, 999, outcome='timeout'))
+        summary = experiment.summarize(samples, {})[0]
+        self.assertEqual(summary['successful_means']['netlist_generation_seconds'], 4)
+        self.assertEqual(summary['successful_medians']['netlist_generation_seconds'], 2)
+        self.assertFalse(summary['complete_successful_series'])
+
     def test_library_mapping_cost_is_separate_and_never_includes_proof(self):
         measurement = {'library_area': {'status': 'passed', 'library_sha256': 'same-library',
                        'unit': 'um^2', 'cell_area': 12.5, 'cell_count': 3,
@@ -226,7 +234,8 @@ class ExperimentMeasurementTests(unittest.TestCase):
             catalog = root/'catalog.json'; catalog.write_text(json.dumps(cases))
             for filename in ('yosys', 'native', 'yosys-abc'):
                 (root/filename).write_text(filename)
-            args = parser().parse_args(['compare', '--suite', 'epfl-functional', '--repeats', '3',
+            args = parser().parse_args(['compare', '--suite', 'epfl-functional', '--repeats', '2',
+                                        '--baseline-repeats', '2', '--index-backend', 'gzip',
                                         '--out', str(root/'run')])
             def prepare(name, dest):
                 dest.mkdir(parents=True)
@@ -263,19 +272,25 @@ class ExperimentMeasurementTests(unittest.TestCase):
                     patch('incremental.experiment_metrics.measure_netlist', return_value={'cell_count': 100, 'logic_depth': 8}):
                 report = experiment.run(args)
             self.assertEqual(report['methods'], ['F', 'P-fine'])
-            self.assertEqual(len(report['measurements']), 36)
-            self.assertEqual(report['unique_baseline_count'], 3)
-            self.assertEqual(sum(j['kind'] == 'baseline' for j in calls), 3)
-            self.assertEqual(sum(j['kind'] == 'stock_old' for j in calls), 3)
+            self.assertEqual(len(report['measurements']), 24)
+            self.assertEqual(report['unique_baseline_count'], 6)
+            self.assertEqual(sum(j['kind'] == 'baseline' for j in calls), 6)
+            self.assertEqual(sum(j['kind'] == 'stock_old' for j in calls), 6)
+            self.assertTrue(all(j['index_backend'] == 'gzip' for j in calls))
+            for job in (j for j in calls if j['kind'] == 'incremental'):
+                self.assertTrue('trial-1' in job['base_run'] or 'trial-2' in job['base_run'])
+            for measurement in report['measurements']:
+                if measurement.get('baseline_reference'):
+                    self.assertIn('trial-'+str(measurement['repeat']), measurement['baseline_reference'])
             self.assertEqual(sum(j['kind'] == 'qualification' for j in calls), 6)
             self.assertEqual(report['status'], 'completed')
             self.assertEqual(report['baselines']['bar_local/retained']['baseline_reference'],
                              report['baselines']['bar_shared/retained']['baseline_reference'])
             refused = [r for r in report['measurements'] if r['case'] == 'adder_local']
-            self.assertEqual(len(refused), 6)
+            self.assertEqual(len(refused), 4)
             self.assertTrue(all(r['outcome'] == 'blocked' and
                                 r['failure']['code'] == 'edit_qualification_not_proven' for r in refused))
-            self.assertEqual(report['counts'], {'success': 15, 'blocked': 21})
+            self.assertEqual(report['counts'], {'success': 10, 'blocked': 14})
             for item in report['summary']:
                 if item['case'] == 'adder_local' or item['method'] != 'F':
                     self.assertNotIn('generation_speedup', item)
@@ -297,8 +312,17 @@ class ExperimentMeasurementTests(unittest.TestCase):
             for name, text in [('yosys.jsonl', '123'), ('yosys.jsonl.abc_1.input.blif', '12345'),
                                ('yosys.jsonl.abc_1.input.blif.flow.jsonl', '12'), ('after.json', '{}')]:
                 (root/name).write_text(text)
-            self.assertEqual(experiment_worker.archive_sizes(root),
-                             {'archive_bytes': 12, 'jsonl_bytes': 5, 'abc_evidence_bytes': 7})
+            sizes = experiment_worker.archive_sizes(root)
+            self.assertEqual(sizes['archive_bytes'], 12)
+            self.assertEqual(sizes['jsonl_bytes'], 5)
+            self.assertEqual(sizes['abc_evidence_bytes'], 7)
+            self.assertEqual(sizes['raw_record_bytes'], 10)
+            self.assertEqual(sizes['index_bytes'], 0)
+            (root/'verified-index.sqlite3').write_bytes(b'12345')
+            sizes = experiment_worker.archive_sizes(root)
+            self.assertEqual(sizes['archive_bytes'], 17)
+            self.assertEqual(sizes['index_bytes'], 5)
+            self.assertEqual(sizes['index_files'], {'verified-index.sqlite3': 5})
 
     def test_process_tree_counts_each_live_pid_once_across_threads(self):
         real_path = Path

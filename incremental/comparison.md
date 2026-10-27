@@ -2,7 +2,7 @@
 
 本页的默认套件比较 **ANUBIS 中有功能修改的组合逻辑适配案例**：从完整新版 RTL 生成新版网表，来源驱动的局部综合与替换相对于全量综合节省多少时间，最终网表增加或减少多少通用门，以及统一工艺映射后的标准单元面积。功能不变修改、锁存器负例和人工控制用于独立诊断，不进入这项性能结论。
 
-较大规模的扩展套件使用 `--suite epfl-functional`，在 EPFL 原始单模块电路上构造六对功能修改，默认比较 F 与 P-fine。固定变异、共享旧建档和实测结果见 [EPFL 实验](epfl-comparison.md)；与本页 ANUBIS 结果分别报告。
+较大规模的扩展套件使用 `--suite epfl-functional`，在六个 EPFL 原始单模块电路上构造十二对功能修改，默认比较 F 与 P-fine。固定变异、共享旧建档和实测结果见 [EPFL 实验](epfl-comparison.md)；与本页 ANUBIS 结果分别报告。
 
 主计时终点是**整份新版网表的 JSON、RTLIL 和 Verilog 已写出**，包含把局部新门接回旧网表。生成后的正确性验证不计入这项时间，但仍执行；验证失败的结果不参与成功样本的加速比和网表规模比较。
 
@@ -73,7 +73,9 @@ python3 -m incremental compare --suite diagnostic \
   --out runs/comparison-diagnostic
 ```
 
-默认 `--suite anubis-functional`、`--repeats 5`、`--mode retained`、`--precheck off`、`--seed 20261024`、`--job-timeout 600`。每个方法至少重复 3 次。`--cpu` 默认选进程允许的最低编号 CPU；实际机器、亲和性和工具身份写入报告。测量串行执行，以固定随机种子安排方法顺序，保留逐次耗时；不清操作系统缓存，不把重复次数称为独立设计数。
+默认 `--suite anubis-functional`、`--repeats 5`、`--mode retained`、`--precheck off`、`--seed 20261024`、`--job-timeout 600`。每个方法至少重复 2 次，同时输出 `successful_means` 与 `successful_medians`。`--index-backend sqlite|gzip` 默认 SQLite，`--baseline-repeats` 默认 1；设为 2 时独立建档两次，在线重复与归档轮次配对。`--cpu` 默认选进程允许的最低编号 CPU；实际机器、亲和性和工具身份写入报告。测量串行执行，以固定随机种子安排方法顺序，保留逐次耗时；不清操作系统缓存，不把重复次数称为独立设计数。
+
+当前两后端、两次均值、360 秒、不限体积的 ANUBIS/EPFL 完整比较见 [backend-comparison.md](backend-comparison.md)。下文历史 v4 数据保留原来的三次中位数口径，不与新测量混算。
 
 显式开启预检查的诊断路径可能直接复用旧网表。此路径的计时包含功能证明与复用，未单独测量网表生成：`netlist_generation_seconds` 为 `null`，保留 `candidate_seconds` 与完整耗时作诊断。`--precheck both` 对 NOC 分别测开/关，其余诊断案例固定开启。
 
@@ -116,6 +118,8 @@ python3 -m incremental compare --suite diagnostic \
 内存同时记录约 20 ms 采样的进程树 RSS 总和峰值、单进程高水位最大值。前者可能重复计共享页或漏短峰值；后者不是所有进程同时使用的内存。这两个指标不相加，也不当作精确物理占用。
 
 报告保留每次状态与有效样本数。来源阻塞、范围拒绝、验证失败、异常和超时不会从分母消失，也不以缺失时间计算加速。所有增量成功样本必须通过现有的全部输出、边界、未选中门及产物检查；`F` 成功表示原版全量综合及自身检查完成。
+
+`--repeats 1 --baseline-repeats 1` 可用于一次支持范围复测；这种结果是单次观察，没有方差或稳定均值的含义。自动扩区后的 `selection_strategy`、删除/复用门数仍应一起报告：`statement_dependency_slice` 也可能最终覆盖整个旧电路，不能只根据方法名称声称细粒度复用。新加入的旧源码区域 SAT 证明属于选区所需证据，其耗时计入在线生成时间。
 
 ## 一次性成本和收支平衡
 

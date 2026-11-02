@@ -39,6 +39,8 @@ python3 -m incremental compare --mode retained --repeats 3 --out runs/comparison
 
 针对来源或边界证据不足的 B 项，补齐独立旧源码功能证明后，按同样案例每项复测一次：96 项中 88 项成功，8 项因 `arbiter` 旧建档超时未启动，没有剩余 B。实际复用粒度、时间、面积和存储的两张表见 [单次复测报告](backend-support-comparison.md)；当前 P-fine 的生成时间仍慢于 F。
 
+针对 `adder_local`、`adder_shared` 和 `arbiter` 建档的进一步耗时归因与优化见 [cost-attribution.md](cost-attribution.md)。诊断工具 `python3 -m incremental.profile JOB.json --profile-out NEW_DIRECTORY` 记录嵌套阶段、独占墙钟时间、扩区规模和 Python CPU 采样；它不改变来源与验证规则，带诊断开销的时间和未启用诊断的正式生成时间分别报告。
+
 ## 显式区域实验与审查接口
 
 ```bash

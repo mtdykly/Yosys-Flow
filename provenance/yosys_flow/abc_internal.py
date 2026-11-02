@@ -75,6 +75,24 @@ class Network:
             if n['op'] in arities: require(len(n['fanins']) == arities[n['op']], 'ABC internal arity mismatch')
         self.names = record.get('pi_names', [self.nodes[i].get('name', '') for i in self.pis])
 
+    def observe_unchanged(self, record):
+        """Reuse immutable, validated nodes for a genuinely empty delta.
+
+        decode_network has already checked the epoch, immediate base, command,
+        representation and empty change/deletion sets. Only snapshot interface
+        metadata can differ; it must still be validated on every observation.
+        Changed snapshots continue through the full constructor.
+        """
+        net = object.__new__(Network)
+        net.record, net.nodes = record, self.nodes
+        net.pis = record.get('pis', sorted(self.pis))
+        net.pos = record.get('pos', [])
+        require(len(net.pis) == len(set(net.pis)) and set(net.pis) == set(self.pis),
+                'invalid ABC internal inputs')
+        require(set(net.pos) <= net.nodes.keys(), 'invalid ABC internal outputs')
+        net.names = record.get('pi_names', [net.nodes[i].get('name', '') for i in net.pis])
+        return net
+
     def truth(self, inputs=None, *, bdd=None):
         if inputs and isinstance(inputs[0], Function):
             bdd = inputs[0].manager
@@ -180,7 +198,9 @@ def decode_network(row, networks, epochs, schema):
             nodes = dict(nodes)
             for i in deleted: del nodes[i]
             nodes.update(changes)
-        net = Network(row, nodes)
+            net = Network(row, nodes)
+        else:
+            net = before.observe_unchanged(row)
     epochs[epoch] = row['seq']
     return net
 

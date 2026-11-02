@@ -6,6 +6,8 @@ from urllib.parse import quote
 
 from yosys_flow.common import unescape, write_json
 from yosys_flow.contracts import SELECTOR_KEYS, fingerprint
+from yosys_flow.diagnostics import group_closure
+from yosys_flow.extract import slice_module
 from . import ir_graph, rtlil
 
 
@@ -211,6 +213,50 @@ class Slice:
         return (contract,{'modules':{'__auto_patch':module}},bindings,spec),[]
 
 
+def close_missing_outputs(context, slicer, contract, missing, refs, report):
+    """Preview electrical closure before spending time on rejected contracts.
+
+    Intermediate cuts are NOT certificates. Only actual external consumers and
+    recorded joint groups are added, using the same 32-expansion limit. A
+    bindable final selection still goes through ordinary contract construction,
+    source proof, patch binding and validation. A nonconverging preview falls
+    back without constructing proofs for every intermediate region.
+    """
+    selected = {c['ref'] for c in contract['region']['cells']}
+    requested = set()
+    names_by_ref = {ref:name for name,ref in refs.items()}
+    while missing:
+        ir_graph.check(len(report['expansions']) < 32, 'statement region expansion budget exceeded')
+        added = {refs[u['name']] for row in missing for u in row['external_users']
+                 if u['kind']=='cell' and u['name'] in refs} - selected
+        ir_graph.check(added, 'unavailable old output identity cannot be closed within the statement scope')
+        requested.update(added)
+        following = set(group_closure(context.trace, selected | added)['required_final_cell_refs'])
+        report['expansions'].append({'reason':'old_output_cut_disappeared',
+            'ports':[r['port'] for r in missing], 'added_cell_refs':sorted(added),
+            'selected_cell_count_before':len(selected), 'selected_cell_count_after':len(following),
+            'evidence_construction_deferred':True})
+        selected = following
+        # Preserve the old budget policy: no 33rd slice/proof attempt.
+        ir_graph.check(len(report['expansions']) < 32, 'statement region expansion budget exceeded')
+        names = [names_by_ref[ref] for ref in sorted(selected)]
+        _, boundary = slice_module(context.module, names, 'preview', contract['region']['connections'])
+        driven = {b for name in names for p,bs in context.module['cells'][name]['connections'].items()
+                  if context.module['cells'][name]['port_directions'][p]=='output' for b in bs}
+        missing = [r for r in boundary if r['direction']=='output'
+                   and not (r['reason']=='selected_source_connection' and not r.get('external_users')
+                            and r['original_bit'] not in driven)
+                   and slicer.output(r) is None]
+    extra = []
+    for ref in sorted(requested):
+        item = dict.fromkeys(SELECTOR_KEYS); item['object'] = ref
+        extra.append(context.build({'kind':'selection','selector':item}))
+    result = merge(context, [contract, *extra])
+    ir_graph.check({c['ref'] for c in result['region']['cells']} == selected,
+                   'preview and certified output closure differ')
+    return result
+
+
 def plan(context,old,new,oc,nc,coarse,scopes,report,work,yosys):
     # Import at call time: automatic owns the public fallback policy.
     from .automatic import Endpoints
@@ -244,7 +290,7 @@ def plan(context,old,new,oc,nc,coarse,scopes,report,work,yosys):
         refs={unescape(context.trace.objects[r]['state']['name']):r for r in context.trace.final}
         drivers={b:refs[n] for n,c in context.module['cells'].items() for p,bs in c['connections'].items()
                  if c['port_directions'][p]=='output' for b in bs if isinstance(b,int)}
-        for _ in range(32):
+        while len(report['expansions']) < 32:
             result,missing=slicer.build(contract)
             if result:
                 contract,design,bindings,spec=result
@@ -273,18 +319,7 @@ def plan(context,old,new,oc,nc,coarse,scopes,report,work,yosys):
                 report.update(status='ready',selected_cell_count=len(contract['region']['cells']),
                               copied_coarse_cell_count=spec['local_coarse_cell_count'])
                 return contract,(work/'statement-slice.il').read_text(),bindings,spec
-            selected={c['ref'] for c in contract['region']['cells']};added=set()
-            for row in missing:
-                added.update(refs[u['name']] for u in row['external_users'] if u['kind']=='cell' and u['name'] in refs)
-            added-=selected
-            ir_graph.check(added,'unavailable old output identity cannot be closed within the statement scope')
-            report['expansions'].append({'reason':'old_output_cut_disappeared',
-                'ports':[r['port'] for r in missing],'added_cell_refs':sorted(added)})
-            extra=[]
-            for ref in sorted(added):
-                item=dict.fromkeys(SELECTOR_KEYS);item['object']=ref
-                extra.append(context.build({'kind':'selection','selector':item}))
-            contract=merge(context,[contract,*extra])
+            contract=close_missing_outputs(context,slicer,contract,missing,refs,report)
         raise ir_graph.Unsupported('statement region expansion budget exceeded')
     except ir_graph.Unsupported as exc:
         report.update(status='module_fallback',reason=str(exc))

@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from test_native import NATIVE
-from yosys_flow.abc_internal import decode_network, read_evidence
+from yosys_flow.abc_internal import Network, decode_network, read_evidence
 from yosys_flow.cli import parser
 from yosys_flow.common import TraceError
 from yosys_flow.runner import run, load_run
@@ -49,6 +49,30 @@ class DeltaDecoderTests(unittest.TestCase):
         nets[4]=decode_network(self.delta(),nets,epochs,5)
         with self.assertRaisesRegex(TraceError,'stale base'):
             decode_network({**self.delta(),'seq':6},nets,epochs,5)
+
+    def test_empty_delta_reuses_nodes_but_revalidates_its_interface_and_scope(self):
+        for changes in ({}, {'pis':[2,1],'pos':[3]}, {'pis':[1]}, {'pis':[1,1]},
+                        {'pis':[1,9]}, {'pos':[99]}, {'base_snapshot':99},
+                        {'command_id':2}, {'network_epoch':2}, {'representation':'gia'}):
+            with self.subTest(changes=changes):
+                nets={};epochs={};before=decode_network(self.checkpoint(),nets,epochs,5);nets[2]=before
+                row={**self.delta(),'nodes':[],'deleted_nodes':[],**changes}
+                if changes and changes != {'pis':[2,1],'pos':[3]}:
+                    with self.assertRaises(TraceError):decode_network(row,nets,epochs,5)
+                else:
+                    expected=Network(row,before.nodes)
+                    with patch.object(Network,'__init__',side_effect=AssertionError('empty delta rescanned all nodes')):
+                        actual=decode_network(row,nets,epochs,5)
+                    self.assertIs(actual.nodes,before.nodes)
+                    self.assertEqual((actual.pis,actual.pos,actual.names),(expected.pis,expected.pos,expected.names))
+                    self.assertEqual(actual.truth(),expected.truth())
+
+    def test_changed_delta_still_checks_arity_and_dangling_deleted_fanin(self):
+        for changes in ({'deleted_nodes':[1],'nodes':[]},
+                        {'deleted_nodes':[],'nodes':[{'id':3,'op':'and','fanins':[2]}]},
+                        {'deleted_nodes':[],'nodes':[{'id':3,'op':'and','fanins':[2,999]}]}):
+            nets={};epochs={};nets[2]=decode_network(self.checkpoint(),nets,epochs,5)
+            with self.assertRaises(TraceError):decode_network({**self.delta(),**changes},nets,epochs,5)
 
 
 @unittest.skipUnless(NATIVE.is_file(),'native Yosys not built')

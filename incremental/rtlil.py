@@ -99,6 +99,28 @@ def catalog(modules, top):
     return result
 
 
+def changed_ranges(old, new):
+    """Diff only the unequal middle; identical prefixes/suffixes need no search.
+
+    RTLIL contains many repeated parameter/connect records. SequenceMatcher
+    with autojunk=False can spend quadratic time matching the unchanged body.
+    Trimming uses exact row equality, never hashes or popular-token suppression.
+    Returned indices still refer to the complete canonical representations.
+    """
+    start = 0
+    while start < min(len(old), len(new)) and old[start] == new[start]:
+        start += 1
+    end_old, end_new = len(old), len(new)
+    while end_old > start and end_new > start and old[end_old-1] == new[end_new-1]:
+        end_old -= 1
+        end_new -= 1
+    matcher = difflib.SequenceMatcher(a=list(map(str, old[start:end_old])),
+                                     b=list(map(str, new[start:end_new])), autojunk=False)
+    for tag, i, j, k, l in matcher.get_opcodes():
+        if tag != 'equal':
+            yield tag, start+i, start+j, start+k, start+l
+
+
 def compare(old, new, top):
     """Match by actual instance paths, allowing renamed module definitions.
 
@@ -114,8 +136,8 @@ def compare(old, new, top):
         ac,bc=a.canonical(old),b.canonical(new)
         if ac!=bc:
             delta=[]
-            for tag,i,j,k,l in difflib.SequenceMatcher(a=list(map(str,ac)),b=list(map(str,bc)),autojunk=False).get_opcodes():
-                if tag!='equal': delta.append({'operation':tag,'old':ac[i:j],'new':bc[k:l]})
+            for tag,i,j,k,l in changed_ranges(ac,bc):
+                delta.append({'operation':tag,'old':ac[i:j],'new':bc[k:l]})
             changes.append({'instance':path,'old_module':a.name,'new_module':b.name,
                 'old_src':a.source,'new_src':b.source,'old_fingerprint':fingerprint(ac),
                 'new_fingerprint':fingerprint(bc),'ir_changes':delta})

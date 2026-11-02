@@ -47,6 +47,33 @@ def boundary_identities(row):
     return identities
 
 
+def output_associations(edges, associations, seeds):
+    """Run the ordered reverse evidence scan for all outputs simultaneously.
+
+    Each bit is one output's reachability set. The edge order and duplicate
+    association order match the former independent per-output scans exactly;
+    this is not unrestricted graph reachability or a new provenance rule.
+    """
+    masks = {}
+    for i, refs in enumerate(seeds):
+        for ref in refs:
+            masks[ref] = masks.get(ref, 0) | (1 << i)
+    for edge in reversed(edges):
+        mask = masks.get(edge['to'], 0)
+        if mask:
+            parent = edge['from']
+            masks[parent] = masks.get(parent, 0) | mask
+    result = [[] for _ in seeds]
+    for association in associations:
+        ref = association['ref']
+        mask = masks.get(ref, 0)
+        while mask:
+            bit = mask & -mask
+            result[bit.bit_length()-1].append(ref)
+            mask ^= bit
+    return result
+
+
 def outside_paths(module, names, boundary):
     """Expose paths leaving and returning to a non-convex region."""
     _,users = endpoints(module)
@@ -320,6 +347,7 @@ class ContractContext:
                 abc_internal=[r for _,r in indexed_rows(self.trace,'abc_internal','invocation_id',invocation_ids)])
         by_name = {unescape(c['name']):c for c in cells}
         outputs = []
+        output_seeds = []
         for proof in functions['outputs']:
             boundary_row = next(b for b in boundary if b['port']==proof['port'])
             contributing = [by_name[n] for n in proof['cone_cells']]
@@ -328,17 +356,16 @@ class ContractContext:
             contributing_connections = [c for c in connection_rows if c['ref'] in connection_refs]
             sources = {s for c in contributing for s in c['origin_ids']} | {s for c in contributing_connections for s in c['origins']}
             candidates = [c['ref'] for c in contributing+contributing_connections if c['precision'] not in EXACT_PRECISIONS]
-            output_refs = {c['ref'] for c in contributing} | connection_refs
-            for edge in reversed(edges):
-                if edge['to'] in output_refs: output_refs.add(edge['from'])
-            evidence = [a['ref'] for a in associations if a['ref'] in output_refs]
+            output_seeds.append({c['ref'] for c in contributing} | connection_refs)
             outputs.append({**proof, 'external_users':boundary_row['external_users'],
                 'connection_refs':sorted(connection_refs), 'contributing_cell_refs':[c['ref'] for c in contributing],
                 'recorded_source_ids':sorted(sources), 'candidate_refs':candidates,
-                'association_evidence_refs':evidence,
+                'association_evidence_refs':[],
                 'source_correspondence':'candidate' if candidates else 'recorded_relations_and_declared_local_proofs',
                 'source_completeness_proven':False, 'rtl_function_of_this_output_proven':False,
                 'obligation':'preserve_for_every_external_consumer_unless_explicitly_reassigned_by_a_validated_edit'})
+        for output, evidence in zip(outputs, output_associations(edges, associations, output_seeds)):
+            output['association_evidence_refs'] = evidence
         candidates = sorted(c['ref'] for c in cells+connection_rows if c['precision'] not in EXACT_PRECISIONS)
         conditions = {'baseline_must_match':True, 'input_binding':'actual_one_bit_net_signals_with_recorded_polarity',
             'inputs_are_independent_in_function_proof':True,

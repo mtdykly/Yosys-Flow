@@ -41,6 +41,8 @@ python3 -m incremental compare --mode retained --repeats 3 --out runs/comparison
 
 针对 `adder_local`、`adder_shared` 和 `arbiter` 建档的进一步耗时归因与优化见 [cost-attribution.md](cost-attribution.md)。诊断工具 `python3 -m incremental.profile JOB.json --profile-out NEW_DIRECTORY` 记录嵌套阶段、独占墙钟时间、扩区规模和 Python CPU 采样；它不改变来源与验证规则，带诊断开销的时间和未启用诊断的正式生成时间分别报告。
 
+优化后的跨案例归因见 [cost-attribution-suite.md](cost-attribution-suite.md)：覆盖此前 ANUBIS 与六个 EPFL 电路的 16 个修改/层次组合，分别列出未加诊断的在线阶段、选区内部热点、实际复用比例，以及 `arbiter` 的离线建档阻塞。CPU 采样区分网表生成前后，后验验证不混入在线瓶颈判断。
+
 ## 显式区域实验与审查接口
 
 ```bash

@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1140" height="610" viewBox="0 0 1140 610">
+<rect width="100%" height="100%" fill="white"/>
+<g font-family="Noto Sans CJK SC,Microsoft YaHei,sans-serif" font-size="12" fill="#222">
+<text x="24" y="26" font-size="18">P-fine 在线生成时间构成（SQLite，单次实测）</text>
+<text x="24" y="47">条宽归一化为 100%；右侧是实际总秒数。旧建档和生成后验证未计入。</text>
+<rect x="24" y="62" width="12" height="12" fill="#536878"/>
+<text x="41" y="73">旧归档读/复检</text>
+<rect x="204" y="62" width="12" height="12" fill="#2e86ab"/>
+<text x="221" y="73">新版前端 + 差分</text>
+<rect x="384" y="62" width="12" height="12" fill="#d46a32"/>
+<text x="401" y="73">选区/证据/patch</text>
+<rect x="564" y="62" width="12" height="12" fill="#7657a5"/>
+<text x="581" y="73">patch 导出</text>
+<rect x="744" y="62" width="12" height="12" fill="#2d8b62"/>
+<text x="761" y="73">局部综合</text>
+<rect x="924" y="62" width="12" height="12" fill="#a5a5a5"/>
+<text x="941" y="73">其他/拼接/写出</text>
+<text x="24" y="112">compare_local9 / 展平</text>
+<rect x="255.000" y="96" width="10.927" height="22" fill="#536878"><title>旧归档读/复检: 0.070 s (1.5%)</title></rect>
+<rect x="265.927" y="96" width="6.689" height="22" fill="#2e86ab"><title>新版前端 + 差分: 0.043 s (0.9%)</title></rect>
+<rect x="272.617" y="96" width="686.994" height="22" fill="#d46a32"><title>选区/证据/patch: 4.398 s (92.8%)</title></rect>
+<rect x="959.611" y="96" width="4.530" height="22" fill="#7657a5"><title>patch 导出: 0.029 s (0.6%)</title></rect>
+<rect x="964.140" y="96" width="20.326" height="22" fill="#2d8b62"><title>局部综合: 0.130 s (2.7%)</title></rect>
+<rect x="984.466" y="96" width="10.534" height="22" fill="#a5a5a5"><title>其他/拼接/写出: 0.067 s (1.4%)</title></rect>
+<text x="1010" y="112">4.738 s</text>
+<text x="24" y="147">compare_local9 / 保留</text>
+<rect x="255.000" y="131" width="24.913" height="22" fill="#536878"><title>旧归档读/复检: 0.058 s (3.4%)</title></rect>
+<rect x="279.913" y="131" width="23.257" height="22" fill="#2e86ab"><title>新版前端 + 差分: 0.055 s (3.1%)</title></rect>
+<rect x="303.170" y="131" width="594.002" height="22" fill="#d46a32"><title>选区/证据/patch: 1.393 s (80.3%)</title></rect>
+<rect x="897.172" y="131" width="12.881" height="22" fill="#7657a5"><title>patch 导出: 0.030 s (1.7%)</title></rect>
+<rect x="910.053" y="131" width="55.612" height="22" fill="#2d8b62"><title>局部综合: 0.130 s (7.5%)</title></rect>
+<rect x="965.666" y="131" width="29.334" height="22" fill="#a5a5a5"><title>其他/拼接/写出: 0.069 s (4.0%)</title></rect>
+<text x="1010" y="147">1.736 s</text>
+<text x="24" y="182">control_local2 / 展平</text>
+<rect x="255.000" y="166" width="7.258" height="22" fill="#536878"><title>旧归档读/复检: 0.093 s (1.0%)</title></rect>
+<rect x="262.258" y="166" width="6.770" height="22" fill="#2e86ab"><title>新版前端 + 差分: 0.086 s (0.9%)</title></rect>
+<rect x="269.028" y="166" width="705.323" height="22" fill="#d46a32"><title>选区/证据/patch: 8.995 s (95.3%)</title></rect>
+<rect x="974.351" y="166" width="4.278" height="22" fill="#7657a5"><title>patch 导出: 0.055 s (0.6%)</title></rect>
+<rect x="978.628" y="166" width="11.696" height="22" fill="#2d8b62"><title>局部综合: 0.149 s (1.6%)</title></rect>
+<rect x="990.325" y="166" width="4.675" height="22" fill="#a5a5a5"><title>其他/拼接/写出: 0.060 s (0.6%)</title></rect>
+<text x="1010" y="182">9.437 s</text>
+<text x="24" y="217">control_local2 / 保留</text>
+<rect x="255.000" y="201" width="6.857" height="22" fill="#536878"><title>旧归档读/复检: 0.091 s (0.9%)</title></rect>
+<rect x="261.857" y="201" width="6.469" height="22" fill="#2e86ab"><title>新版前端 + 差分: 0.086 s (0.9%)</title></rect>
+<rect x="268.326" y="201" width="712.427" height="22" fill="#d46a32"><title>选区/证据/patch: 9.446 s (96.3%)</title></rect>
+<rect x="980.753" y="201" width="1.952" height="22" fill="#7657a5"><title>patch 导出: 0.026 s (0.3%)</title></rect>
+<rect x="982.705" y="201" width="8.624" height="22" fill="#2d8b62"><title>局部综合: 0.114 s (1.2%)</title></rect>
+<rect x="991.328" y="201" width="3.672" height="22" fill="#a5a5a5"><title>其他/拼接/写出: 0.049 s (0.5%)</title></rect>
+<text x="1010" y="217">9.811 s</text>
+<text x="24" y="252">adder_local</text>
+<rect x="255.000" y="236" width="138.046" height="22" fill="#536878"><title>旧归档读/复检: 0.404 s (18.7%)</title></rect>
+<rect x="393.046" y="236" width="313.292" height="22" fill="#2e86ab"><title>新版前端 + 差分: 0.918 s (42.3%)</title></rect>
+<rect x="706.338" y="236" width="214.866" height="22" fill="#d46a32"><title>选区/证据/patch: 0.629 s (29.0%)</title></rect>
+<rect x="921.204" y="236" width="3.920" height="22" fill="#7657a5"><title>patch 导出: 0.011 s (0.5%)</title></rect>
+<rect x="925.124" y="236" width="15.811" height="22" fill="#2d8b62"><title>局部综合: 0.046 s (2.1%)</title></rect>
+<rect x="940.935" y="236" width="54.065" height="22" fill="#a5a5a5"><title>其他/拼接/写出: 0.158 s (7.3%)</title></rect>
+<text x="1010" y="252">2.167 s</text>
+<text x="24" y="287">adder_shared</text>
+<rect x="255.000" y="271" width="18.078" height="22" fill="#536878"><title>旧归档读/复检: 0.414 s (2.4%)</title></rect>
+<rect x="273.078" y="271" width="40.122" height="22" fill="#2e86ab"><title>新版前端 + 差分: 0.920 s (5.4%)</title></rect>
+<rect x="313.200" y="271" width="581.610" height="22" fill="#d46a32"><title>选区/证据/patch: 13.332 s (78.6%)</title></rect>
+<rect x="894.811" y="271" width="43.845" height="22" fill="#7657a5"><title>patch 导出: 1.005 s (5.9%)</title></rect>
+<rect x="938.656" y="271" width="22.722" height="22" fill="#2d8b62"><title>局部综合: 0.521 s (3.1%)</title></rect>
+<rect x="961.378" y="271" width="33.622" height="22" fill="#a5a5a5"><title>其他/拼接/写出: 0.771 s (4.5%)</title></rect>
+<text x="1010" y="287">16.962 s</text>
+<text x="24" y="322">bar_local</text>
+<rect x="255.000" y="306" width="13.926" height="22" fill="#536878"><title>旧归档读/复检: 1.065 s (1.9%)</title></rect>
+<rect x="268.926" y="306" width="34.138" height="22" fill="#2e86ab"><title>新版前端 + 差分: 2.611 s (4.6%)</title></rect>
+<rect x="303.063" y="306" width="576.376" height="22" fill="#d46a32"><title>选区/证据/patch: 44.082 s (77.9%)</title></rect>
+<rect x="879.439" y="306" width="60.954" height="22" fill="#7657a5"><title>patch 导出: 4.662 s (8.2%)</title></rect>
+<rect x="940.393" y="306" width="14.545" height="22" fill="#2d8b62"><title>局部综合: 1.112 s (2.0%)</title></rect>
+<rect x="954.938" y="306" width="40.062" height="22" fill="#a5a5a5"><title>其他/拼接/写出: 3.064 s (5.4%)</title></rect>
+<text x="1010" y="322">56.596 s</text>
+<text x="24" y="357">bar_shared</text>
+<rect x="255.000" y="341" width="13.990" height="22" fill="#536878"><title>旧归档读/复检: 1.073 s (1.9%)</title></rect>
+<rect x="268.990" y="341" width="33.666" height="22" fill="#2e86ab"><title>新版前端 + 差分: 2.583 s (4.5%)</title></rect>
+<rect x="302.656" y="341" width="577.156" height="22" fill="#d46a32"><title>选区/证据/patch: 44.276 s (78.0%)</title></rect>
+<rect x="879.812" y="341" width="61.630" height="22" fill="#7657a5"><title>patch 导出: 4.728 s (8.3%)</title></rect>
+<rect x="941.442" y="341" width="14.780" height="22" fill="#2d8b62"><title>局部综合: 1.134 s (2.0%)</title></rect>
+<rect x="956.221" y="341" width="38.779" height="22" fill="#a5a5a5"><title>其他/拼接/写出: 2.975 s (5.2%)</title></rect>
+<text x="1010" y="357">56.769 s</text>
+<text x="24" y="392">ctrl_local</text>
+<rect x="255.000" y="376" width="10.777" height="22" fill="#536878"><title>旧归档读/复检: 0.061 s (1.5%)</title></rect>
+<rect x="265.777" y="376" width="29.257" height="22" fill="#2e86ab"><title>新版前端 + 差分: 0.165 s (4.0%)</title></rect>
+<rect x="295.035" y="376" width="666.290" height="22" fill="#d46a32"><title>选区/证据/patch: 3.752 s (90.0%)</title></rect>
+<rect x="961.325" y="376" width="6.417" height="22" fill="#7657a5"><title>patch 导出: 0.036 s (0.9%)</title></rect>
+<rect x="967.742" y="376" width="17.984" height="22" fill="#2d8b62"><title>局部综合: 0.101 s (2.4%)</title></rect>
+<rect x="985.726" y="376" width="9.274" height="22" fill="#a5a5a5"><title>其他/拼接/写出: 0.052 s (1.3%)</title></rect>
+<text x="1010" y="392">4.167 s</text>
+<text x="24" y="427">ctrl_shared</text>
+<rect x="255.000" y="411" width="10.064" height="22" fill="#536878"><title>旧归档读/复检: 0.060 s (1.4%)</title></rect>
+<rect x="265.064" y="411" width="27.445" height="22" fill="#2e86ab"><title>新版前端 + 差分: 0.164 s (3.7%)</title></rect>
+<rect x="292.509" y="411" width="670.085" height="22" fill="#d46a32"><title>选区/证据/patch: 4.000 s (90.6%)</title></rect>
+<rect x="962.594" y="411" width="6.058" height="22" fill="#7657a5"><title>patch 导出: 0.036 s (0.8%)</title></rect>
+<rect x="968.652" y="411" width="16.469" height="22" fill="#2d8b62"><title>局部综合: 0.098 s (2.2%)</title></rect>
+<rect x="985.120" y="411" width="9.880" height="22" fill="#a5a5a5"><title>其他/拼接/写出: 0.059 s (1.3%)</title></rect>
+<text x="1010" y="427">4.418 s</text>
+<text x="24" y="462">priority_local</text>
+<rect x="255.000" y="446" width="50.224" height="22" fill="#536878"><title>旧归档读/复检: 0.302 s (6.8%)</title></rect>
+<rect x="305.224" y="446" width="145.693" height="22" fill="#2e86ab"><title>新版前端 + 差分: 0.875 s (19.7%)</title></rect>
+<rect x="450.917" y="446" width="397.362" height="22" fill="#d46a32"><title>选区/证据/patch: 2.387 s (53.7%)</title></rect>
+<rect x="848.280" y="446" width="30.764" height="22" fill="#7657a5"><title>patch 导出: 0.185 s (4.2%)</title></rect>
+<rect x="879.043" y="446" width="85.673" height="22" fill="#2d8b62"><title>局部综合: 0.515 s (11.6%)</title></rect>
+<rect x="964.716" y="446" width="30.284" height="22" fill="#a5a5a5"><title>其他/拼接/写出: 0.182 s (4.1%)</title></rect>
+<text x="1010" y="462">4.445 s</text>
+<text x="24" y="497">priority_shared</text>
+<rect x="255.000" y="481" width="38.917" height="22" fill="#536878"><title>旧归档读/复检: 0.302 s (5.3%)</title></rect>
+<rect x="293.917" y="481" width="112.129" height="22" fill="#2e86ab"><title>新版前端 + 差分: 0.870 s (15.2%)</title></rect>
+<rect x="406.046" y="481" width="425.976" height="22" fill="#d46a32"><title>选区/证据/patch: 3.305 s (57.6%)</title></rect>
+<rect x="832.022" y="481" width="37.640" height="22" fill="#7657a5"><title>patch 导出: 0.292 s (5.1%)</title></rect>
+<rect x="869.662" y="481" width="94.237" height="22" fill="#2d8b62"><title>局部综合: 0.731 s (12.7%)</title></rect>
+<rect x="963.899" y="481" width="31.101" height="22" fill="#a5a5a5"><title>其他/拼接/写出: 0.241 s (4.2%)</title></rect>
+<text x="1010" y="497">5.741 s</text>
+<text x="24" y="532">router_local</text>
+<rect x="255.000" y="516" width="5.933" height="22" fill="#536878"><title>旧归档读/复检: 0.085 s (0.8%)</title></rect>
+<rect x="260.933" y="516" width="14.769" height="22" fill="#2e86ab"><title>新版前端 + 差分: 0.211 s (2.0%)</title></rect>
+<rect x="275.702" y="516" width="696.246" height="22" fill="#d46a32"><title>选区/证据/patch: 9.946 s (94.1%)</title></rect>
+<rect x="971.948" y="516" width="5.066" height="22" fill="#7657a5"><title>patch 导出: 0.072 s (0.7%)</title></rect>
+<rect x="977.014" y="516" width="11.954" height="22" fill="#2d8b62"><title>局部综合: 0.171 s (1.6%)</title></rect>
+<rect x="988.968" y="516" width="6.032" height="22" fill="#a5a5a5"><title>其他/拼接/写出: 0.086 s (0.8%)</title></rect>
+<text x="1010" y="532">10.571 s</text>
+<text x="24" y="567">router_shared</text>
+<rect x="255.000" y="551" width="6.368" height="22" fill="#536878"><title>旧归档读/复检: 0.085 s (0.9%)</title></rect>
+<rect x="261.368" y="551" width="15.430" height="22" fill="#2e86ab"><title>新版前端 + 差分: 0.206 s (2.1%)</title></rect>
+<rect x="276.799" y="551" width="693.579" height="22" fill="#d46a32"><title>选区/证据/patch: 9.249 s (93.7%)</title></rect>
+<rect x="970.377" y="551" width="5.556" height="22" fill="#7657a5"><title>patch 导出: 0.074 s (0.8%)</title></rect>
+<rect x="975.934" y="551" width="12.246" height="22" fill="#2d8b62"><title>局部综合: 0.163 s (1.7%)</title></rect>
+<rect x="988.179" y="551" width="6.821" height="22" fill="#a5a5a5"><title>其他/拼接/写出: 0.091 s (0.9%)</title></rect>
+<text x="1010" y="567">9.868 s</text>
+</g>
+</svg>

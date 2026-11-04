@@ -1,6 +1,7 @@
 """Performance reductions must preserve edit content and evidence obligations."""
 from pathlib import Path
 import random
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -79,6 +80,22 @@ class ExpansionPreviewTests(unittest.TestCase):
 
 
 class AttributionTests(unittest.TestCase):
+    def test_cpu_samples_separate_generation_from_later_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            recorder=Recorder(Path(directory)/'profile')
+            with recorder.span('worker'):
+                with self.assertRaises(ValueError):
+                    with recorder.span('yosys.candidate-export'):
+                        raise ValueError('output was not generated')
+                self.assertFalse(recorder.generation_finished)
+                recorder.sample(None,sys._getframe())
+                with recorder.span('yosys.candidate-export'):
+                    pass
+                recorder.sample(None,sys._getframe())
+            report=recorder.finish('test')
+            counts={row['phase']:row['samples'] for row in report['python_cpu_samples']}
+            self.assertEqual(counts,{'generation_or_archive':1,'post_generation':1})
+
     def test_exclusive_times_partition_root_and_failure_is_recorded(self):
         with tempfile.TemporaryDirectory() as directory:
             recorder=Recorder(Path(directory)/'profile')

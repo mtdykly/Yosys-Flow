@@ -28,6 +28,7 @@ class Recorder:
         self.samples = Counter()
         self.restores = []
         self.next_id = 0
+        self.generation_finished = False
 
     def emit(self, row):
         self.stream.write(json.dumps(row, ensure_ascii=False)+'\n')
@@ -54,6 +55,8 @@ class Recorder:
                 self.stack[-1]['children_s'] += row['wall_s']
             self.events.append(row)
             self.emit(row | {'event':'end'})
+            if name == 'yosys.candidate-export' and 'error' not in row:
+                self.generation_finished = True
 
     def wrap(self, owner, attribute, name=None, metadata=None, result_metadata=None):
         original = getattr(owner, attribute)
@@ -83,15 +86,18 @@ class Recorder:
                  'yosys_flow.persistent_index','yosys_flow.abc_internal','yosys_flow.abc_joint',
                  'yosys_flow.abc_lineage','yosys_flow.abc_provenance','yosys_flow.hierarchy',
                  'yosys_flow.diagnostics','yosys_flow.region_functions','yosys_flow.extract',
-                 'yosys_flow.common','yosys_flow.runner']
+                 'yosys_flow.common','yosys_flow.runner','incremental.ir_graph',
+                 'yosys_flow.graph_index']
         m = {name:importlib.import_module(name) for name in names}
         for module, functions in {
             'incremental.automatic':['run','prepare','contract_for','patch_for','prove_unselected_outputs'],
             'incremental.rtlil':['parse','compare'],
+            'incremental.ir_graph':['differences'],
             'incremental.equivalence':['precheck'],
             'incremental.statements':['plan','merge','source_selectors','close_missing_outputs'],
             'incremental.replace':['_run','splice','_recheck_context_archive'],
-            'yosys_flow.native':['run_native','load_native'],
+            'yosys_flow.native':['run_native','load_native','query_native'],
+            'yosys_flow.graph_index':['walk','has_path','has_paths'],
             'yosys_flow.persistent_index':['artifact_inventory','write_index','load_index'],
             'yosys_flow.abc_internal':['read_evidence','analyze'],
             'yosys_flow.abc_joint':['joint_cuts','equivalence_cuts'],
@@ -100,7 +106,7 @@ class Recorder:
             'yosys_flow.diagnostics':['group_closure','audit_cut'],
             'yosys_flow.region_functions':['verify_outputs'],
             'yosys_flow.extract':['slice_module','extend_inputs'],
-            'yosys_flow.contracts':['outside_paths','output_associations'],
+            'yosys_flow.contracts':['outside_paths','output_associations','seal','fingerprint'],
         }.items():
             for function in functions:
                 if hasattr(m[module],function):
@@ -150,7 +156,8 @@ class Recorder:
             if '/Yosys-Flow/' in filename:
                 stack.append(filename.split('/Yosys-Flow/',1)[1]+':'+str(frame.f_lineno)+':'+frame.f_code.co_name)
             frame=frame.f_back
-        self.samples[tuple(stack)]+=1
+        phase = 'post_generation' if self.generation_finished else 'generation_or_archive'
+        self.samples[(phase, tuple(stack))]+=1
 
     def finish(self, status):
         signal.setitimer(signal.ITIMER_PROF,0)
@@ -162,7 +169,8 @@ class Recorder:
         report={'status':status,'elapsed_s':time.perf_counter()-self.start,
                 'exclusive_sum_s':sum(r['exclusive_s'] for r in self.events),
                 'scopes':aggregate,'spans':self.events,
-                'python_cpu_samples':[{'stack':list(k),'samples':n} for k,n in self.samples.most_common()],
+                'python_cpu_samples':[{'phase':phase,'stack':list(k),'samples':n}
+                                      for (phase,k),n in self.samples.most_common()],
                 'notes':['Inclusive nested wall times overlap; only exclusive times partition the root span.',
                          'Instrumentation overhead is included; final before/after performance must be measured without these wrappers.',
                          'CPU samples describe Python locations only, not total CPU fractions or child Yosys/ABC costs.']}

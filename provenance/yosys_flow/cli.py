@@ -30,6 +30,14 @@ def parser():
     development = execute.add_argument_group("开发检查点")
     development.add_argument("--flow", choices=("synth", "m1", "m1-opt"), default="synth",
                              help="默认 synth；m1 为 proc 检查点，m1-opt 为基础优化检查点；共用原生记录器，来源覆盖仍为 partial")
+    resume = commands.add_parser("resume", help="复用完整捕获，在新目录完成重放、证明和索引；不重跑插桩综合")
+    resume.add_argument("directory", help="原捕获目录，保持不变")
+    resume.add_argument("--out", required=True, help="新的续建档目录")
+    resume.add_argument("--yosys", help="原版验证工具；默认沿用原 manifest")
+    resume.add_argument("--native-yosys", help="仅核对捕获工具身份；须与原二进制哈希一致")
+    resume.add_argument("--index-backend", choices=("sqlite", "gzip"), help="默认沿用原索引后端")
+    resume.add_argument("--skip-stock-equivalence", action="store_true",
+                        help="显式跳过原版与插桩网表的 equiv_simple；保留结构一致性、ABC 证据和索引校验，并记录未执行项")
     validate = commands.add_parser("validate", help="重新检查哈希、事件引用、结构重放及网表")
     validate.add_argument("directory")
     verify_contract = commands.add_parser('contract-validate', help='对照同一次来源记录重新验证契约、全部输出和义务')
@@ -69,6 +77,9 @@ def main(argv=None):
     try:
         if args.command == "run":
             result = run(args)
+        elif args.command == "resume":
+            from .capture import resume
+            result = resume(args)
         elif args.command == "query":
             result = query(args)
         elif args.command == "extract":

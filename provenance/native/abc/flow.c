@@ -23,7 +23,8 @@ static Vec_Int_t *flow_clone_links;
 static char flow_path[4096];
 /* Encoding state only: never used as evidence that two ABC objects are copies.
  * Each decoded snapshot retains its original (sequence, object ID) identity.
- * Reset across commands/managers and checkpoint every 128 observations. */
+ * Reset across commands/managers. Periodic full checkpoints are diagnostic,
+ * not required to replay the lossless chain. Never infer identity from this. */
 typedef struct Flow_NodeState_ {
     const char *op;
     int fanins[3], count;
@@ -35,14 +36,53 @@ static void *flow_manager;
 static const char *flow_rep;
 static unsigned flow_snapshot, flow_epoch, flow_observations;
 static int flow_delta;
+static unsigned flow_checkpoint_interval;
+static int flow_force_full, flow_force_scan, flow_verify_dirty, flow_sparse_command;
+static int flow_aig_valid, flow_dirty_size;
+static unsigned char *flow_dirty_marks;
+static Vec_Int_t *flow_dirty;
+static unsigned long long flow_aig_full_visits, flow_aig_dirty_visits;
 static void flow_reset_nodes(void) {
     ABC_FREE(flow_nodes); flow_nodes_size=0; flow_manager=NULL;
+    ABC_FREE(flow_dirty_marks); flow_dirty_size=0;
+    if (flow_dirty) Vec_IntFree(flow_dirty);
+    flow_dirty=NULL; flow_aig_valid=0;
     flow_snapshot=0; flow_observations=0; flow_rep=NULL;
+}
+/* Observe mutations, never write ABC scratch fields or modify its graph.
+ * Only the currently encoded manager needs a dirty set: switching managers
+ * always takes a full checkpoint. Store IDs, not recycled object pointers. */
+void Flow_AigTouch(Aig_Man_t *p, Aig_Obj_t *o) {
+    int size;
+    if (!flow_file || flow_manager!=p || !flow_rep || strcmp(flow_rep,"aig")) return;
+    if (o->Id>=flow_dirty_size) {
+        size=flow_dirty_size?flow_dirty_size:64;
+        while (size<=o->Id) size*=2;
+        flow_dirty_marks=ABC_REALLOC(unsigned char,flow_dirty_marks,size);
+        memset(flow_dirty_marks+flow_dirty_size,0,size-flow_dirty_size); flow_dirty_size=size;
+    }
+    if (flow_dirty_marks[o->Id]) return;
+    flow_dirty_marks[o->Id]=1;
+    if (!flow_dirty) flow_dirty=Vec_IntAlloc(16);
+    Vec_IntPush(flow_dirty,o->Id);
+}
+void Flow_AigTouchObject(Aig_Obj_t *o) {
+    Aig_Man_t *p;
+    if (!flow_file || !flow_manager || !flow_rep || strcmp(flow_rep,"aig")) return;
+    p=(Aig_Man_t *)flow_manager;
+    if (o->Id>=0 && o->Id<Aig_ManObjNumMax(p) && Aig_ManObj(p,o->Id)==o) Flow_AigTouch(p,o);
+}
+void Flow_AigInvalidate(Aig_Man_t *p) {
+    if (flow_manager==p && flow_rep && !strcmp(flow_rep,"aig")) flow_aig_valid=0;
+}
+void Flow_AigStop(Aig_Man_t *p) {
+    if (flow_manager==p && flow_rep && !strcmp(flow_rep,"aig")) flow_reset_nodes();
 }
 static void flow_encoding(void *manager, const char *rep, const char *kind, unsigned seq) {
     int same=flow_manager==manager && flow_rep && !strcmp(flow_rep,rep);
-    const char *full=getenv("YOSYS_FLOW_ABC_FULL_SNAPSHOTS");
-    flow_delta=same && !strcmp(kind,"history_network") && flow_observations<128 && !(full && !strcmp(full,"1"));
+    if (!strcmp(rep,"aig") && !flow_aig_valid) same=0;
+    flow_delta=same && !strcmp(kind,"history_network") && !flow_force_full &&
+        (!flow_checkpoint_interval || flow_observations<flow_checkpoint_interval);
     if (!flow_delta) { flow_reset_nodes(); ++flow_epoch; }
     fprintf(flow_file,",\"encoding\":\"%s\",\"network_epoch\":%u",flow_delta?"delta":"checkpoint",flow_epoch);
     if (flow_delta) fprintf(flow_file,",\"base_snapshot\":%u",flow_snapshot);
@@ -93,7 +133,10 @@ static unsigned flow_start(const char *kind) {
 }
 static void flow_end(void) {
     fputs("}\n", flow_file);
-    if (fflush(flow_file) || ferror(flow_file)) { fprintf(stderr, "ABC provenance write failed\n"); exit(2); }
+    if (ferror(flow_file)) { fprintf(stderr, "ABC provenance write failed\n"); exit(2); }
+}
+static void flow_flush(void) {
+    if (fflush(flow_file) || ferror(flow_file)) { fprintf(stderr, "ABC provenance flush failed\n"); exit(2); }
 }
 static void flow_node(int id, const char *op, int *first) {
     fprintf(flow_file, "%s{\"id\":%d,\"op\":", *first ? "" : ",", id); *first = 0; flow_string(op);
@@ -165,6 +208,18 @@ void Flow_CommandBefore(Abc_Frame_t *p, int argc, char **argv) {
         if (snprintf(flow_path,sizeof(flow_path),"%s.flow.jsonl",argv[1]) >= (int)sizeof(flow_path)) exit(2);
         flow_file=fopen(flow_path,"wx");
         if (!flow_file) { perror("ABC provenance open"); exit(2); }
+        setvbuf(flow_file,NULL,_IOFBF,1<<20);
+        flow_force_full=getenv("YOSYS_FLOW_ABC_FULL_SNAPSHOTS") && !strcmp(getenv("YOSYS_FLOW_ABC_FULL_SNAPSHOTS"),"1");
+        flow_force_scan=getenv("YOSYS_FLOW_ABC_SCAN_SNAPSHOTS") && !strcmp(getenv("YOSYS_FLOW_ABC_SCAN_SNAPSHOTS"),"1");
+        flow_verify_dirty=getenv("YOSYS_FLOW_ABC_VERIFY_DIRTY") && !strcmp(getenv("YOSYS_FLOW_ABC_VERIFY_DIRTY"),"1");
+        flow_checkpoint_interval=0;
+        if (getenv("YOSYS_FLOW_ABC_CHECKPOINT_INTERVAL")) {
+            char *end; const char *s=getenv("YOSYS_FLOW_ABC_CHECKPOINT_INTERVAL");
+            unsigned long n=strtoul(s,&end,10);
+            if (!*s || *end || *s=='-' || n>1000000000UL) { fprintf(stderr,"Invalid ABC checkpoint interval\n"); exit(2); }
+            flow_checkpoint_interval=(unsigned)n;
+        }
+        flow_aig_full_visits=flow_aig_dirty_visits=0;
         flow_seq=flow_command=flow_epoch=0; flow_reset_nodes();
         flow_entry_ntk=flow_strash_ntk=NULL; flow_entry_gia=NULL;
         flow_entry_snapshot=flow_strash_snapshot=flow_gia_snapshot=0;
@@ -172,13 +227,14 @@ void Flow_CommandBefore(Abc_Frame_t *p, int argc, char **argv) {
     }
     if (!flow_file || !strcmp(argv[0],"echo")) return;
     flow_reset_nodes();
+    flow_sparse_command=!strcmp(argv[0],"dc2") || !strcmp(argv[0],"&dch");
     flow_cleanup_from=NULL; flow_cleanup_snapshot=0;
     flow_clone_count=0; flow_is_put=!strcmp(argv[0],"&put");
     flow_is_strash=!strcmp(argv[0],"strash"); flow_is_get=!strcmp(argv[0],"&get");
     flow_relations=flow_copies=flow_rewrites=flow_entry_copies=0;
     ++flow_command; flow_start("command_begin"); fputs(",\"argv\":[",flow_file);
     { int i; for(i=0;i<argc;i++){ if(i) fputc(',',flow_file); flow_string(argv[i]); } }
-    fputc(']',flow_file); flow_end();
+    fputc(']',flow_file); flow_end(); flow_flush();
 }
 void Flow_CommandAfter(Abc_Frame_t *p, int argc, char **argv, int status) {
     if (!flow_file || !argc || !strcmp(argv[0],"echo")) return;
@@ -193,34 +249,80 @@ void Flow_CommandAfter(Abc_Frame_t *p, int argc, char **argv, int status) {
         flow_entry_ntk=flow_strash_ntk=NULL; flow_entry_gia=NULL;
     }
     flow_start("command_end"); fprintf(flow_file,",\"status\":%d,\"equivalences\":%u,\"history_copies\":%u,\"replacements\":%u,\"entry_copies\":%u,\"mapped_clones\":%u",status,flow_relations,flow_copies,flow_rewrites,flow_entry_copies,flow_clone_count); flow_end();
+    flow_flush();
     if (!strcmp(argv[0],"write_blif") || status) {
-        flow_start("end"); fprintf(flow_file,",\"status\":%d",status); flow_end(); fclose(flow_file); flow_file=NULL;
+        flow_start("end"); fprintf(flow_file,",\"status\":%d,\"capture_stats\":{\"aig_full_node_visits\":%llu,\"aig_dirty_node_visits\":%llu,\"checkpoint_interval\":%u,\"scan_snapshots\":%d}",status,flow_aig_full_visits,flow_aig_dirty_visits,flow_checkpoint_interval,flow_force_scan); flow_end(); flow_flush();
+        if (fclose(flow_file)) { fprintf(stderr,"ABC provenance close failed\n"); exit(2); } flow_file=NULL;
     }
 }
 void Flow_WriteBlif(Abc_Ntk_t *p, const char *file) {
     if (flow_file) { flow_ntk(p,"export_network"); }
 }
+static int flow_aig_state(Aig_Obj_t *o, const char **op, int *a, int *b) {
+    *op=Aig_ObjIsConst1(o)?"one":Aig_ObjIsCi(o)?"pi":Aig_ObjIsCo(o)||Aig_ObjIsBuf(o)?"buf":Aig_ObjIsExor(o)?"xor":"and";
+    *a=o->pFanin0?2*Aig_ObjFanin0(o)->Id+Aig_ObjFaninC0(o):0;
+    *b=o->pFanin1?2*Aig_ObjFanin1(o)->Id+Aig_ObjFaninC1(o):0;
+    return (o->pFanin0!=NULL)+(o->pFanin1!=NULL);
+}
+static void flow_aig_node(Aig_Obj_t *o, int *first) {
+    const char *op; int a,b,count=flow_aig_state(o,&op,&a,&b);
+    if (!flow_changed(o->Id,op,count,a,b,0)) return;
+    flow_node(o->Id,op,first); fputs(",\"fanins\":[",flow_file);
+    if (count) fprintf(flow_file,"%d",a);
+    if (count>1) fprintf(flow_file,",%d",b);
+    fputs("]}",flow_file);
+}
+static void flow_aig_audit(Aig_Man_t *p) {
+    int i;
+    for (i=0;i<Aig_ManObjNumMax(p) || i<flow_nodes_size;i++) {
+        Aig_Obj_t *o=i<Aig_ManObjNumMax(p)?Aig_ManObj(p,i):NULL;
+        Flow_NodeState *n=i<flow_nodes_size?flow_nodes+i:NULL;
+        int ok=(!o)==(!n || !n->seen);
+        if (ok && o) {
+            const char *op; int a,b,count=flow_aig_state(o,&op,&a,&b);
+            ok=n && n->seen && !strcmp(n->op,op) && n->count==count && n->fanins[0]==a && n->fanins[1]==b;
+        }
+        if (!ok) { fprintf(stderr,"ABC dirty capture missed object %d\n",i); exit(2); }
+    }
+}
 static unsigned flow_aig(Aig_Man_t *p, const char *kind) {
-    Aig_Obj_t *o; int i, first=1; unsigned seq;
+    Aig_Obj_t *o; int i,id,first=1,sparse; unsigned seq;
     seq=flow_start(kind); flow_encoding(p,"aig",kind,seq);
+    sparse=flow_delta && flow_sparse_command && !flow_force_scan;
     fputs(",\"representation\":\"aig\",\"pis\":[",flow_file);
     Aig_ManForEachCi(p,o,i) { if(i) fputc(',',flow_file); fprintf(flow_file,"%d",o->Id); }
     fputs("],\"pos\":[",flow_file);
     Aig_ManForEachCo(p,o,i) { if(i) fputc(',',flow_file); fprintf(flow_file,"%d",o->Id); }
     fputs("],\"nodes\":[",flow_file);
-    Aig_ManForEachObj(p,o,i) {
-        const char *op = Aig_ObjIsConst1(o)?"one":Aig_ObjIsCi(o)?"pi":Aig_ObjIsCo(o)||Aig_ObjIsBuf(o)?"buf":Aig_ObjIsExor(o)?"xor":"and";
-        int count=(o->pFanin0!=NULL)+(o->pFanin1!=NULL);
-        int a=o->pFanin0?2*Aig_ObjFanin0(o)->Id+Aig_ObjFaninC0(o):0;
-        int b=o->pFanin1?2*Aig_ObjFanin1(o)->Id+Aig_ObjFaninC1(o):0;
-        if (!flow_changed(o->Id,op,count,a,b,0)) continue;
-        flow_node(o->Id,op,&first); fputs(",\"fanins\":[",flow_file);
-        if (o->pFanin0) fprintf(flow_file,"%d",2*Aig_ObjFanin0(o)->Id+Aig_ObjFaninC0(o));
-        if (o->pFanin1) fprintf(flow_file,",%d",2*Aig_ObjFanin1(o)->Id+Aig_ObjFaninC1(o));
-        fputs("]}",flow_file);
+    if (sparse) {
+        if (flow_dirty) {
+            Vec_IntSort(flow_dirty,0);
+            Vec_IntForEachEntry(flow_dirty,id,i) {
+                ++flow_aig_dirty_visits;
+                o=Aig_ManObj(p,id);
+                if (o) flow_aig_node(o,&first);
+            }
+        }
+        fputs("],\"deleted_nodes\":[",flow_file); first=1;
+        if (flow_dirty) Vec_IntForEachEntry(flow_dirty,id,i) {
+            if (!Aig_ManObj(p,id) && id<flow_nodes_size && flow_nodes[id].seen) {
+                fprintf(flow_file,"%s%d",first?"":",",id); first=0; flow_nodes[id].seen=0;
+            }
+        }
+        fputc(']',flow_file);
+        if (flow_verify_dirty) flow_aig_audit(p);
+    } else {
+        Aig_ManForEachObj(p,o,i) { ++flow_aig_full_visits; flow_aig_node(o,&first); }
+        fputc(']',flow_file); flow_deleted();
     }
-    fputc(']',flow_file); flow_deleted(); flow_end(); return seq;
+    if (flow_dirty) {
+        Vec_IntForEachEntry(flow_dirty,id,i) flow_dirty_marks[id]=0;
+        Vec_IntClear(flow_dirty);
+    }
+    flow_aig_valid=1;
+    flow_end(); return seq;
 }
+
 void Flow_AigReplace(Aig_Man_t *p, Aig_Obj_t *old, Aig_Obj_t *next) {
     unsigned snap;
     if (!flow_file) return;
@@ -303,8 +405,14 @@ void Flow_StrashCopy(Abc_Ntk_t *from, Abc_Ntk_t *to) {
     }
     fputc(']',flow_file); flow_end();
 }
+typedef struct Flow_LiveAig_ { ABC_PTRUINT_T address; int id; } Flow_LiveAig;
+static int flow_live_compare(const void *left, const void *right) {
+    ABC_PTRUINT_T a=((const Flow_LiveAig *)left)->address, b=((const Flow_LiveAig *)right)->address;
+    return (a>b)-(a<b);
+}
 void Flow_GetCopy(Abc_Ntk_t *from, Aig_Man_t *aig, Gia_Man_t *gia) {
-    Abc_Obj_t *o; Aig_Obj_t *a; int i,j,first=1; unsigned ntk_snap,aig_snap;
+    Abc_Obj_t *o; Aig_Obj_t *a; int i,live_count=0,first=1; unsigned ntk_snap,aig_snap;
+    Flow_LiveAig *live;
     if (!flow_file || !flow_is_get || from!=flow_strash_ntk || flow_entry_gia) return;
     flow_ntk(from,"history_network"); ntk_snap=flow_seq;
     /* Between this specific strash hook and &get, only cleanup can delete
@@ -316,13 +424,22 @@ void Flow_GetCopy(Abc_Ntk_t *from, Aig_Man_t *aig, Gia_Man_t *gia) {
     fputc(']',flow_file); flow_end();
     aig_snap=flow_aig(aig,"history_network");
     flow_copy_begin("entry_ntk_to_aig",ntk_snap,aig_snap); first=1;
+    live=ABC_ALLOC(Flow_LiveAig,Aig_ManObjNumMax(aig));
+    Aig_ManForEachObj(aig,a,i) {
+        live[live_count].address=(ABC_PTRUINT_T)a; live[live_count++].id=a->Id;
+    }
+    qsort(live,live_count,sizeof(*live),flow_live_compare);
     Abc_NtkForEachObj(from,o,i) if(!Abc_ObjIsCo(o) && o->pCopy) {
         /* Do not dereference a possibly retired pCopy. Only live AIG objects
-         * from the returned manager can establish a conversion. */
-        Aig_ManForEachObj(aig,a,j) if(a==Aig_Regular((Aig_Obj_t *)o->pCopy)) {
-            fprintf(flow_file,"%s[%d,%d]",first?"":",",o->Id,2*a->Id+Aig_IsComplement((Aig_Obj_t *)o->pCopy));first=0;break;
+         * from the returned manager can establish a conversion. An address
+         * index replaces the old all-live-objects scan for every source. */
+        Flow_LiveAig key,*found; key.address=(ABC_PTRUINT_T)Aig_Regular((Aig_Obj_t *)o->pCopy);
+        found=(Flow_LiveAig *)bsearch(&key,live,live_count,sizeof(*live),flow_live_compare);
+        if(found) {
+            fprintf(flow_file,"%s[%d,%d]",first?"":",",o->Id,2*found->id+Aig_IsComplement((Aig_Obj_t *)o->pCopy));first=0;
         }
     }
+    ABC_FREE(live);
     fputc(']',flow_file); flow_end();
     flow_gia_snapshot=flow_gia(gia,"history_network"); flow_entry_gia=gia;
     flow_copy_begin("entry_aig_to_gia",aig_snap,flow_gia_snapshot);first=1;

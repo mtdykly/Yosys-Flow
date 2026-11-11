@@ -59,7 +59,44 @@ struct SharedOrigins {
     }
 };
 static SharedOrigins active;
-struct CellInfo { int id, version = 0; SharedOrigins origins; std::string precision, state; };
+struct CellInfo {
+    int id, version = 0; SharedOrigins origins; std::string precision, state;
+    RTLIL::IdString cached_module, cached_name, cached_type;
+    dict<RTLIL::IdString, RTLIL::SigSpec> cached_ports;
+    dict<RTLIL::IdString, RTLIL::Const> cached_params;
+    std::vector<RTLIL::IdString> cached_wire_names;
+};
+static bool audit_scans = false;
+static long long observe_calls = 0, state_builds = 0, checkpoints = 0, skipped_checkpoints = 0, map_builds = 0;
+static std::map<RTLIL::Module*, std::unique_ptr<SigMap>> connection_maps;
+void connections_reset(RTLIL::Module *module) { connection_maps.erase(module); }
+static SigMap &connection_map(RTLIL::Module *module) {
+    auto &map = connection_maps[module];
+    if (!map || audit_scans) { map = std::make_unique<SigMap>(module); ++map_builds; }
+    return *map;
+}
+// Compare actual RTLIL values, including mutable wire names, before allocating
+// JSON. Instance port directions can change during hierarchy, so never cache
+// those. Unknown pass mutations are still caught by leaf-pass/final scans.
+static bool unchanged(RTLIL::Cell *cell, const CellInfo &info) {
+    if (audit_scans || info.state.empty() || (root_design && root_design->module(cell->type)) ||
+        cell->module->name != info.cached_module || cell->name != info.cached_name || cell->type != info.cached_type ||
+        cell->connections() != info.cached_ports || cell->parameters != info.cached_params) return false;
+    for (const auto &param : cell->parameters)
+        if (param.second.flags != info.cached_params.at(param.first).flags) return false;
+    size_t i = 0;
+    for (const auto &port : cell->connections()) for (auto bit : port.second) if (bit.wire) {
+        if (i >= info.cached_wire_names.size() || bit.wire->name != info.cached_wire_names[i++]) return false;
+    }
+    return i == info.cached_wire_names.size();
+}
+static void remember(RTLIL::Cell *cell, CellInfo &info) {
+    info.cached_module = cell->module->name; info.cached_name = cell->name; info.cached_type = cell->type;
+    info.cached_ports = cell->connections(); info.cached_params = cell->parameters;
+    info.cached_wire_names.clear();
+    for (const auto &port : cell->connections()) for (auto bit : port.second)
+        if (bit.wire) info.cached_wire_names.push_back(bit.wire->name);
+}
 static dict<RTLIL::Cell*, CellInfo> cells;
 struct ConnectionInfo {
     RTLIL::Module *module;
@@ -194,7 +231,11 @@ static void observe(RTLIL::Cell *cell, const std::string &capture) {
     if (!cells.count(cell)) return;
     if (cell->is_builtin_ff()) log_error("Combinational-only flow rejects state cell %s (%s).\n", log_id(cell), log_id(cell->type));
     auto &info = cells.at(cell);
+    ++observe_calls;
+    if (unchanged(cell, info)) return;
+    ++state_builds;
     auto data = state(cell);
+    remember(cell, info);
     auto serial = J(data).dump();
     if (serial == info.state) return;
     auto old = ref(info);
@@ -228,7 +269,7 @@ CellScope::CellScope(const std::vector<RTLIL::Cell*> &cs, const std::string &op)
         active_inputs.push_back(ref(cells.at(c)));
         if (op == "techmap" && cs.size() == 1) {
             mapping_input = ref(cells.at(c));
-            SigMap map(c->module);
+            auto &map = connection_map(c->module);
             for (auto &p : c->connections()) if (c->output(p.first)) {
                 original_outputs[p.first.str()] = p.second;
                 for (int i = 0; i < p.second.size(); ++i) output_positions[map(p.second[i])].push_back({p.first.str(), i});
@@ -241,7 +282,7 @@ CellScope::CellScope(const std::vector<RTLIL::Cell*> &cs, const std::string &op)
 CellScope::~CellScope() {
     if (!mapping_input.empty()) for (auto [c, id] : generated) if (cells.count(c) && cells.at(c).id == id) {
         observe(c, "techmap_output");
-        SigMap map(c->module);
+        auto &map = connection_map(c->module);
         J::array links;
         for (auto &p : c->connections()) if (c->output(p.first)) for (int i = 0; i < p.second.size(); ++i) {
             auto key = map(p.second[i]);
@@ -383,6 +424,8 @@ void assignment(RTLIL::Module *module, const RTLIL::SigSpec &lhs, const RTLIL::S
           {"cloned_from", cloned_from}, {"origins", ids(origins)}, {"precision", p}, {"inputs", input_ids(active_inputs)}, {"operation", operation}, {"abc_invocation", active_region}, {"abc_node", abc_node}, {"abc_boundary", abc_boundary}});
 }
 void connected(RTLIL::Module *module, const RTLIL::SigSig &conn) {
+    auto cached = connection_maps.find(module);
+    if (cached != connection_maps.end()) cached->second->add(conn.first, conn.second);
     if (!tracks(module) || operation.empty() || active_inputs.empty()) return;
     RTLIL::SigSpec lhs, rhs;
     for (int i = 0; i < conn.first.size(); ++i) if (active_outputs.count(conn.first[i])) {
@@ -406,6 +449,7 @@ void remap_connections(RTLIL::Module *module, const SigMap &map) {
     }
 }
 void wires_removed(RTLIL::Module *module, const pool<RTLIL::Wire*> &wires) {
+    connections_reset(module);
     if (!tracks(module) || wires.empty()) return;
     for (auto &info : connections) if (info.module == module) {
         RTLIL::SigSpec lhs, rhs;
@@ -463,6 +507,7 @@ void parameter_module_cloned(RTLIL::Module *original, RTLIL::Module *copy) {
     }
 }
 void module_removed(RTLIL::Module *module) {
+    connections_reset(module);
     if (!tracks(module)) return;
     for (auto cell : module->cells()) removed(cell);
     for (auto &it : module->processes) process_removed(it.second);
@@ -523,6 +568,7 @@ Origins process_sources(RTLIL::Process *proc, const RTLIL::SigSpec &sig) {
 #include "hierarchy_provenance.inc"
 
 static void checkpoint(RTLIL::Design *design, bool final) {
+    ++checkpoints;
     J::array snapshot;
     for (auto module : design->modules()) for (auto cell : module->cells()) {
         if (!cells.count(cell)) { gap("cell_missing_from_lifecycle"); continue; }
@@ -533,11 +579,17 @@ static void checkpoint(RTLIL::Design *design, bool final) {
     J::object connection_versions;
     for (auto &info : connections) connection_versions[info.ref] = info.revision;
     record["connections"] = connection_versions;
-    if (final) record["input_files"] = J::array(yosys_input_files.begin(), yosys_input_files.end());
+    if (final) {
+        record["input_files"] = J::array(yosys_input_files.begin(), yosys_input_files.end());
+        record["recorder_stats"] = J::object{{"observe_calls", double(observe_calls)}, {"state_builds", double(state_builds)},
+            {"checkpoints", double(checkpoints)}, {"skipped_checkpoints", double(skipped_checkpoints)},
+            {"signal_map_builds", double(map_builds)}, {"audit_scans", audit_scans}};
+    }
     emit(record);
 }
 void step_begin(const std::vector<std::string> &args, RTLIL::Design *design) {
     if (!tracks(design) || args[0] == "flow_start" || args[0] == "flow_stop") return;
+    connection_maps.clear(); // No cache crosses an arbitrary pass boundary.
     int parent = steps.empty() ? 0 : steps.back();
     steps.push_back(++step_id); passes.push_back(args[0]);
     emit({{"record_type", "step_begin"}, {"parent_step_id", parent}, {"pass", args[0]}, {"args", args}});
@@ -551,8 +603,14 @@ void step_begin(const std::vector<std::string> &args, RTLIL::Design *design) {
 void step_end(RTLIL::Design *design) {
     if (!tracks(design) || steps.empty()) return;
     process_flush();
-    checkpoint(design, false);
+    // Only known read-only passes and wrappers whose mutations are performed
+    // by nested passes skip a redundant snapshot. Unknown passes still scan.
+    static const std::set<std::string> redundant = {"synth", "opt", "proc", "check", "stat", "write_json", "write_rtlil"};
+    if (audit_scans || !redundant.count(passes.back())) checkpoint(design, false);
+    else ++skipped_checkpoints;
+    connection_maps.clear();
     emit({{"record_type", "step_end"}});
+    output.flush(); // Make completed batches visible to the streaming replayer.
     steps.pop_back(); passes.pop_back();
 }
 struct Start : Pass {
@@ -561,6 +619,9 @@ struct Start : Pass {
         if (args.size() != 3 || enabled() || GetSize(design->modules()) != 0)
             log_cmd_error("flow_start FILE RUN_ID requires an empty design and inactive recorder.\n");
         sequence = source_id = object_id = step_id = 0;
+        observe_calls = state_builds = checkpoints = skipped_checkpoints = map_builds = 0;
+        audit_scans = std::getenv("YOSYS_FLOW_NATIVE_AUDIT") != nullptr;
+        connection_maps.clear();
         array_id = 0; origin_arrays.clear(); shared_origin_arrays.clear(); input_arrays.clear(); origin_addresses.clear(); origin_pool.clear();
         full_arrays = std::getenv("YOSYS_FLOW_NATIVE_FULL_ARRAYS") != nullptr;
         cells.clear(); actions.clear(); temporaries.clear(); gaps.clear(); active.clear(); steps.clear(); passes.clear();

@@ -24,7 +24,7 @@ def instrument(source):
             raise ValueError(f'ABC hook anchor changed: {name}: {old[:100]}')
         p.write_text(text.replace(old, new))
     for name in ('src/base/cmd/cmdUtils.c', 'src/base/io/ioWriteBlif.c',
-                 'src/aig/aig/aigObj.c', 'src/aig/gia/giaNf.c',
+                 'src/aig/aig/aigObj.c', 'src/aig/aig/aigMan.c', 'src/aig/gia/giaNf.c',
                  'src/base/abc/abcNetlist.c', 'src/proof/cec/cecSatG2.c',
                  'src/proof/dch/dchSweep.c', 'src/proof/dch/dchChoice.c',
                  'src/base/abci/abcStrash.c', 'src/base/abci/abc.c', 'src/base/abc/abcUtil.c'):
@@ -36,6 +36,29 @@ def instrument(source):
          '    Io_NtkWrite( pFile, pNtk, fWriteLatches, fBb2Wb, fSeq );\n    Flow_WriteBlif(pNtk, FileName);')
     edit('src/aig/aig/aigObj.c', '    // recursively delete the old node - but leave the object there',
          '    Flow_AigReplace(p, pObjOld, pObjNew);\n    // recursively delete the old node - but leave the object there')
+    # Central AIG structural writes used by dc2/dch. No ABC scratch fields are
+    # borrowed. Mutations outside these two commands keep full observations.
+    edit('src/aig/aig/aig.h', '// internal memory manager',
+         'void Flow_AigTouch(Aig_Man_t *, Aig_Obj_t *);\n'
+         'void Flow_AigTouchObject(Aig_Obj_t *);\n\n// internal memory manager')
+    # Flip helpers occur before the memory-manager declarations.
+    edit('src/aig/aig/aig.h', 'static inline void         Aig_ObjChild0Flip',
+         'void Flow_AigTouchObject(Aig_Obj_t *);\nstatic inline void         Aig_ObjChild0Flip')
+    for old,new in (
+        ('    Vec_PtrPush( p->vObjs, pTemp );', '    Vec_PtrPush( p->vObjs, pTemp );\n    Flow_AigTouch(p,pTemp);'),
+        ('    pEntry->Type = AIG_OBJ_NONE;', '    Flow_AigTouch(p,pEntry);\n    pEntry->Type = AIG_OBJ_NONE;'),
+        ('pObj->pFanin0 = Aig_Not(pObj->pFanin0);', 'pObj->pFanin0 = Aig_Not(pObj->pFanin0); Flow_AigTouchObject(pObj);'),
+        ('pObj->pFanin1 = Aig_Not(pObj->pFanin1);', 'pObj->pFanin1 = Aig_Not(pObj->pFanin1); Flow_AigTouchObject(pObj);')):
+        edit('src/aig/aig/aig.h',old,new)
+    for old in ('    pObj->pFanin1 = pFan1;', '    pObj->pFanin1 = NULL;',
+                '    pObj->pFanin0 = pFaninNew;'):
+        edit('src/aig/aig/aigObj.c',old,old+'\n    Flow_AigTouch(p,pObj);')
+    edit('src/aig/aig/aigMan.c', 'void Aig_ManStop( Aig_Man_t * p )\n{',
+         'void Aig_ManStop( Aig_Man_t * p )\n{\n    Flow_AigStop(p);')
+    # Interface compaction can remove terminals without recycling them.
+    for anchor in ('    int i, k = 0, nPisOld = Aig_ManCiNum(p);',
+                   '    int i, k = 0, nPosOld = Aig_ManCoNum(p);'):
+        edit('src/aig/aig/aigMan.c',anchor,anchor+'\n    Flow_AigInvalidate(p);')
     edit('src/aig/gia/giaNf.c', '    p->pGia->vCellMapping = vMapping;',
          '    p->pGia->vCellMapping = vMapping;\n    Flow_NfMapping(p->pGia);')
     edit('src/base/abci/abcDar.c', '    Vec_IntFree( vCopyLits );',
@@ -114,7 +137,7 @@ def build(jobs=4):
                 if p.is_dir(): dest.mkdir(parents=True, exist_ok=True)
                 elif not dest.is_file() or sha(p) != sha(dest): shutil.copy2(p,dest)
         files = ['src/base/main/flow.c','src/base/main/flow.h','src/base/main/module.make',
-                 'src/base/cmd/cmdUtils.c','src/base/io/ioWriteBlif.c','src/aig/aig/aigObj.c','src/aig/gia/giaNf.c','src/base/abci/abcDar.c','src/base/abc/abcNetlist.c',
+                 'src/base/cmd/cmdUtils.c','src/base/io/ioWriteBlif.c','src/aig/aig/aigObj.c','src/aig/aig/aigMan.c','src/aig/aig/aig.h','src/aig/gia/giaNf.c','src/base/abci/abcDar.c','src/base/abc/abcNetlist.c',
                  'src/proof/cec/cecSatG2.c', 'src/proof/dch/dchSweep.c', 'src/proof/dch/dchChoice.c',
                  'src/base/abci/abcStrash.c', 'src/base/abci/abc.c', 'src/base/abc/abcUtil.c']
         previous = {'fingerprint':fingerprint,'commit':lock['commit'],'files':{n:sha(source/n) for n in files}}

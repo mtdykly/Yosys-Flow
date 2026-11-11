@@ -9,6 +9,8 @@ python3 -m incremental auto \
 
 输入是旧综合运行目录和完整新版 RTL；多个源文件重复 `--new-source`。不需要提供修改行号、实例、局部代码、契约或绑定。`--out` 必须是新目录。工具链路径可通过 `--yosys`、`--native-yosys` 指定。
 
+`auto` 和显式 `run` 可用 `--yosys-timeout SECONDS` 调整前端、局部综合和后验验证中单次 Yosys 调用的墙钟上限，默认仍为 120 秒。大电路可设为 3600；它不是整个增量作业的总预算，也不改变独立来源证明或功能不变预检查的预算。需要整作业上限时可在外层使用 `timeout`。
+
 旧记录必须包含校验通过的 `frontend.il`、最终网表、来源及 ABC 证据。新建归档保存 `verified-index.sqlite3`，在线按需读取已验证的重放/来源状态；旧归档缺少索引时仍可重放，不要求重新综合，旧 gzip 索引保留兼容读取。源码文件可以已被修改或删除。顶层名、顶层参数、宏、include 目录和是否 flatten 继承旧 manifest；新版需能在这些编译条件下展开，新增 include 文件仍需可访问。本轮不提供编译配置迁移，要求顶层端口名、方向、位宽及位序保持不变。
 
 ## 首次建档与在线替换计划
@@ -20,6 +22,8 @@ python3 -m incremental auto \
 新版到来后才能知道本次需要哪些区域、额外输入和消费者绑定，因此不预先枚举所有可能契约。自动流程使用 v2 `replacement_plan`，保留选区、边界、旧输出验证及共享义务，证据通过旧对象/事件引用取得。它避免递归嵌入父契约和反复复制相同来源，但不省略实际选区与绑定分析。
 
 `replacement-plan.json` 是本次计划的唯一主文件；替换报告的 `selection_document` 记录其路径和哈希，不再另写同内容的 `contract.json`。`bindings.json` 继续以 `contract_id` 字段绑定计划内容，兼容显式接口。需要完整来源说明时，仍可独立使用 `yosys_flow contract` / `contract-validate` / `contract-merge`，默认生成完整 v1 契约；这些工具不在自动路径中重复执行。
+
+较大 v2 计划使用 `source_set_encoding=shared_source_sets_v1`：`source_sets` 保存唯一来源集合，区域门的 `origin_set_id`、输出的 `recorded_source_set_id` 引用它们。集合内容和引用都参与计划哈希及重建验证；这是保存格式优化，不改变来源精度。较小计划和历史 v2 内联计划仍保留原字段。
 
 ## 功能不变时直接复用
 
@@ -70,6 +74,10 @@ python3 -m incremental auto --base-run runs/old-run --new-source new.v \
 
 模块差分先用逐行相等比较去掉共同前后缀，仅在不相同的中段运行差分匹配；没有忽略高频行或改变修改判定。区域输出的来源证据用位集合同时执行原先的逆序边扫描，保留事件次序和每个输出的证据列表，避免为每个输出再次扫描同一组边。具体耗时归因见 [cost-attribution.md](cost-attribution.md)。
 
+深组合依赖使用显式栈：前端结构指纹及过程临时量、局部 patch 提取、模块输入依赖、旧源码证明切片和区域输出函数均不再按逻辑深度递归调用 Python。保留已完成节点缓存和活动路径环检测；异常退出会清理指纹计算中的活动标记。指纹格式、具名输入切点、赋值与分支优先级、全部输出验证规则不变，也不提高解释器递归上限。深链专项及 `hyp` 已保存文件的复查见 [hyp-comparison.md](hyp-comparison.md#深依赖显式栈修复与复查2026-11-11)。
+
+选区进度另标记 `source_anchor_fingerprints`、`local_dependency_slice`、`source_cut_verification`，分别表示新旧完整依赖指纹、局部粗网表提取、旧源码边界功能验证。若出现未处理异常，`report.json` 的 `failure.traceback` 指向 `failure-traceback.txt`，保留完整 Python 调用栈；该文件不代表已生成可交付网表。
+
 ## 粒度与限制
 
 默认粒度是**变化赋值或表达式所在的目标位及其必要语义、旧来源门组和边界闭包**。它可以明显小于单个模块；不保证一条语句或一个表达式恰好对应一个门，也不保证最小切片。改变同一共享定义会处理所有受影响实例。父模块接线、实例增删等变化仍使用模块策略。
@@ -99,6 +107,7 @@ python3 -m incremental auto --base-run runs/old-run --new-source new.v \
 | `replacement/` | 局部综合、拼接、独立边界检查、完整新版参考及全部验证脚本/日志 |
 | `incremental.v` / `incremental.json` | 全部检查通过后才交付的网表 |
 | `report.json` | 状态、扩区尝试、门数、哈希、逐阶段耗时及失败原因 |
+| `failure-traceback.txt` | 非预期异常的完整调用栈，仅失败时生成 |
 
 `status=unchanged` 或 `reused_equivalent` 时不生成 patch，报告 `reuse`、证明依据和逐字节复用检查。实际替换成功仍为 `passed`；`blocked` 或 `failed` 非零退出。`changes` 保留原始差异，`remaining_changes` 是预检查后待处理差异。替换路径的 `netlist_generation_seconds` 截止于完整新版 JSON/IL/Verilog 写出，包含旧索引加载或记录重放、新版前端、预检查、差分、选区、计划、绑定、局部综合与拼接；生成后的检查单列为 `post_generation_validation_seconds`。历史 `incremental_candidate_ready_seconds` 仍含部分检查，仅用于诊断，详见 [计时定义](comparison.md#时间到整份新版网表生成)。直接复用路径用 `timings.total_seconds` 观察完整在线成本，不能把 SAT 求解耗时当作总耗时。
 

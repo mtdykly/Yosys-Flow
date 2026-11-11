@@ -15,6 +15,7 @@ import secrets
 import tempfile
 
 from .common import ROOT, TraceError, digest, require, unescape
+from .jsonl_records import JsonlRecords
 
 INDEX_NAME = "verified-index.sqlite3"
 LEGACY_NAME = "verified-index.json.gz"
@@ -23,10 +24,10 @@ SCHEMA = 1
 _TAG = "$verified_index_type"
 # These modules create, refine, validate or project the stored trace. Changes to
 # online contract presentation do not invalidate otherwise unchanged evidence.
-_SEMANTIC_FILES = ("native.py", "native_storage.py", "common.py", "hierarchy.py", "persistent_index.py",
-                   "abc_provenance.py", "abc_internal.py", "abc_joint.py",
+_SEMANTIC_FILES = ("native.py", "capture.py", "native_storage.py", "jsonl_records.py", "streaming.py", "common.py", "hierarchy.py", "persistent_index.py",
+                   "abc_provenance.py", "abc_internal.py", "abc_snapshots.py", "abc_joint.py",
                    "abc_lineage.py", "boolean.py", "index_store.py", "sqlite_index.py", "gzip_index.py",
-                   "graph_index.py", "diagnostics.py")
+                   "graph_index.py", "source_index.py", "origin_sets.py", "diagnostics.py")
 _FIELDS = {
     "records", "sources", "objects", "assignments", "events", "edges", "regions",
     "removals", "process_nodes", "process_actions", "process_discards",
@@ -84,7 +85,7 @@ def _json_bytes(value):
 def _encode(value):
     if value is None or type(value) in (str, int, float, bool):
         return value
-    if isinstance(value, list):
+    if isinstance(value, (list, JsonlRecords)):
         return [_encode(item) for item in value]
     if isinstance(value, dict):
         if all(type(key) is str for key in value) and _TAG not in value:
@@ -122,15 +123,14 @@ def _decode(value):
     return result
 
 
-def build_lookup(trace):
-    """Materialize source and electrical indexes once, in original pin order."""
-    sources_to_final, sources_to_assignments = {}, {}
-    for ref in sorted(trace.final):
-        for source in trace.objects[ref]["origins"]:
-            sources_to_final.setdefault(source, []).append(ref)
-    for ref, row in trace.assignments.items():
-        for source in row["origins"]:
-            sources_to_assignments.setdefault(source, []).append(ref)
+def build_lookup(trace, progress=None):
+    """Build factored source and electrical indexes in original pin order."""
+    from .source_index import SourceRelation
+    sources_to_final = SourceRelation.build(
+        ((ref, trace.objects[ref]['origins']) for ref in sorted(trace.final)), progress)
+    sources_to_assignments = SourceRelation.build(
+        ((ref, row['origins']) for ref, row in trace.assignments.items()), progress)
+    if progress: progress('index_electrical_lookup')
     consumers, consumer_rows, drivers, aliases = {}, [], {}, {}
     for name, cell in trace.design["cells"].items():
         for port, bits in cell["connections"].items():
@@ -185,7 +185,7 @@ def require_evidence_unchanged(expected, current):
         require(current.get(name) == metadata, f"validated evidence changed before index signing: {name}")
 
 
-def write_legacy_index(directory, manifest, trace, *, verified_artifacts):
+def write_legacy_index(directory, manifest, trace, *, verified_artifacts, progress=None):
     """Called only after baseline replay, ABC checks and stock proofs pass."""
     directory = Path(directory)
     build_lookup(trace)
@@ -193,7 +193,10 @@ def write_legacy_index(directory, manifest, trace, *, verified_artifacts):
     artifacts = artifact_inventory(directory)
     require_evidence_unchanged(verified_artifacts, artifacts)
     require(artifacts == verified_artifacts, "unverified artifact appeared before index signing")
-    payload = _encode(vars(trace))
+    state = dict(vars(trace))
+    state['lookup_index'] = {k: dict(v) if k.startswith('sources_to_') else v
+                             for k,v in trace.lookup_index.items()}
+    payload = _encode(state)
     envelope = {"schema_version": SCHEMA, "kind": "verified_native_trace",
                 "implementation": implementation_fingerprint(), "binding": _binding(manifest, artifacts),
                 "payload_sha256": hashlib.sha256(_json_bytes(payload)).hexdigest(), "payload": payload}
@@ -255,14 +258,14 @@ def read_legacy_index(directory, manifest, trace_class):
         raise TraceError(f"invalid verified-index artifact: {exc}") from exc
 
 
-def write_index(directory, manifest, trace, *, verified_artifacts):
+def write_index(directory, manifest, trace, *, verified_artifacts, progress=None):
     backend = manifest.get('configuration',{}).get('index_backend','sqlite')
     require(backend in {'sqlite','gzip'}, 'unsupported index backend')
     if backend == 'gzip':
         from .gzip_index import write
     else:
         from .sqlite_index import write
-    return write(directory, manifest, trace, verified_artifacts)
+    return write(directory, manifest, trace, verified_artifacts, progress=progress)
 
 
 def read_index(directory, manifest, trace_class):

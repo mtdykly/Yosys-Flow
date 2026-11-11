@@ -107,6 +107,18 @@ def instrument(root):
          "RTLIL::Module::~Module()\n{\n\tFlowProvenance::module_removed(this);")
     edit("kernel/rtlil.cc", "\tmodule->name = new_name;\n\tadd(module);",
          "\tmodule->name = new_name;\n\tadd(module);\n\tFlowProvenance::module_renamed(module);")
+    edit("kernel/rtlil.cc", "void RTLIL::Module::rename(RTLIL::Wire *wire, RTLIL::IdString new_name)\n{",
+         "void RTLIL::Module::rename(RTLIL::Wire *wire, RTLIL::IdString new_name)\n{\n\tFlowProvenance::connections_reset(this);")
+    edit("kernel/rtlil.cc", "void RTLIL::Module::swap_names(RTLIL::Wire *w1, RTLIL::Wire *w2)\n{",
+         "void RTLIL::Module::swap_names(RTLIL::Wire *w1, RTLIL::Wire *w2)\n{\n\tFlowProvenance::connections_reset(this);")
+    edit("kernel/rtlil.cc", "\tconnections_ = new_conn;",
+         "\tconnections_ = new_conn;\n\tFlowProvenance::connections_reset(this);")
+    # The templates also mutate module connections without going through connect.
+    edit("kernel/rtlil.h", "template<typename T>\nvoid RTLIL::Module::rewrite_sigspecs(T &functor)\n{",
+         "namespace FlowProvenance { void connections_reset(RTLIL::Module *module); }\n"
+         "template<typename T>\nvoid RTLIL::Module::rewrite_sigspecs(T &functor)\n{\n\tFlowProvenance::connections_reset(this);")
+    edit("kernel/rtlil.h", "void RTLIL::Module::rewrite_sigspecs2(T &functor)\n{",
+         "void RTLIL::Module::rewrite_sigspecs2(T &functor)\n{\n\tFlowProvenance::connections_reset(this);")
     edit("kernel/register.cc", "\tpass->execute(args, design);\n\tpass->post_execute(state);",
          "\tFlowProvenance::step_begin(args, design);\n\tpass->execute(args, design);\n"
          "\tif (args[0] != \"flow_start\" && args[0] != \"flow_stop\") FlowProvenance::step_end(design);\n"

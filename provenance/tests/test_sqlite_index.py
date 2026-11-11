@@ -139,6 +139,26 @@ endmodule
         out=self.clone();(out/NAME).unlink();timings={};load_run(out,timings)
         self.assertEqual(timings['verified_index_status'],'missing');self.assertFalse((out/NAME).exists())
 
+    def test_reviewed_reader_upgrade_still_requires_original_authentication(self):
+        from yosys_flow import persistent_index as pi, sqlite_index
+        from yosys_flow.index_compatibility import fingerprint_digest
+        from yosys_flow.native import NativeTrace
+        out=self.clone();manifest=json.loads((out/'manifest.json').read_text())
+        current=pi.implementation_fingerprint()
+        previous={**current,'index_store.py':'0'*64}
+        descriptor=manifest['verified_index'];descriptor['implementation']=previous
+        descriptor['authentication']['signature']=sqlite_index.authenticate(pi._authentication_key(),
+            {k:v for k,v in descriptor.items() if k!='authentication'})
+        write_json(out/'manifest.json',manifest)
+        pair=(fingerprint_digest(previous),fingerprint_digest(current))
+        with patch('yosys_flow.index_compatibility.REVIEWED_READER_UPGRADES',{pair}), \
+             patch.object(NativeTrace,'__init__',side_effect=AssertionError('must reuse authenticated old index')):
+            timing={};load_run(out,timing)
+            self.assertEqual(timing['verified_index_status'],'hit')
+            descriptor['authentication']['signature']='0'*64
+            write_json(out/'manifest.json',manifest)
+            with self.assertRaisesRegex(TraceError,'authentication failed'):load_run(out)
+
     def test_changed_raw_evidence_is_not_hidden(self):
         out=self.clone();p=out/'yosys.jsonl';p.write_bytes(p.read_bytes()+b'\n')
         with self.assertRaisesRegex(TraceError,'artifact hash mismatch'):load_run(out)

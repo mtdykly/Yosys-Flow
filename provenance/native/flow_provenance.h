@@ -78,6 +78,7 @@ void contribute(RTLIL::Cell *target, RTLIL::Cell *donor, const std::string &oper
 void assignment(RTLIL::Module *module, const RTLIL::SigSpec &lhs, const RTLIL::SigSpec &rhs, const Origins &ids,
                 const std::string &precision = "bit_range", const std::string &cloned_from = "");
 void connected(RTLIL::Module *module, const RTLIL::SigSig &conn);
+void connections_reset(RTLIL::Module *module);
 void remap_connections(RTLIL::Module *module, const SigMap &map);
 void wires_removed(RTLIL::Module *module, const pool<RTLIL::Wire*> &wires);
 void parameter_module_cloned(RTLIL::Module *original, RTLIL::Module *copy);

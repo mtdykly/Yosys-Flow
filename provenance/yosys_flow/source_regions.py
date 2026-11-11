@@ -38,8 +38,11 @@ def flatten(modules, top):
         value=len(parent)+2;parent[value]=value;return value
     def root(value):
         if isinstance(value,str):return value
-        if parent[value]!=value:parent[value]=root(parent[value])
-        return parent[value]
+        path=[]
+        while isinstance(value,int) and parent[value]!=value:
+            path.append(value);value=parent[value]
+        for old in path:parent[old]=value
+        return value
     def join(a,b):
         a,b=root(a),root(b)
         if a==b:return
@@ -135,10 +138,14 @@ def make_cut(context, document, source):
                 if isinstance(bit,int):
                     require(bit not in drivers,'source has multiple drivers');drivers[bit]=name
     selected=set();active=set();seen=set()
-    def visit(bit):
+    stack=[(bit,False) for bit in reversed(list(reference_outputs.values()))]
+    while stack:
+        bit,done=stack.pop()
+        if done:
+            active.remove(bit);seen.add(bit);continue
         if isinstance(bit,str):
-            require(bit in {'0','1','x','z'},'invalid source constant');return
-        if bit in cuts or bit in seen:return
+            require(bit in {'0','1','x','z'},'invalid source constant');continue
+        if bit in cuts or bit in seen:continue
         require(bit not in active,'cycle in source cut')
         if bit in primary:
             # A coarse operator can carry unused bits. Quantify any remaining
@@ -146,14 +153,13 @@ def make_cut(context, document, source):
             # does not depend on it, rather than silently tying it to zero.
             value=allocate();cuts[bit]=value
             ports['aux_'+str(bit)]={'direction':'input','bits':[value]}
-            return
+            continue
         require(bit in drivers,'source cut has an undriven signal')
         active.add(bit);name=drivers[bit];selected.add(name)
-        for p,bs in cells[name]['connections'].items():
-            if cells[name]['port_directions'][p]=='input':
-                for b in bs:visit(b)
-        active.remove(bit);seen.add(bit)
-    for bit in reference_outputs.values():visit(bit)
+        dependencies=[b for p,bs in cells[name]['connections'].items()
+                      if cells[name]['port_directions'][p]=='input' for b in bs]
+        stack.append((bit,True))
+        stack.extend((child,False) for child in reversed(dependencies))
     # Never cut a bit driven by a copied vector cell: that creates an input
     # driver and would constrain the independent proof inputs accidentally.
     require(not any(drivers.get(b) in selected for b in cuts),'source vector output overlaps independent cut')

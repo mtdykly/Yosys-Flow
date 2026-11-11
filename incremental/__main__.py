@@ -104,6 +104,9 @@ def parser():
     auto.add_argument('--native-yosys',default=str(ROOT/'build/native/install/bin/yosys'))
     auto.add_argument('--selection-mode',choices=['fine','module'],default='fine',
                       help='module 保留当前记录、契约和拼接，只禁用模块内切片，用于消融实验')
+    for command in (auto,execute):
+        command.add_argument('--yosys-timeout',type=positive_seconds,default=120.0,
+            help='前端、局部综合及后验检查的单次 Yosys 调用上限（秒，默认 120）；不修改独立来源证明或预检查预算')
     for command in (auto,benchmark):
         command.add_argument('--no-equivalence-precheck',action='store_true',
             help='关闭叶模块组合等价预检查，直接走原来的局部提取流程')

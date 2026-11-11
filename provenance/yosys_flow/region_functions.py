@@ -129,23 +129,31 @@ class Circuit:
 
     def value(self, bit):
         active = set()
-        def visit(b):
+        constants = {'0': self.manager.one ^ self.manager.one, '1': self.manager.one}
+        stack = [(bit, False)]
+        while stack:
+            b,done = stack.pop()
             if isinstance(b,str):
                 if b not in {'0','1'}: raise UnsupportedFunction('non_binary_constant:'+b)
-                return self.manager.one if b=='1' else self.manager.one ^ self.manager.one
-            if b in self.values: return self.values[b]
+                continue
+            if b in self.values: continue
             require(b in self.drivers, 'region function has unbound input')
+            cell = self.cells[self.drivers[b]]
+            if done:
+                ports = {p:constants[bs[0]] if isinstance(bs[0],str) else self.values[bs[0]]
+                         for p,bs in cell['connections'].items() if cell['port_directions'][p]=='input'}
+                self.values[b] = gate_function(cell['type'], ports, self.manager.one)
+                active.remove(b)
+                continue
             require(b not in active, 'cycle in region function')
             active.add(b)
-            cell = self.cells[self.drivers[b]]
             if cell['parameters'] or any(len(bs)!=1 for bs in cell['connections'].values()) or \
                     {p for p,d in cell['port_directions'].items() if d=='output'} != {'Y'}:
                 raise UnsupportedFunction('unsupported_gate_shape:'+cell['type'])
-            ports = {p:visit(bs[0]) for p,bs in cell['connections'].items() if cell['port_directions'][p]=='input'}
-            self.values[b] = gate_function(cell['type'], ports, self.manager.one)
-            active.remove(b)
-            return self.values[b]
-        return visit(bit)
+            dependencies = [bs[0] for p,bs in cell['connections'].items() if cell['port_directions'][p]=='input']
+            stack.append((b,True))
+            stack.extend((child,False) for child in reversed(dependencies))
+        return constants[bit] if isinstance(bit,str) else self.values[bit]
 
 
 def encode_function(function, input_ports):

@@ -98,6 +98,23 @@ class AutomaticTests(unittest.TestCase):
         self.assertNotIn('synth',(out/'work/new-frontend.ys').read_text())
         self.assertNotIn('abc',(out/'work/new-combinational-check.ys').read_text())
 
+    def test_shared_origin_plan_survives_source_proof_splice_and_validation(self):
+        # Exercise the large-plan encoding through the real automatic pipeline
+        # without requiring a large synthesized fixture.
+        with patch('yosys_flow.origin_sets.PLAN_INLINE_LIMIT',0):
+            result,out=self.execute('compare_local9','shared-source-plan')
+            self.assertEqual(result['status'],'passed',result.get('failure'))
+            plan=json.loads((out/'replacement-plan.json').read_text())
+            self.assertEqual(plan['source_set_encoding'],'shared_source_sets_v1')
+            self.assertTrue(all('origin_set_id' in c and 'origin_ids' not in c for c in plan['region']['cells']))
+            context=ContractContext(result['base_run'],compact=True)
+            context.validate(plan)
+            from yosys_flow.contracts import export_selection, seal
+            self.assertTrue(all('all_origins' in c for c in export_selection(context,plan)['final_cells']))
+            altered=deepcopy(plan)
+            next(iter(altered['source_sets'].values())).append(999999999)
+            with self.assertRaises(TraceError):context.validate(seal(altered))
+
     def test_generation_cutoff_includes_full_export_and_excludes_later_proof(self):
         original_proof=replace.prove_local_outputs
         real_clock=replace.time.perf_counter
@@ -106,6 +123,11 @@ class AutomaticTests(unittest.TestCase):
         def proof_after_generation(*args,**kwargs):
             for suffix in ('json','il','v'):
                 self.assertTrue((destination/'replacement/work'/('candidate.'+suffix)).is_file())
+            checkpoint=json.loads((destination/'replacement/generation.json').read_text())
+            self.assertEqual(checkpoint['status'],'candidate_generated')
+            self.assertFalse(checkpoint['validated'])
+            self.assertFalse(checkpoint['caller_preparation_included'])
+            self.assertGreater(checkpoint['netlist_generation_seconds'],0)
             # Charge 100 simulated seconds to a post-export proof. This must
             # affect validation/checked timings, never netlist generation.
             offset[0]+=100
@@ -119,6 +141,8 @@ class AutomaticTests(unittest.TestCase):
         self.assertGreater(timings['incremental_candidate_ready_seconds']-timings['netlist_generation_seconds'],100)
         self.assertEqual(timings['netlist_generation_seconds'],timings['automatic_preparation_seconds']+
                          timings['replacement']['netlist_generation_seconds'])
+        checkpoint=json.loads((out/'replacement/generation.json').read_text())
+        self.assertEqual(checkpoint['netlist_generation_seconds'],timings['replacement']['netlist_generation_seconds'])
         for suffix in ('json','il','v'):
             self.assertTrue((out/('incremental.'+suffix)).is_file())
 

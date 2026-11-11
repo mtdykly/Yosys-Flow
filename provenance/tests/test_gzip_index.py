@@ -78,7 +78,7 @@ endmodule
         for out in self.runs.values():
             manifest=json.loads((out/'manifest.json').read_text())
             self.assertEqual(manifest['configuration']['index_backend'],'gzip')
-            self.assertEqual(manifest['verified_index']['schema_version'],2)
+            self.assertEqual(manifest['verified_index']['schema_version'],3)
             self.assertFalse((out/sqlite_index.NAME).exists())
             self.assertEqual(json.loads(gzip.decompress((out/gzip_index.NAME).read_bytes()))['kind'],gzip_index.KIND)
 
@@ -119,6 +119,24 @@ endmodule
             args=parser().parse_args(['query',str(out),'--source',str(self.source),'--line','2'])
             a=query_loaded(args,m,t,compact=True)
             self.assertEqual(query_loaded(args,m,t,compact=True),a)
+
+    def test_reviewed_reader_upgrade_still_requires_original_authentication(self):
+        from yosys_flow.index_compatibility import fingerprint_digest
+        out=self.clone();manifest=json.loads((out/'manifest.json').read_text())
+        current=pi.implementation_fingerprint()
+        previous={**current,'index_store.py':'0'*64}
+        descriptor=manifest['verified_index'];descriptor['implementation']=previous
+        descriptor['authentication']['signature']=gzip_index.authenticate(pi._authentication_key(),
+            {k:v for k,v in descriptor.items() if k!='authentication'})
+        write_json(out/'manifest.json',manifest)
+        pair=(fingerprint_digest(previous),fingerprint_digest(current))
+        with patch('yosys_flow.index_compatibility.REVIEWED_READER_UPGRADES',{pair}), \
+             patch.object(NativeTrace,'__init__',side_effect=AssertionError('must reuse authenticated old index')):
+            timing={};load_run(out,timing)
+            self.assertEqual(timing['verified_index_status'],'hit')
+            descriptor['authentication']['signature']='0'*64
+            write_json(out/'manifest.json',manifest)
+            with self.assertRaisesRegex(TraceError,'authentication failed'):load_run(out)
 
     def test_builder_writes_gzip_directly_and_shares_large_fields(self):
         source=self.root/'wide.v'

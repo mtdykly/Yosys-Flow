@@ -26,6 +26,8 @@ make test
 
 `make` 构建固定插桩 ABC 到 `build/abc/install`，再构建原生插桩 Yosys 到 `build/native/install`。`--native-yosys` 指向该工具，`--yosys` 指向独立原版，二者不能是同一文件。每次 `run` 使用新目录，`extract` 也不会覆盖已有文件。`make demo` 使用 `provenance/examples/comb.v`，可通过 `DEMO_OUT` 指定新目录。
 
+捕获已完整写出而验证或索引尚未完成时，可执行 `python3 -m yosys_flow resume <旧目录> --out <新目录>`。它核对输入和工具身份，独立复制原始捕获，沿用源码位置及 `run_id`，执行剩余建档验证。原目录保持不变；原版对照综合仍会运行。详见[续建档与旧记录兼容条件](docs/storage.md#捕获完成后的续建档)。
+
 ## 首次建档的可复用索引
 
 新建归档在来源、网表和独立对照检查通过后生成索引。默认 `--index-backend sqlite` 保存 `verified-index.sqlite3`，按需读取；`--index-backend gzip` 保存去重后的 `verified-index.json.gz`，加载到内存后查询。每次建档只生成选中的一种索引；查询、导出、契约和自动增量从 manifest 自动识别后端，不需要再次传入选项。

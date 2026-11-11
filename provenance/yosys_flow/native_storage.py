@@ -6,6 +6,11 @@ records remain unmodified. This encoding does not add provenance relationships.
 from .common import require
 
 
+def same_array(left, right):
+    """Shared immutable arrays need no repeated element-wise equality scan."""
+    return left is right or left == right
+
+
 class Arrays:
     def __init__(self, features):
         self.enabled = 'shared_native_arrays_v1' in features

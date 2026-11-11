@@ -20,6 +20,14 @@ python3 -m yosys_flow query runs/old-run \
 
 `provenance/` 保存原生 Yosys/ABC 钩子、事件重放、索引、查询、区域导出与独立契约工具。现有 `python3 -m yosys_flow` 命令通过仓库兼容入口加载该目录。命令和支持范围见 [来源子系统](provenance/README.md)。
 
+如果插桩综合已经完整写出记录和最终网表，但后处理被中断，可以续建档：
+
+```bash
+python3 -m yosys_flow resume runs/interrupted-capture --out runs/resumed-archive
+```
+
+它在新目录复用捕获，完成重放、ABC 证据验证、原版对照、结构等价检查和共享集合索引发布。新建档在捕获完成后保存 `capture.json` 检查点；旧捕获的兼容条件见[续建档说明](provenance/docs/storage.md#捕获完成后的续建档)。
+
 ## 完整新版 RTL 到增量网表
 
 ```bash
@@ -49,4 +57,4 @@ make test
 - [时序等价预检查及待补证明](incremental/sequential.md)
 - [来源覆盖与后续计划](provenance/docs/default-synth-plan.md)
 
-NOC 调查、时序等价预检查和人工诊断用于独立验收，结果不混入功能修改的性能结论。`build/` 是工具缓存，`runs/` 是运行产物，均不提交。本地仅保留 `runs/comparison-anubis-functional-v4/` 的当前实验及其 `validation/` 回归摘要；旧实验目录和阅读摘录已清理。重新运行命令会生成新的结果目录。
+NOC 调查、时序等价预检查和人工诊断用于独立验收，结果不混入功能修改的性能结论。`build/` 是工具缓存，`runs/` 是运行产物，均不提交。各实验与回归报告的目录见相应文档；重新运行命令会生成新的结果目录。

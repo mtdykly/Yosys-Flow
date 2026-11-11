@@ -144,22 +144,25 @@ class Slice:
         for key,rows in self.by_new.items():
             options={r['old_bit'] for r in rows if r['unchanged_full_definition'] and r['old_bit'] not in old_driven}
             if len(options)==1 and isinstance(key[1],int):cuts[key]=next(iter(options))
-        def visit(key):
-            if isinstance(key[1],str):return
-            if key in self.constants:return
+        stack=[(value,False) for value in reversed(list(outputs.values()))]
+        while stack:
+            key,done=stack.pop()
+            if done:
+                active.remove(key);visited.add(key);continue
+            if isinstance(key[1],str):continue
+            if key in self.constants:continue
             if key in cuts:
-                used_cuts[key]=cuts[key];return
-            if key in visited:return
+                used_cuts[key]=cuts[key];continue
+            if key in visited:continue
             ir_graph.check(key not in active,'cycle in new local dependency cone');active.add(key)
             ir_graph.check(key in self.drivers,'new dependency has no unchanged recorded input cut: '+str(key))
             cell_key=self.drivers[key];path,name=cell_key
             cell=self.coarse[self.units[path][1].module.name]['cells'][name]
             chosen.add(cell_key)
-            for port,bits in cell['connections'].items():
-                if cell['port_directions'][port]=='input':
-                    for bit in bits:visit((path,bit))
-            active.remove(key);visited.add(key)
-        for value in outputs.values():visit(value)
+            dependencies=[(path,bit) for port,bits in cell['connections'].items()
+                          if cell['port_directions'][port]=='input' for bit in bits]
+            stack.append((key,True))
+            stack.extend((child,False) for child in reversed(dependencies))
         # Copy whole coarse cells. Another output of a copied vector cell may
         # have initially been chosen as an input cut. Internalize that cut and
         # rebuild dependencies; never create an extra driver on an input port.
@@ -286,14 +289,18 @@ def plan(context,old,new,oc,nc,coarse,scopes,report,work,yosys):
                     mapped |= mapped_selectors[key]
                 ir_graph.check(mapped,'changed assignment has no mapped final gates; consumer rebinding or module fallback required')
         contract=merge(context,parents);report['seed_cell_count']=len(contract['region']['cells'])
+        progress=getattr(context,'progress',None) or (lambda *args,**kwargs:None)
+        progress('source_anchor_fingerprints',instances=len(units))
         slicer=Slice(context,units,coarse,endpoints)
         refs={unescape(context.trace.objects[r]['state']['name']):r for r in context.trace.final}
         drivers={b:refs[n] for n,c in context.module['cells'].items() for p,bs in c['connections'].items()
                  if c['port_directions'][p]=='output' for b in bs if isinstance(b,int)}
         while len(report['expansions']) < 32:
+            progress('local_dependency_slice',expansions=len(report['expansions']))
             result,missing=slicer.build(contract)
             if result:
                 contract,design,bindings,spec=result
+                progress('source_cut_verification',coarse_cells=spec['local_coarse_cell_count'])
                 certified=context.certify_source_cut(contract)
                 proof=certified['verification'].get('source_region_function_proof',{})
                 missing_inputs=proof.get('missing_input_bits',[])

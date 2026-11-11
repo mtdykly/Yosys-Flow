@@ -9,6 +9,7 @@ import json
 import re
 
 from yosys_flow.contracts import fingerprint
+from yosys_flow.traversal import evaluate_stack
 from .rtlil import tokens
 
 
@@ -138,32 +139,59 @@ class Graph:
         return {**item,'name':item['tokens'][1],'actions':dict(actions),'updates':updates}
 
     def value(self,bit,local=False,root=False):
+        return evaluate_stack(self._value_steps(bit,local,root))
+
+    def _value_steps(self,bit,local=False,root=False):
+        # Yield dependency frames to an explicit stack. In particular, process
+        # temporaries can lead back to graph cells and vice versa; neither path
+        # may call the public evaluator recursively.
         if isinstance(bit,str):return fingerprint(['constant',bit])
         if bit in self.inputs or (local and not root and self.wires[bit[0]]['public']):
             return fingerprint(['signal',*bit])
         key=(bit,local,root)
         if key in self.memo:return self.memo[key]
         check(key not in self.active,'cyclic/unsupported pre-proc dependency');self.active.add(key)
-        if bit in self.aliases:
-            result=self.value(self.aliases[bit],local)
-        elif bit in self.drivers:
-            kind,obj,offset=self.drivers[bit]
-            if kind=='cell':
-                result=fingerprint(['cell',obj['type'],obj['params'],offset,
-                    [(p,[self.value(b,local) for b in bits]) for p,bits in sorted(obj['ports'].items()) if p!='\\Y']])
-            else:result=self.process_value(obj,offset,local,{},set())
-        else:raise Unsupported('undriven frontend signal '+str(bit))
-        self.active.remove(key);self.memo[key]=result;return result
+        try:
+            if bit in self.aliases:
+                result=yield self._value_steps(self.aliases[bit],local)
+            elif bit in self.drivers:
+                kind,obj,offset=self.drivers[bit]
+                if kind=='cell':
+                    ports=[]
+                    for port,bits in sorted(obj['ports'].items()):
+                        if port=='\\Y':continue
+                        values=[]
+                        for b in bits:values.append((yield self._value_steps(b,local)))
+                        ports.append((port,values))
+                    result=fingerprint(['cell',obj['type'],obj['params'],offset,ports])
+                else:result=yield self._process_steps(obj,offset,local,{},set())
+            else:raise Unsupported('undriven frontend signal '+str(bit))
+            self.memo[key]=result
+            return result
+        finally:self.active.remove(key)
 
     def process_value(self,process,bit,local,memo,active):
-        if bit not in process['actions']:return self.value(bit,local)
+        return evaluate_stack(self._process_steps(process,bit,local,memo,active))
+
+    def _process_steps(self,process,bit,local,memo,active):
+        if bit not in process['actions']:
+            return (yield self._value_steps(bit,local))
         if bit in memo:return memo[bit]
         check(bit not in active,'cyclic process temporary');active.add(bit)
-        def val(b):return self.process_value(process,b,local,memo,active)
-        result=fingerprint(['ordered_process_actions',[
-            [val(rhs),[([val(b) for b in signal],cases) for signal,cases in controls]]
-            for rhs,controls in process['actions'][bit]]])
-        active.remove(bit);memo[bit]=result;return result
+        try:
+            actions=[]
+            for rhs,controls in process['actions'][bit]:
+                value=yield self._process_steps(process,rhs,local,memo,active)
+                guards=[]
+                for signal,cases in controls:
+                    values=[]
+                    for b in signal:values.append((yield self._process_steps(process,b,local,memo,active)))
+                    guards.append((values,cases))
+                actions.append([value,guards])
+            result=fingerprint(['ordered_process_actions',actions])
+            memo[bit]=result
+            return result
+        finally:active.remove(bit)
 
     def definition(self,bit):
         """Find the implementation of a named assignment without crossing it."""

@@ -9,6 +9,7 @@ import shlex
 
 from .common import require
 from .boolean import BDD, Function, ProofBudgetExceeded
+from .abc_snapshots import SnapshotMap
 
 ABC_COMMIT = 'e026ed5380f3bdc3beea2ff9ffc23236fc549d5b'
 TRUTH_TABLE_INPUT_LIMIT = 10
@@ -63,16 +64,19 @@ def evaluate(node, args, mask):
 class Network:
     def __init__(self, record, nodes=None):
         self.record = record
-        self.nodes = {n['id']: n for n in record['nodes']} if nodes is None else nodes
+        self.nodes = SnapshotMap({n['id']: n for n in record['nodes']}) if nodes is None else nodes
         require((nodes is not None or len(self.nodes) == len(record['nodes'])) and all(type(i) is int and i >= 0 for i in self.nodes), 'duplicate/invalid ABC internal object')
         self.pis = record.get('pis', sorted(i for i, n in self.nodes.items() if n['op'] == 'pi'))
         self.pos = record.get('pos', [])
         require(len(self.pis) == len(set(self.pis)) and set(self.pis) == {i for i, n in self.nodes.items() if n['op'] == 'pi'}, 'invalid ABC internal inputs')
         require(set(self.pos) <= self.nodes.keys(), 'invalid ABC internal outputs')
         arities = {'pi': 0, 'one': 0, 'zero': 0, 'buf': 1, 'and': 2, 'xor': 2, 'mux': 3}
+        incoming = Counter()
         for n in self.nodes.values():
             require(all(isinstance(lit, int) and lit >= 0 and lit//2 in self.nodes for lit in n['fanins']), 'unknown ABC internal fanin')
             if n['op'] in arities: require(len(n['fanins']) == arities[n['op']], 'ABC internal arity mismatch')
+            incoming.update(lit//2 for lit in n['fanins'])
+        self._incoming = SnapshotMap(incoming)
         self.names = record.get('pi_names', [self.nodes[i].get('name', '') for i in self.pis])
 
     def observe_unchanged(self, record):
@@ -81,15 +85,57 @@ class Network:
         decode_network has already checked the epoch, immediate base, command,
         representation and empty change/deletion sets. Only snapshot interface
         metadata can differ; it must still be validated on every observation.
-        Changed snapshots continue through the full constructor.
+        Changed snapshots validate their affected nodes and incoming references.
         """
         net = object.__new__(Network)
         net.record, net.nodes = record, self.nodes
+        net._incoming = self._incoming
         net.pis = record.get('pis', sorted(self.pis))
         net.pos = record.get('pos', [])
         require(len(net.pis) == len(set(net.pis)) and set(net.pis) == set(self.pis),
                 'invalid ABC internal inputs')
         require(set(net.pos) <= net.nodes.keys(), 'invalid ABC internal outputs')
+        net.names = record.get('pi_names', [net.nodes[i].get('name', '') for i in net.pis])
+        return net
+
+    def observe_changes(self, record, changes, deleted):
+        """Validate only changed nodes and affected reference counts.
+
+        The previous snapshot is already valid. An unchanged node can become
+        invalid only if its fanin was deleted; retained incoming references
+        detect that without scanning every old node. Publish after all checks.
+        """
+        require(all(type(i) is int and i >= 0 for i in changes), 'duplicate/invalid ABC internal object')
+        removed = set(deleted)
+        def present(i):
+            return i in changes or (i not in removed and i in self.nodes)
+        arities = {'pi': 0, 'one': 0, 'zero': 0, 'buf': 1, 'and': 2, 'xor': 2, 'mux': 3}
+        counts = Counter()
+        pis = set(self.pis)
+        for i in changes.keys() | removed:
+            old = self.nodes.get(i)
+            if old is not None:
+                counts.subtract(lit//2 for lit in old['fanins'])
+                if old['op'] == 'pi': pis.remove(i)
+        for i, node in changes.items():
+            require(all(isinstance(lit, int) and lit >= 0 and present(lit//2) for lit in node['fanins']),
+                    'unknown ABC internal fanin')
+            if node['op'] in arities:
+                require(len(node['fanins']) == arities[node['op']], 'ABC internal arity mismatch')
+            counts.update(lit//2 for lit in node['fanins'])
+            if node['op'] == 'pi': pis.add(i)
+        refs = {i: self._incoming.get(i, 0)+delta for i, delta in counts.items() if delta}
+        require(all(n >= 0 for n in refs.values()), 'invalid ABC fanin reference count')
+        require(all(refs.get(i, self._incoming.get(i, 0)) == 0 for i in removed),
+                'unknown ABC internal fanin')
+        net = object.__new__(Network)
+        net.record = record
+        net.pis, net.pos = record.get('pis', sorted(pis)), record.get('pos', [])
+        require(len(net.pis) == len(set(net.pis)) and set(net.pis) == pis, 'invalid ABC internal inputs')
+        require(all(present(i) for i in net.pos), 'invalid ABC internal outputs')
+        net.nodes = self.nodes.updated(changes, deleted)
+        net._incoming = self._incoming.updated({i:n for i,n in refs.items() if n},
+                                               [i for i,n in refs.items() if not n and i in self._incoming])
         net.names = record.get('pi_names', [net.nodes[i].get('name', '') for i in net.pis])
         return net
 
@@ -191,14 +237,8 @@ def decode_network(row, networks, epochs, schema):
         changes = {n['id']: n for n in row['nodes']}
         require(len(changes) == len(row['nodes']) and set(deleted) <= before.nodes.keys() and
                 not set(deleted).intersection(changes), 'invalid ABC delta disposition')
-        # Empty observations share immutable node dictionaries; changed snapshots
-        # share unchanged node payloads. Neither expands the raw JSON event rows.
-        nodes = before.nodes
         if changes or deleted:
-            nodes = dict(nodes)
-            for i in deleted: del nodes[i]
-            nodes.update(changes)
-            net = Network(row, nodes)
+            net = before.observe_changes(row, changes, deleted)
         else:
             net = before.observe_unchanged(row)
     epochs[epoch] = row['seq']
@@ -351,13 +391,15 @@ def read_evidence(path, script):
         'complete_rewrite_history': False, 'truth_table_input_limit': TRUTH_TABLE_INPUT_LIMIT}
 
 
-def analyze(path, script, region, imports, input_blif=None):
+def analyze(path, script, region, imports, input_blif=None, progress=None):
+    if progress: progress("abc_internal_evidence")
     rows, nets, cuts, report = read_evidence(path, script)
     proof, fallback = {}, None
     bdd = None
     local_bdds, local_failures = [], []
     witness_failures, unproved_reasons = {}, {}
     phase = 'input_binding'
+    if progress: progress("abc_input_binding")
     report['function_proof'] = {'backend': 'not_started'}
     report['verified_aig_replacements'] = 0
     report['verified_equivalences'] = 0
@@ -395,6 +437,7 @@ def analyze(path, script, region, imports, input_blif=None):
         # infer a PI identity from functional similarity or object allocation IDs.
         evaluated = {}
         phase = 'region_functions'
+        if progress: progress("abc_region_functions")
         for seq, net in nets.items():
             if net.record['kind']=='history_network': continue
             if len(net.pis) != len(input_names): raise Unsupported('internal_interface_changed')
@@ -423,6 +466,7 @@ def analyze(path, script, region, imports, input_blif=None):
             else:
                 raise Unsupported('unbound_internal_outputs')
         phase = 'recorded_relation_functions'
+        if progress: progress("abc_recorded_relation_functions")
         for row in rows:
             if row['kind'] in {'aig_replace', 'proved_equivalence'}:
                 net = nets[row['snapshot']] if 'snapshot' in row else Network(row)
@@ -441,6 +485,7 @@ def analyze(path, script, region, imports, input_blif=None):
                         'ABC history copy changes function')
                 report['verified_entry_copies' if row['kind']=='entry_copy' else 'verified_history_copies'] += 1
         phase = 'source_copy_lineage'
+        if progress: progress("abc_source_copy_lineage")
         from .abc_lineage import entry_lineage
         lineage = entry_lineage(rows, nets)
         report['entry_lineage'] = lineage['summary']
@@ -529,6 +574,7 @@ def analyze(path, script, region, imports, input_blif=None):
         checked_mapping_snapshots = set()
         gate_by_name, mapping_by_name = {}, {}
         phase = 'local_correspondence'
+        if progress: progress("abc_local_correspondence")
         for name, imported in imports.items():
             out = imported['ports'].get('\\Y', [])
             if len(out)!=1 or not isinstance(out[0],dict): continue

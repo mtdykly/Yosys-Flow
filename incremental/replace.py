@@ -4,8 +4,11 @@ No automatic RTL diff or dependency discovery: callers supply a local RTL spec,
 all port bindings and the complete new RTL as an independent validation oracle.
 """
 from copy import deepcopy
+from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import json
+import math
 from pathlib import Path
 import shutil
 import subprocess
@@ -17,6 +20,21 @@ from yosys_flow.hierarchy import electrical_design
 from yosys_flow.region_functions import Circuit, LogicDAG, UnsupportedFunction, ordered_inputs
 from yosys_flow.boolean import BDD, ProofBudgetExceeded
 from .failures import classify
+
+
+_YOSYS_TIMEOUT = ContextVar('incremental_yosys_timeout', default=120.0)
+
+
+@contextmanager
+def yosys_timeout(seconds):
+    """Scope the child-tool limit to one invocation, including nested stages."""
+    seconds = float(seconds)
+    require(math.isfinite(seconds) and seconds > 0, 'Yosys timeout must be positive finite seconds')
+    marker = _YOSYS_TIMEOUT.set(seconds)
+    try:
+        yield
+    finally:
+        _YOSYS_TIMEOUT.reset(marker)
 
 
 def all_bits(module):
@@ -191,10 +209,16 @@ def splice(module, contract, patch, bindings):
 
 
 def run_yosys(binary, out, name, script):
+    # Resolve against the caller's working directory before subprocess changes
+    # cwd. which() can return a relative path, including relative PATH entries.
+    executable = shutil.which(str(binary))
+    require(executable is not None, 'Yosys executable not found: '+str(binary))
+    binary = str(Path(executable).absolute())
     (out/(name+'.ys')).write_text(script+'\n')
     start = time.perf_counter()
     try:
-        result = subprocess.run([binary,'-Q','-T','-s',name+'.ys'],cwd=out,capture_output=True,text=True,timeout=120)
+        result = subprocess.run([binary,'-Q','-T','-s',name+'.ys'],cwd=out,capture_output=True,text=True,
+                                timeout=_YOSYS_TIMEOUT.get())
     except subprocess.TimeoutExpired as exc:
         (out/(name+'.log')).write_text(str(exc)+'\n'+str(exc.stdout or '')+str(exc.stderr or ''))
         raise
@@ -241,7 +265,8 @@ def prove_local_outputs(stitched, contract, patch, bindings, added_names):
 
 def run(args):
     """Standalone replacement independently validates its supplied archive."""
-    return _run(args)
+    with yosys_timeout(getattr(args, 'yosys_timeout', _YOSYS_TIMEOUT.get())):
+        return _run(args)
 
 
 def _recheck_context_archive(context, directory):
@@ -359,6 +384,16 @@ def _run(args, *, validated_context=None):
             f'read_json candidate.json\nhierarchy -top {top}\nwrite_rtlil candidate.il\nwrite_verilog -noattr candidate.v')
         timings['netlist_generation_seconds'] = time.perf_counter()-started
         validation_started = time.perf_counter()
+        # Keep the measured generation cutoff even if an external job deadline
+        # later interrupts validation. This never publishes a checked netlist.
+        write_json(out/'generation.json',{
+            'status':'candidate_generated', 'validated':False,
+            'netlist_generation_seconds':timings['netlist_generation_seconds'],
+            'caller_preparation_included':False,
+            'timings':dict(timings),
+            'yosys_call_timeout_seconds':_YOSYS_TIMEOUT.get(),
+            'cells':{k:stats[k] for k in ('base_cells','removed_cells','reused_cells','result_cells')},
+            'candidate_files':['work/candidate.json','work/candidate.il','work/candidate.v']})
         stage = 'local_output_proof'; step = time.perf_counter()
         report['local_output_proof'] = prove_local_outputs(module,contract,patch,bindings,stats['added_names'])
         timings['local_output_proof_seconds'] = time.perf_counter()-step

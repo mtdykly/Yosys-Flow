@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 import hashlib
 import json
 from pathlib import Path
+from weakref import WeakValueDictionary
 
 from .common import require
 
@@ -23,10 +24,11 @@ def key(value):
     return _json_bytes(_encode(value)).decode()
 
 
-def populate(trace, sink):
+def populate(trace, sink, progress=None):
     """Emit identical normalized rows to a streaming SQL or in-memory gzip sink."""
     from . import persistent_index as pi
-    pi.build_lookup(trace)
+    from .jsonl_records import JsonlRecords
+    pi.build_lookup(trace, progress)
     require(set(vars(trace)) == pi._FIELDS, 'native trace fields changed; update index schema')
     seen, refs, arrays = {}, {}, {}
 
@@ -59,12 +61,20 @@ def populate(trace, sink):
         return refs[encoded]
 
     def put(field, value):
-        if field in EAGER or not isinstance(value, (dict, list)):
+        from .source_index import SourceRelation
+        if isinstance(value, SourceRelation):
+            sink.add('fields', (field, 'grouped', len(value), None))
+            put(field+'.sources', value.sources)
+            put(field+'.members', value.members)
+            return
+        if progress: progress('index_write_rows', field=field, rows=0)
+        if field in EAGER or not isinstance(value, (dict, list, JsonlRecords)):
             sink.add('fields', (field, 'value', 0, document(value)))
             return
         kind = 'mapping' if isinstance(value, dict) else 'sequence'
         sink.add('fields', (field, kind, len(value), None))
         for ordinal, (k, row) in enumerate(value.items() if isinstance(value, dict) else enumerate(value)):
+            if progress and ordinal % 10000 == 0: progress('index_write_rows', field=field, rows=ordinal, total=len(value))
             if field == 'edges':
                 doc = document({k:v for k,v in row.items() if k not in {'from','to','event_id'}})
                 sink.add('edges', (ordinal, reference(row['from']), reference(row['to']), row['event_id'], doc))
@@ -92,16 +102,47 @@ def populate(trace, sink):
         for ref in group['final_cell_refs']:sink.add('joint_members', (key(ref),iid,gid))
 
 
+class SharedArray(list):
+    """Weak-referenceable read-only array; never duplicate a live shared doc."""
+    __slots__ = ('__weakref__',)
+
+    def _immutable(self, *args, **kwargs):
+        raise TypeError('verified shared arrays are read-only')
+
+    __setitem__ = __delitem__ = __iadd__ = __imul__ = _immutable
+    append = extend = insert = pop = remove = clear = reverse = sort = _immutable
+
+    def __deepcopy__(self, memo):
+        from copy import deepcopy
+        result = []
+        memo[id(self)] = result
+        result.extend(deepcopy(v, memo) for v in self)
+        return result
+
+
 class DocumentStore:
     def init_cache(self):
         self.cache = OrderedDict()
         self.cache_bytes = 0
         self.decoded_records = 0
+        # Large arrays bypass the small LRU, but retain identity for as long as
+        # any caller holds them. Weak ownership does not pin all history.
+        self.shared_arrays = WeakValueDictionary()
+        self.shared_array_hits = 0
 
-    def value(self, doc):
+    def value(self, doc, *, shared=False):
+        live = self.shared_arrays.get(doc)
+        if live is not None:
+            self.shared_array_hits += 1
+            return live
         if doc in self.cache:
             self.cache.move_to_end(doc)
-            return self.cache[doc][0]
+            value, size = self.cache[doc]
+            if shared and isinstance(value, list):
+                value = SharedArray(value)
+                self.shared_arrays[doc] = value
+                self.cache[doc] = (value, size)
+            return value
         raw = self.payload(doc)
         self.decoded_records += 1
         from .persistent_index import _decode
@@ -109,8 +150,12 @@ class DocumentStore:
         for field, child in self.links(doc):
             require(isinstance(value,dict) and field in SHARED_FIELDS and field not in value and
                     type(child) is int and 0 < child < doc, 'invalid index shared field')
-            value[field] = self.value(child)
+            value[field] = self.value(child, shared=True)
             require(isinstance(value[field],list), 'index shared field is not an array')
+        if shared:
+            require(isinstance(value, list), 'index shared field is not an array')
+            value = SharedArray(value)
+            self.shared_arrays[doc] = value
         if len(raw) < 1048576:
             self.cache[doc] = (value,len(raw));self.cache_bytes += len(raw)
             while len(self.cache) > 512 or self.cache_bytes > 8*1024*1024:
@@ -120,6 +165,9 @@ class DocumentStore:
     def field(self, name):
         kind,count,doc = self.fields[name]
         if kind == 'value':return self.value(doc)
+        if kind == 'grouped':
+            from .source_index import SourceRelation
+            return SourceRelation(self.field(name+'.sources'), self.field(name+'.members'))
         if name == 'edges':return Edges(self,name,count)
         return Rows(self,name,count) if kind == 'sequence' else Objects(self,name,count)
 
@@ -176,6 +224,18 @@ class Rows(Sequence):
 
 
 class Edges(Rows):
+    def endpoint_pairs(self, reverse=False):
+        # Only identities are needed for path existence; no origin arrays or
+        # event payloads. Both backends preserve the same ordinal order.
+        if hasattr(self.store, 'endpoint_rows'):
+            from .persistent_index import _decode
+            for source, target in self.store.endpoint_rows(reverse):
+                yield _decode(json.loads(source)), _decode(json.loads(target))
+        else:
+            for i in range(self.count-1, -1, -1) if reverse else range(self.count):
+                row = self[i]
+                yield row['from'], row['to']
+
     def decode(self,row):
         _,source,target,event,doc=row
         from .persistent_index import _decode
@@ -194,12 +254,14 @@ class Edges(Rows):
 
 def restore(store, manifest, trace_class):
     from .persistent_index import _FIELDS
-    require(set(store.fields) == _FIELDS-{'lookup_index'} | {'lookup.'+k for k in
+    children = {'lookup.'+name+suffix for name in ('sources_to_final','sources_to_assignments')
+                for suffix in ('.sources','.members')}
+    require(set(store.fields) == children | _FIELDS-{'lookup_index'} | {'lookup.'+k for k in
             ('sources_to_final','sources_to_assignments','consumers','consumer_rows','drivers','aliases')},
             'invalid index trace fields')
     trace = trace_class.__new__(trace_class)
     for field in _FIELDS-{'lookup_index'}:setattr(trace,field,store.field(field))
-    trace.lookup_index = {k.removeprefix('lookup.'):store.field(k) for k in store.fields if k.startswith('lookup.')}
+    trace.lookup_index = {k.removeprefix('lookup.'):store.field(k) for k in store.fields if k.startswith('lookup.') and k not in children}
     require(trace.records[0]['run_id']==manifest['run_id'], 'index run ID mismatch')
     return trace
 

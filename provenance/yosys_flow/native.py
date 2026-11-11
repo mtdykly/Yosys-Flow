@@ -40,12 +40,15 @@ def resolve_bit(bit, module):
 
 
 class NativeTrace:
-    def __init__(self, path):
-        with Path(path).open() as stream:
-            self.records = [json.loads(line) for line in stream]
-        require(bool(self.records) and self.records[0].get("record_type") == "run_begin" and
-                self.records[0].get("schema_version") == 2, "invalid native trace header")
-        require(self.records[-1].get("record_type") == "run_end", "incomplete native trace")
+    def __init__(self, path, progress=None, *, records=None, defer_refinement=False):
+        from .jsonl_records import JsonlRecords
+        if progress: progress("native_record_scan")
+        self.records = JsonlRecords(path, progress) if records is None else records
+        from itertools import chain
+        stream = iter(self.records)
+        header = next(stream, {})
+        require(header.get("record_type") == "run_begin" and
+                header.get("schema_version") == 2, "invalid native trace header")
         self.sources, self.objects, self.assignments, self.events, self.edges = {}, {}, {}, [], []
         self.regions, self.removals = [], []
         self.process_nodes, self.process_actions, self.process_discards = {}, {}, []
@@ -59,11 +62,16 @@ class NativeTrace:
         self.gaps = []
         precision_rank = {"cell": 0, "process_action": 1, "cell_group_candidate": 2,
                           "process_signal_candidate": 3, "abc_region_candidate": 4, "process_pending": 5}
-        conservative_merge = "conservative_precision_merge" in self.records[0].get("features", [])
-        from .native_storage import Arrays
-        arrays = Arrays(self.records[0].get("features", []))
+        conservative_merge = "conservative_precision_merge" in header.get("features", [])
+        from .native_storage import Arrays, same_array
+        arrays = Arrays(header.get("features", []))
         checked_origins = {}
-        for sequence, captured in enumerate(self.records, 1):
+        if progress: progress("native_replay", total_records=len(self.records))
+        ended = False
+        for sequence, captured in enumerate(chain([header], stream), 1):
+            require(not ended, "records after native run_end")
+            if progress and sequence % 10000 == 0:
+                progress("native_replay", records=sequence, total_records=len(self.records))
             row = arrays.decode(captured)
             require(row.get("seq") == sequence, "native sequence discontinuity")
             kind = row["record_type"]
@@ -125,7 +133,7 @@ class NativeTrace:
                 ref = row["ref"]
                 require(re.fullmatch(r"native:cell_[1-9][0-9]*@0", ref) and ref not in self.objects and ref not in retired,
                         "duplicate or invalid native cell creation")
-                self.objects[ref] = row
+                self.objects[ref] = dict(row)
                 live.add(ref)
                 self.events.append(row)
                 if row.get('flatten_event'):
@@ -137,12 +145,12 @@ class NativeTrace:
                     require(set(row["origins"]) == expected, "native creation origins differ from derivation inputs")
                 if row.get("abc_invocation"):
                     region = invocations.get(row["abc_invocation"])
-                    require(region is not None and inputs == region["inputs"] and
-                            row["origins"] == region["origins"] and row["precision"] == "abc_region_candidate",
+                    require(region is not None and same_array(inputs, region["inputs"]) and
+                            same_array(row["origins"], region["origins"]) and row["precision"] == "abc_region_candidate",
                             "native ABC output does not match its region")
                 elif inputs:
                     expected_precision = self.objects[inputs[0]]["precision"] if len(inputs) == 1 else "cell_group_candidate"
-                    if len(inputs) > 1 and "conservative_derivation" in self.records[0].get("features", []):
+                    if len(inputs) > 1 and "conservative_derivation" in header.get("features", []):
                         expected_precision = max([expected_precision, *(self.objects[r]["precision"] for r in inputs)], key=precision_rank.__getitem__)
                     require(row["precision"] == expected_precision, "native derivation changed association precision")
                 self.edges += [{"from": source, "to": ref, "event_id": sequence,
@@ -248,7 +256,7 @@ class NativeTrace:
                 require(out == stem + "@" + str(int(version) + 1), "invalid native cell version")
                 require(out not in self.objects, "duplicate native output reference")
                 expected = self.objects[inputs[0]]["origins"] if len(inputs) == 1 else sorted(set().union(*(set(self.objects[r]["origins"]) for r in inputs)))
-                require(row["origins"] == expected, "native source propagation does not match event inputs")
+                require(same_array(row["origins"], expected), "native source propagation does not match event inputs")
                 expected_precision = self.objects[inputs[0]]["precision"]
                 if kind in {"merge", "cell_contribution"}:
                     other = self.objects[inputs[1]]["precision"]
@@ -300,7 +308,7 @@ class NativeTrace:
                         require(row.get('source_offsets',original['offsets'])==original['offsets'], 'flatten source offsets differ')
                         require(row['lhs']==self.flatten_signal(original['lhs'],event) and
                                 row['rhs']==self.flatten_signal(original['rhs'],event), 'flatten connection pin mapping differs')
-                    require((bool(row.get('flatten_event')) or row["origins"] == original["origins"]) and row["precision"] == original["precision"] and
+                    require((bool(row.get('flatten_event')) or same_array(row["origins"], original["origins"])) and row["precision"] == original["precision"] and
                             len(row["lhs"]) == len(original["lhs"]), "cloned connection differs from input")
                 self.assignments[row["ref"]] = {**row, "original_lhs": deepcopy(row["lhs"]),
                                                 "offsets": list(range(len(row["lhs"]))), "revision": 0}
@@ -312,8 +320,8 @@ class NativeTrace:
                             "native connection origins differ from derivation inputs")
                 if row.get("abc_invocation"):
                     region = invocations.get(row["abc_invocation"])
-                    require(region is not None and inputs == region["inputs"] and
-                            row["origins"] == region["origins"] and row["precision"] == "abc_region_candidate",
+                    require(region is not None and same_array(inputs, region["inputs"]) and
+                            same_array(row["origins"], region["origins"]) and row["precision"] == "abc_region_candidate",
                             "native ABC connection does not match its region")
                 self.edges += [{"from": source, "to": row["ref"], "event_id": sequence,
                                 "capture": 'flatten_connection_clone' if row.get('flatten_event') else "hierarchy_parameter_clone" if cloned_from else row.get("operation") or "assignment_generation", "precision": row["precision"]}
@@ -348,15 +356,15 @@ class NativeTrace:
                 self.events.append(row)
             elif kind == "abc_region":
                 require(row.get("internal_trace_schema") in {None, 1, 2, 3, 4, 5}, "unsupported ABC internal trace schema")
-                if "abc_internal_v5" in self.records[0].get("features", []):
+                if "abc_internal_v5" in header.get("features", []):
                     require(row.get("internal_trace_schema") == 5, "missing declared ABC internal v5 evidence")
-                elif "abc_internal_v4" in self.records[0].get("features", []):
+                elif "abc_internal_v4" in header.get("features", []):
                     require(row.get("internal_trace_schema") == 4, "missing declared ABC internal v4 evidence")
-                elif "abc_internal_v3" in self.records[0].get("features", []):
+                elif "abc_internal_v3" in header.get("features", []):
                     require(row.get("internal_trace_schema") == 3, "missing declared ABC internal v3 evidence")
-                elif "abc_internal_v2" in self.records[0].get("features", []):
+                elif "abc_internal_v2" in header.get("features", []):
                     require(row.get("internal_trace_schema") == 2, "missing declared ABC internal v2 evidence")
-                elif "abc_internal_v1" in self.records[0].get("features", []):
+                elif "abc_internal_v1" in header.get("features", []):
                     require(row.get("internal_trace_schema") == 1, "missing declared ABC internal evidence")
                 require(set(row["inputs"]) <= retired, "ABC region includes non-retired input")
                 require(set(row["origins"]) == set().union(*(set(self.objects[r]["origins"]) for r in row["inputs"])),
@@ -389,7 +397,8 @@ class NativeTrace:
                     require(row["connections"] == {r: obj["revision"] for r, obj in self.assignments.items()},
                             "native connection snapshot differs from replay")
                 if kind == "run_end":
-                    require(not stack and sequence == len(self.records), "unclosed native steps or premature end")
+                    require(not stack, "unclosed native steps or premature end")
+                    ended = True
             elif kind == "coverage_gap":
                 self.gaps.append(row["reason"])
             elif kind == "step_end":
@@ -399,6 +408,7 @@ class NativeTrace:
                 self.events.append(row)
             elif kind not in {"run_begin", "step_begin"}:
                 raise TraceError(f"unknown native record type: {kind}")
+        require(ended, "incomplete native trace")
         self.final = live
         require(all("state" in self.objects[r] for r in live), "final native cell has no state")
         require(all(self.objects[r]["precision"] != "process_pending" for r in live), "unbound process cell at endpoint")
@@ -406,9 +416,8 @@ class NativeTrace:
                     if obj["precision"] == "process_action" and not obj.get("inputs") and not obj.get("cloned_from")), "missing process connection proof")
 
         # Effective query associations must never mutate the captured log.
-        self.objects = {ref: dict(obj) for ref, obj in self.objects.items()}
         from .abc_provenance import refine
-        refine(self)
+        if not defer_refinement: refine(self, progress=progress)
 
     @staticmethod
     def flatten_signal(bits, event):
@@ -423,7 +432,7 @@ class NativeTrace:
                 {s.get('cloned_from') for s in sources}==set(original['origins']) and
                 row['precision']==original['precision'], 'flatten clone sources differ from original')
 
-    def compare_abc_artifacts(self, directory):
+    def compare_abc_artifacts(self, directory, progress=None):
         internal = {}
         self.abc_internal = []
         for region in self.regions:
@@ -432,11 +441,12 @@ class NativeTrace:
             files = {k: Path(directory) / v for k, v in region["artifacts"].items()}
             require(all(p.is_file() and p.stat().st_size > 0 for p in files.values()), "missing ABC evidence artifact")
             from .abc_provenance import validate_artifacts
+            if progress: progress("abc_artifact_validation", invocation=region["invocation_id"])
             validate_artifacts(self, region, files)
             if region.get("internal_trace_schema") in {1, 2, 3, 4, 5}:
                 from .abc_internal import analyze
                 proof, summary = analyze(files["input.blif.flow.jsonl"], files["script"].read_text(), region,
-                                         self.abc_imports.get(region["invocation_id"], {}), files["input.blif"].read_text())
+                                         self.abc_imports.get(region["invocation_id"], {}), files["input.blif"].read_text(), progress=progress)
                 require(summary["schema"] == region["internal_trace_schema"], "ABC internal trace schema differs from declaration")
                 internal[region["invocation_id"]] = proof
                 self.abc_internal.append({"invocation_id": region["invocation_id"], **summary})
@@ -447,9 +457,8 @@ class NativeTrace:
                 if directive == ".inputs" and not expected:
                     expected = ["dummy_input"]
                 require(ports == expected, "ABC boundary differs from exported network")
-        if internal:
-            from .abc_provenance import refine
-            refine(self, internal)
+        from .abc_provenance import refine
+        refine(self, internal or None, progress=progress)
 
     def compare_netlist(self, path):
         modules = json.loads(Path(path).read_text())["modules"]
@@ -475,10 +484,13 @@ class NativeTrace:
                     "recorded frontend connection is no longer valid at endpoint")
 
 
-def run_native(args):
+def run_native(args, *, resume_capture=None):
     require(args.flow in {"synth", "m1", "m1-opt"}, "unsupported native flow")
     index_backend = getattr(args,'index_backend','sqlite')
     require(index_backend in {'sqlite','gzip'}, 'unsupported index backend')
+    skip_stock_equivalence = getattr(args,'skip_stock_equivalence',False)
+    require(not skip_stock_equivalence or resume_capture is not None,
+            '--skip-stock-equivalence is only supported by resume')
     out = Path(args.out).resolve()
     require(not out.exists(), f"output directory already exists: {out}")
     native, stock = shutil.which(args.native_yosys), shutil.which(args.yosys)
@@ -521,7 +533,15 @@ def run_native(args):
         else:
             gaps.append({"stage": "remaining synth / ABC", "coverage": "not_executed", "reason": "本次只执行基础优化检查点。"})
     pipeline = "\n".join(passes)
-    run_id = uuid.uuid4().hex
+    from .capture import (configuration as capture_configuration, stamp, traced_script,
+                          metadata as capture_metadata, bind as bind_capture,
+                          prepare as prepare_capture, copy_capture, publish_checkpoint)
+    origin, prior = resume_capture if resume_capture else (None, None)
+    if prior:
+        require(prior['endpoint'] == '; '.join(passes) and prior['configuration']['passes'] == passes,
+                'resume flow differs from captured endpoint')
+        require(digest(native) == prior['tool']['native_sha256'], 'native executable changed since capture')
+    run_id = prior['run_id'] if prior else uuid.uuid4().hex
     out.mkdir(parents=True)
     manifest = {"schema_version": 2, "run_id": run_id, "status": "running", "flow": args.flow, "input_scope": "combinational",
                 "endpoint": "; ".join(passes), "coverage": "partial", "coverage_gaps": gaps,
@@ -530,8 +550,22 @@ def run_native(args):
                                   "defines": args.define, "parameters": args.param, "passes": passes, "flatten":flatten,
                                   "index_backend":index_backend},
                 "tool": {"versions": versions, "native_executable": str(Path(native).resolve()),
-                         "native_sha256": digest(native), "stock_executable": str(Path(stock).resolve())}}
+                         "native_sha256": digest(native), "stock_executable": str(Path(stock).resolve()),
+                         "stock_sha256": digest(stock)}}
+    manifest['capture_started_ns'] = prior['capture_started_ns'] if prior else time.time_ns()
+    if skip_stock_equivalence:
+        manifest['validation_policy'] = {'stock_to_traced_equivalence':'skipped_by_request',
+            'basis':'record_replay_abc_evidence_and_exact_stock_structure'}
+    if prior:
+        require(capture_configuration(manifest['configuration']) == capture_configuration(prior['configuration']),
+                'resume configuration differs from captured flow')
+        manifest['resume'] = {'source_directory':str(origin), 'source_manifest_sha256':digest(origin/'manifest.json'),
+                              'reused_capture':True, 'source_timings_seconds':prior.get('timings_seconds',{})}
+    else:
+        manifest['source_inputs_before_capture'] = [{'path':str(p), **stamp(p)} for p in sources]
     write_json(out / "manifest.json", manifest)
+    from .progress import ArchiveProgress
+    progress = ArchiveProgress(out.with_name(out.name + ".progress.json"))
 
     def path(name):
         return token(out / name)
@@ -541,6 +575,7 @@ def run_native(args):
 
     def freeze_evidence():
         nonlocal verified_artifacts
+        progress("artifact_hashes")
         current = artifact_inventory(out)
         require_evidence_unchanged(verified_artifacts, current)
         verified_artifacts = current
@@ -551,6 +586,7 @@ def run_native(args):
         command = [binary, "-Q", "-T"]
         if dependencies:
             command += ["-E", str(out / "frontend.d")]
+        progress(name)
         start = time.perf_counter()
         with (out / (name + ".log")).open("w") as log:
             env = os.environ.copy()
@@ -558,52 +594,75 @@ def run_native(args):
             else: env.pop("YOSYS_FLOW_ABC_TRACE", None)
             result = subprocess.run(command + ["-s", str(target)], stdout=log, stderr=subprocess.STDOUT, env=env)
         manifest["timings_seconds"][name] = time.perf_counter() - start
+        write_json(out / "manifest.json", manifest)
         require(result.returncode == 0, f"{name} failed:\n" + (out / (name + ".log")).read_text()[-4000:])
         # Freeze each generated artifact before any subsequent replay or proof
         # consumes it; later stages may add files, never alter earlier evidence.
         freeze_evidence()
 
+    live_replay = None
     try:
-        start_ns = time.time_ns()
-        execute("traced", native, f"flow_start {path('yosys.jsonl')} {run_id}\n{frontend}\nflow_hierarchy\n"
-                f"write_rtlil {path('frontend.il')}\n{pipeline}\ncheck -assert\n"
-                f"write_json {path('after.json')}\nwrite_rtlil {path('after.il')}\nflow_stop\nwrite_verilog {path('after.v')}", True)
+        if prior:
+            copied_at = time.perf_counter()
+            meta, checkpoint = prepare_capture(origin, prior, frontend, pipeline, progress)
+            copy_capture(origin, out, checkpoint, progress)
+            manifest['timings_seconds']['resume_capture_check_and_copy'] = time.perf_counter()-copied_at
+        else:
+            # Maintain source/object/transition maps while complete log batches
+            # arrive. Offline replay remains available for audit and resume.
+            if os.environ.get('YOSYS_FLOW_STREAM_REPLAY', '1') != '0':
+                from .streaming import CaptureReplay
+                live_replay = CaptureReplay(out, NativeTrace)
+            try:
+                execute("traced", native, traced_script(out, run_id, frontend, pipeline).rstrip('\n'), True)
+            finally:
+                if live_replay: live_replay.finished.set()
+            progress('capture_inventory')
+            meta = capture_metadata(out)
+            progress('capture_binding')
+            checkpoint = bind_capture(out, manifest, meta)
+        publish_checkpoint(out, manifest, checkpoint)
+        freeze_evidence()
+        progress("final_netlist_load")
         after = json.loads((out / "after.json").read_text())["modules"]
         for module in after.values(): require_combinational(module,after)
         validation_start = time.perf_counter()
-        trace = NativeTrace(out / "yosys.jsonl")
+        if live_replay:
+            progress('capture_replay_drain')
+            drain_started = time.perf_counter()
+            trace = live_replay.result(checkpoint['artifacts']['yosys.jsonl']['sha256'])
+            manifest['timings_seconds']['capture_replay_drain'] = time.perf_counter()-drain_started
+            manifest['timings_seconds']['capture_replay_overlapped'] = live_replay.seconds
+        else:
+            trace = NativeTrace(out / "yosys.jsonl", progress=progress, defer_refinement=True)
+        progress("final_netlist_check")
         trace.compare_netlist(out / "after.json")
-        trace.compare_abc_artifacts(out)
+        trace.compare_abc_artifacts(out, progress=progress)
         from .hierarchy import instance_view, electrical_design
+        progress("instance_view")
         view = instance_view(trace,after,top)
         freeze_evidence()
         manifest["timings_seconds"]["record_validation"] = time.perf_counter() - validation_start
-        manifest["tool"]["abc"] = []
-        for executable in sorted({r["executable"] for r in trace.regions if "executable" in r}):
-            binary = shutil.which(executable)
-            require(binary is not None, f"recorded ABC executable missing: {executable}")
-            require(Path(binary).stat().st_mtime_ns <= start_ns, "ABC executable changed during run")
-            manifest["tool"]["abc"].append({"executable": str(Path(binary).resolve()), "sha256": digest(binary),
-                "version_output": subprocess.check_output([binary, "-c", "version"], text=True).strip()})
-        # Yosys lists every file opened by its frontend, including includes.
-        # Use its native input_files set via a file list emitted by the recorder.
-        input_record = trace.records[-1]
-        dependencies = set(sources) | {Path(p).resolve(strict=True) for p in input_record.get("input_files", [])}
-        dependencies.discard(out / "traced.ys")
-        for file in sorted(dependencies):
-            require(file.stat().st_mtime_ns <= start_ns, f"input changed during frontend: {file}")
-            manifest["inputs"].append({"path": str(file), "sha256": digest(file), "size_bytes": file.stat().st_size})
+        write_json(out / "manifest.json", manifest)
+        progress("input_and_tool_binding")
+        require({r['executable'] for r in trace.regions} ==
+                {r['recorded_executable'] for r in manifest['tool']['abc']},
+                'replayed ABC executables differ from capture binding')
+        require(trace.records[0]['run_id'] == run_id, 'replayed capture run ID differs')
         execute("baseline", stock, f"{frontend}\n{pipeline}\ncheck -assert\nwrite_json {path('baseline.json')}\nwrite_rtlil {path('baseline.il')}")
         require(after == json.loads((out / "baseline.json").read_text())["modules"], "native result differs from stock flow")
         # Only the disposable proof designs ignore keep_hierarchy. Synthesis
         # artifacts and stock comparison continue to respect the user's flags.
         proof_flatten = f'hierarchy -top {top}\nsetattr -mod -unset keep_hierarchy\nsetattr -unset keep_hierarchy\nflatten\ncheck -assert\n'
         proof_prepare = proof_flatten if len(after)>1 else ''
-        execute("equivalence", stock, f"read_rtlil {path('baseline.il')}\n{proof_prepare}rename {top} gold\ndesign -stash gold_design\n"
-                f"read_rtlil {path('after.il')}\n{proof_prepare}rename {top} gate\ndesign -stash gate_design\n"
-                "design -copy-from gold_design -as gold gold\ndesign -copy-from gate_design -as gate gate\n"
-                "equiv_make gold gate equiv\nhierarchy -top equiv\n"
-                "equiv_simple\nequiv_status -assert")
+        if skip_stock_equivalence:
+            progress('stock_equivalence_skipped', reason='explicit --skip-stock-equivalence')
+        else:
+            execute("equivalence", stock, f"read_rtlil {path('baseline.il')}\n{proof_prepare}rename {top} gold\ndesign -stash gold_design\n"
+                    f"read_rtlil {path('after.il')}\n{proof_prepare}rename {top} gate\ndesign -stash gate_design\n"
+                    "design -copy-from gold_design -as gold gold\ndesign -copy-from gate_design -as gate gate\n"
+                    "equiv_make -inames gold gate equiv\nhierarchy -top equiv\n"
+                    "opt_clean\nequiv_status -assert")
         if view.view_rule=='electrical_instance_expansion_v1':
             write_json(out/'instance-view.json',electrical_design(view,top))
             execute('instance_equivalence',stock,
@@ -613,6 +672,8 @@ def run_native(args):
                 "equiv_make gold gate equiv\nhierarchy -top equiv\nequiv_simple\nequiv_status -assert")
         for row in manifest["inputs"]:
             require(digest(row["path"]) == row["sha256"], f"input changed during run: {row['path']}")
+        require(digest(native) == manifest['tool']['native_sha256'], 'native executable changed during validation')
+        require(digest(stock) == manifest['tool']['stock_sha256'], 'stock executable changed during validation')
         for tool in manifest["tool"]["abc"]:
             require(digest(tool["executable"]) == tool["sha256"], "ABC executable changed during validation")
         manifest["coverage_gaps"] += [{"stage": "native hooks", "coverage": "gap", "reason": g} for g in trace.gaps]
@@ -622,25 +683,37 @@ def run_native(args):
                                  "recorded_connections_match": True, "stock_flow_exact_match": True,
                                  "abc_boundary_matches_exported_network": True,
                                  "abc_internal_evidence_validated": len(trace.abc_internal) == len(trace.regions),
-                                 "stock_to_traced_equivalence": True, "inputs_unchanged": True},
+                                 "stock_to_traced_equivalence": None if skip_stock_equivalence else True, "inputs_unchanged": True},
                       "counts": {"sources": len(trace.sources), "final_cells": len(trace.final), "assignments": len(trace.assignments),
                                  "abc_invocations": len(trace.regions)},
                       "full_transformation_coverage": False, "exact_proc_cell_attribution": False}
+        if not skip_stock_equivalence:
+            validation['stock_equivalence_method'] = 'internal_name_structural_matching_v1'
         if view.view_rule=='electrical_instance_expansion_v1': validation['checks']['instance_view_equivalence']=True
+        if skip_stock_equivalence:
+            validation['validation_policy'] = manifest['validation_policy']
+            validation['skipped_checks'] = {'stock_to_traced_equivalence':
+                'explicit --skip-stock-equivalence; stock_flow_exact_match still passed'}
         write_json(out / "validation.json", validation)
         freeze_evidence()
+        progress("verified_index_build")
         index_started = time.perf_counter()
-        manifest["verified_index"] = write_index(out, manifest, view, verified_artifacts=verified_artifacts)
+        manifest["verified_index"] = write_index(out, manifest, view, verified_artifacts=verified_artifacts, progress=progress)
         manifest["timings_seconds"]["verified_index_build"] = time.perf_counter() - index_started
+        progress("final_artifact_hashes")
         manifest["artifacts"] = {p.name: {"sha256": digest(p), "size_bytes": p.stat().st_size}
                                  for p in sorted(out.iterdir()) if p.is_file() and p.name != "manifest.json"}
         manifest["status"] = "complete"
         write_json(out / "manifest.json", manifest)
+        progress.finish()
         return {"run_directory": str(out), "status": "complete", "index_backend":index_backend, **validation}
     except BaseException as exc:
+        progress.finish("failed", error=str(exc))
         manifest.update(status="failed", error=str(exc))
         write_json(out / "manifest.json", manifest)
         raise
+    finally:
+        if live_replay: live_replay.close()
 
 
 def load_native(directory, manifest, timings=None, *, use_index=True):
@@ -648,7 +721,9 @@ def load_native(directory, manifest, timings=None, *, use_index=True):
     timings = timings if timings is not None else {}
     started = time.perf_counter()
     require(manifest.get("status") == "complete", "native run is incomplete or failed")
-    required = {"yosys.jsonl", "after.json", "baseline.json", "validation.json", "equivalence.log"}
+    required = {"yosys.jsonl", "after.json", "baseline.json", "validation.json"}
+    if manifest.get('validation_policy',{}).get('stock_to_traced_equivalence') != 'skipped_by_request':
+        required.add('equivalence.log')
     require(required <= manifest["artifacts"].keys(), "native manifest is missing required artifacts")
     for name, meta in manifest["artifacts"].items():
         require(Path(name).name == name, "invalid native artifact path")
@@ -700,6 +775,17 @@ def _check_saved_reference(directory, manifest):
             json.loads((directory / "baseline.json").read_text())["modules"], "native stock comparison mismatch")
     validation = json.loads((directory / "validation.json").read_text())
     require(validation.get("valid") is True and validation.get("run_id") == manifest["run_id"], "native validation failed")
+    if manifest.get('validation_policy',{}).get('stock_to_traced_equivalence') == 'skipped_by_request':
+        require(validation.get('validation_policy') == manifest['validation_policy'] and
+                validation.get('checks',{}).get('stock_flow_exact_match') is True and
+                'stock_to_traced_equivalence' in validation.get('checks',{}) and
+                validation['checks']['stock_to_traced_equivalence'] is None and
+                bool(validation.get('skipped_checks',{}).get('stock_to_traced_equivalence')),
+                'skipped stock equivalence must remain explicitly unproved')
+    else:
+        require(validation.get('checks',{}).get('stock_to_traced_equivalence') is True and
+                'stock_to_traced_equivalence' not in validation.get('skipped_checks',{}) and
+                not validation.get('validation_policy'), 'native stock equivalence was not validated')
     return validation
 
 
@@ -719,6 +805,7 @@ def _check_instance_artifact(directory, manifest, trace, validation):
 
 def query_native(args, manifest, trace, *, compact=False):
     from .graph_index import walk, has_paths
+    from .origin_sets import OriginMatcher
     from .sqlite_index import store_for, selected as indexed_rows
     store = store_for(trace)
     reverse = args.object is not None
@@ -771,15 +858,17 @@ def query_native(args, manifest, trace, *, compact=False):
         if reverse: require(bool(seeds), 'object has no recorded sources in the selected instance')
     design = trace.design
     final = []
+    matching = OriginMatcher(seeds)
     lookup = getattr(trace, 'lookup_index', None)
     final_refs = trace.final
     if reverse:
         final_refs = {object_ref} if object_ref in trace.final else set()
     elif lookup is not None:
-        final_refs = set().union(*(lookup['sources_to_final'].get(s, []) for s in seeds))
+        from .source_index import source_objects
+        final_refs = source_objects(lookup['sources_to_final'], seeds)
     for ref in sorted(final_refs):
         row = trace.objects[ref]
-        if (reverse and object_ref != ref) or (not reverse and not seeds.intersection(row["origins"])):
+        if (reverse and object_ref != ref) or (not reverse and not matching.intersects(row["origins"])):
             continue
         state = row["state"]
         final.append({"ref": ref, "module": state["module"], "name": state["name"], "type": state["type"],
@@ -811,11 +900,12 @@ def query_native(args, manifest, trace, *, compact=False):
     assignment_refs = trace.assignments
     origin_assignment_refs = trace.assignments
     if lookup is not None:
-        origin_assignment_refs = set().union(*(lookup['sources_to_assignments'].get(s, []) for s in seeds))
+        from .source_index import source_objects
+        origin_assignment_refs = source_objects(lookup['sources_to_assignments'], seeds)
         assignment_refs = ({object_ref} if object_ref in trace.assignments else set()) if reverse else origin_assignment_refs
     for ref in sorted(assignment_refs):
         row = trace.assignments[ref]
-        if (reverse and object_ref != ref) or (not reverse and not seeds.intersection(row["origins"])):
+        if (reverse and object_ref != ref) or (not reverse and not matching.intersects(row["origins"])):
             continue
         lhs_bits = [resolve_bit(b, design) for b in row["lhs"]]
         if expression_selection and final and not all(b in selected_output_bits for b in lhs_bits):

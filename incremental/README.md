@@ -43,6 +43,8 @@ python3 -m incremental compare --mode retained --repeats 3 --out runs/comparison
 
 优化后的跨案例归因见 [cost-attribution-suite.md](cost-attribution-suite.md)：覆盖此前 ANUBIS 与六个 EPFL 电路的 16 个修改/层次组合，分别列出未加诊断的在线阶段、选区内部热点、实际复用比例，以及 `arbiter` 的离线建档阻塞。CPU 采样区分网表生成前后，后验验证不混入在线瓶颈判断。
 
+更大规模的 `hyp` 实验见 [hyp-comparison.md](hyp-comparison.md)：239,751 行源码，已确认局部修改影响顶层功能，新版全量生成曾测得 568.034 秒。早期建档超时后，已有捕获现已成功续建为共享集合 SQLite 索引。首次在线尝试在选区阶段发生大集合重复解码，峰值内存 242.4 GiB；当前已修复内存共享、批量路径检查和计划来源集合编码。尚未完成该案例增量替换，不报告其增量加速比；文档保留失败记录与手工命令。
+
 ## 显式区域实验与审查接口
 
 ```bash

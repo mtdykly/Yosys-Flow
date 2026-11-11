@@ -17,7 +17,8 @@ from .extract import slice_module, extend_inputs
 from .native import resolve_bit
 from .region_functions import verify_outputs
 from .runner import load_run, query_loaded
-from .graph_index import walk, incoming, has_path
+from .graph_index import walk, incoming, has_path, has_paths, supporting_nodes
+from .origin_sets import OriginSets, pack_plan_sources, cell_origins
 from .sqlite_index import selected as indexed_rows
 
 SELECTOR_KEYS = ('source','line','end_line','column','end_column','object','instance')
@@ -119,6 +120,12 @@ class ContractContext:
         # Only compact plans are cached: legacy expanded evidence can be huge.
         self.plans = {}
         self._users = None
+        self._share_plan_sources = True
+        self.progress = None
+
+    def notify(self, step, **details):
+        callback = getattr(self, 'progress', None)
+        if callback: callback(step, **details)
 
     def input_changes(self):
         return [r['path'] for r in self.manifest['inputs'] if not Path(r['path']).is_file() or digest(r['path'])!=r['sha256']]
@@ -127,8 +134,10 @@ class ContractContext:
         require(set(selector)==set(SELECTOR_KEYS), 'invalid contract selector fields')
         key = (self.compact,fingerprint(selector))
         if key not in self.queries:
+            self.notify('source_query')
             args = SimpleNamespace(directory=str(self.directory),**selector)
             self.queries[key] = query_loaded(args,self.manifest,self.trace,compact=self.compact)
+            self.notify('source_query_complete', cells=len(self.queries[key]['final_cells']))
         return self.queries[key]
 
     def cell(self, ref):
@@ -139,6 +148,24 @@ class ContractContext:
         # continuous path, but do not build and discard a whole reverse-query
         # report (events, proofs and retired objects) for each final cell.
         require(has_path(self.trace.edges,row['origins'],ref), 'selected object has no continuous source evidence path')
+        return self._cell(ref, row)
+
+    def cells(self, refs):
+        """Check every cell, sharing work only for equal source sets."""
+        pool, groups, rows = OriginSets(), {}, []
+        for ref in sorted(refs):
+            require(ref in self.trace.final, 'contract cell is not live in this baseline')
+            row = self.trace.objects[ref]
+            rows.append((ref,row))
+            groups.setdefault(pool.group(row['origins']), []).append(ref)
+        self.notify('cell_source_paths', cells=len(rows), origin_groups=len(groups))
+        for group, targets in groups.items():
+            require(has_paths(self.trace.edges,pool.groups[group],targets),
+                    'selected object has no continuous source evidence path')
+        return [self._cell(ref,row) for ref,row in rows]
+
+    def _cell(self, ref, row):
+        state = row['state']
         result = {k:state[k] for k in ('module','name','type')}
         result.update(ref=ref, precision=row['precision'], origin_ids=row['origins'])
         result.update({k:row[k] for k in ('definition_ref','definition_module','definition_name',
@@ -171,7 +198,8 @@ class ContractContext:
         require(document.get('baseline')==self.baseline, 'contract baseline differs from this run')
         key = document['contract_id']
         if key not in self.validated:
-            expected = self._build_mode(document['derivation'],depth,compact=schema==2)
+            expected = self._build_mode(document['derivation'],depth,compact=schema==2,
+                                        shared_origins='source_sets' in document)
             require(document==expected, 'contract differs from replayed region, outputs, evidence or obligations')
             self.validated[key] = True
         return document
@@ -184,9 +212,11 @@ class ContractContext:
             return document
         return self.build({'kind':'source_cut','parent':document})
 
-    def _build_mode(self, derivation, depth, *, compact):
+    def _build_mode(self, derivation, depth, *, compact, shared_origins=None):
         original = self.compact
+        original_sharing = self._share_plan_sources
         self.compact = compact
+        if shared_origins is not None: self._share_plan_sources = shared_origins
         try:
             document = self._build(derivation,depth)
             if compact:
@@ -195,6 +225,7 @@ class ContractContext:
             return document
         finally:
             self.compact = original
+            self._share_plan_sources = original_sharing
 
     def _parent(self, item, depth):
         if not self.compact or 'schema_version' in item:
@@ -281,7 +312,7 @@ class ContractContext:
         closure = group_closure(self.trace,starting)
         refs = set(closure['required_final_cell_refs'])
         closed = group_closure(self.trace,refs)
-        cells = [self.cell(ref) for ref in sorted(refs)]
+        cells = self.cells(refs)
         connection_rows = [self.connection(ref) for ref in sorted(connections)]
         names = [unescape(c['name']) for c in cells]
         sliced,boundary = slice_module(self.module,names,'region',connection_rows)
@@ -318,13 +349,16 @@ class ContractContext:
                 'parameters':{unescape(k):v for k,v in state['parameters'].items()},
                 'port_directions':{unescape(k):v for k,v in state['port_directions'].items()},
                 'connections':{unescape(k):[resolve_bit(b,self.module) for b in bs] for k,bs in state['connections'].items()}}
+        self.notify('region_output_functions', cells=len(cells), boundary_ports=len(boundary))
         functions = verify_outputs(recorded,sliced['modules']['region']['cells'],boundary)
-        supporting, _ = walk(self.trace.edges,refs|connections,reverse=True)
+        self.notify('region_supporting_evidence')
+        supporting = supporting_nodes(self.trace.edges,refs|connections)
         indexed_edges = incoming(self.trace.edges,supporting)
         edges = [e for _,e in indexed_edges]
         indexed_associations = indexed_rows(self.trace,'abc_associations','ref',supporting)
         associations = [r for _,r in indexed_associations]
-        origin_ids = {s for c in cells for s in c['origin_ids']} | {s for c in connection_rows for s in c['origins']}
+        origin_sets = OriginSets()
+        origin_ids = origin_sets.union([c['origin_ids'] for c in cells]+[c['origins'] for c in connection_rows])
         invocation_ids = {a['invocation_id'] for a in associations}
         provenance = {'record_event_ids':sorted({e['event_id'] for e in edges}),
             'coverage':self.manifest['coverage'], 'coverage_gaps':self.manifest['coverage_gaps'],
@@ -354,12 +388,13 @@ class ContractContext:
             connection_refs = {s['ref'] for s in boundary_row.get('source_connections',[])}
             if 'connection_ref' in boundary_row: connection_refs.add(boundary_row['connection_ref'])
             contributing_connections = [c for c in connection_rows if c['ref'] in connection_refs]
-            sources = {s for c in contributing for s in c['origin_ids']} | {s for c in contributing_connections for s in c['origins']}
+            sources = origin_sets.ordered_union([c['origin_ids'] for c in contributing]+
+                                                 [c['origins'] for c in contributing_connections])
             candidates = [c['ref'] for c in contributing+contributing_connections if c['precision'] not in EXACT_PRECISIONS]
             output_seeds.append({c['ref'] for c in contributing} | connection_refs)
             outputs.append({**proof, 'external_users':boundary_row['external_users'],
                 'connection_refs':sorted(connection_refs), 'contributing_cell_refs':[c['ref'] for c in contributing],
-                'recorded_source_ids':sorted(sources), 'candidate_refs':candidates,
+                'recorded_source_ids':sources, 'candidate_refs':candidates,
                 'association_evidence_refs':[],
                 'source_correspondence':'candidate' if candidates else 'recorded_relations_and_declared_local_proofs',
                 'source_completeness_proven':False, 'rtl_function_of_this_output_proven':False,
@@ -428,6 +463,9 @@ class ContractContext:
                 'overlapping_cell_refs':sorted(r for r,count in counts.items() if count>1),
                 'parent_boundary_mapping':mappings, 'all_outputs_recomputed':True,
                 'reused_association_refs':sorted({a['ref'] for p in parents for a in p['provenance']['abc_associations']})}
+        if self.compact and self._share_plan_sources:
+            pack_plan_sources(result)
+        self.notify('region_plan_encoding', cells=len(cells))
         return seal(deepcopy(result))
 
     def expanded_provenance(self, document):
@@ -481,7 +519,8 @@ def export_selection(context, document):
     changed = context.input_changes()
     cells,connections = document['region']['cells'],document['region']['connections']
     if document['schema_version']==2:
-        cells = [{**c,'all_origins':[context.trace.sources[s] for s in c['origin_ids']]} for c in cells]
+        cells = [{**c,'origin_ids':cell_origins(document,c),
+                  'all_origins':[context.trace.sources[s] for s in cell_origins(document,c)]} for c in cells]
     return {'final_cells':cells, 'final_connections':connections, 'resolution':'contract_region',
         'association_precision':sorted({r['precision'] for r in cells+connections}),
         'seeds':document['request']['source_ids'], 'sources':provenance['sources'],

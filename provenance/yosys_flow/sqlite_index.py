@@ -10,7 +10,7 @@ from .common import TraceError, digest, require
 from .index_store import (DocumentStore, Objects, Rows, Edges, SHARED_FIELDS, EAGER,
                           TABLE_WIDTHS, key, populate, restore, store_for, selected)
 NAME = 'verified-index.sqlite3'
-SCHEMA = 2
+SCHEMA = 3
 
 SCHEMA_SQL = '''
             PRAGMA journal_mode=DELETE;
@@ -49,7 +49,7 @@ def authenticate(secret, descriptor):
     return hmac.new(secret, b'yosys-flow-sqlite-index-v1\0'+key(descriptor).encode(), hashlib.sha256).hexdigest()
 
 
-def write(directory, manifest, trace, verified_artifacts):
+def write(directory, manifest, trace, verified_artifacts, progress=None):
     from . import persistent_index as pi
     directory = Path(directory)
     artifacts = pi.artifact_inventory(directory)
@@ -62,7 +62,7 @@ def write(directory, manifest, trace, verified_artifacts):
         try:
             con.executescript(SCHEMA_SQL)
             con.execute('BEGIN')
-            populate(trace, Sink(con))
+            populate(trace, Sink(con), progress)
             con.commit()
             require(con.execute('PRAGMA integrity_check').fetchone()[0]=='ok','invalid SQLite index build')
         finally:
@@ -110,6 +110,10 @@ class Store(DocumentStore):
         require(row is not None,'SQLite edge sequence gap')
         return row
     def iter_edges(self):return self.connection.execute(self.EDGE_SQL+' ORDER BY e.ordinal')
+    def endpoint_rows(self, reverse=False):
+        return self.connection.execute('''SELECT s.value,t.value FROM edges e
+            JOIN refs s ON s.id=e.src JOIN refs t ON t.id=e.dst ORDER BY e.ordinal '''+
+            ('DESC' if reverse else 'ASC'))
     def adjacent_rows(self,encoded,reverse):
         column='dst' if reverse else 'src'
         return self.connection.execute(self.EDGE_SQL+' WHERE e.'+column+
@@ -126,11 +130,12 @@ class Store(DocumentStore):
 
 def read(directory,manifest,trace_class):
     from . import persistent_index as pi
+    from .index_compatibility import compatible
     path=Path(directory)/NAME
     if not path.is_file():return None,'missing'
     descriptor=manifest.get('verified_index',{})
     if descriptor.get('schema_version')!=SCHEMA:return None,'schema_changed'
-    if descriptor.get('implementation')!=pi.implementation_fingerprint():return None,'implementation_changed'
+    if not compatible(descriptor.get('implementation'),pi.implementation_fingerprint()):return None,'implementation_changed'
     if descriptor.get('binding')!=pi._binding(manifest,manifest['artifacts']):return None,'archive_binding_changed'
     require(descriptor.get('database_sha256')==manifest['artifacts'][NAME]['sha256'],'SQLite index payload checksum mismatch')
     secret=pi._authentication_key()

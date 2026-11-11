@@ -1,6 +1,6 @@
 """Authenticated, deduplicated gzip index with in-memory relation lookups.
 
-This is schema 2, not the legacy expanded trace JSON. It uses the same row
+This is schema 3, not the legacy expanded trace JSON. It uses the same row
 builder and query views as SQLite and never creates an intermediate database.
 """
 import bisect
@@ -18,7 +18,7 @@ from .common import TraceError, digest, require
 from .index_store import DocumentStore, TABLE_WIDTHS, SHARED_FIELDS, key, populate, restore
 
 NAME = 'verified-index.json.gz'
-SCHEMA = 2
+SCHEMA = 3
 KIND = 'deduplicated_native_index'
 
 
@@ -32,7 +32,7 @@ def authenticate(secret, descriptor):
     return hmac.new(secret,b'yosys-flow-gzip-index-v2\0'+key(descriptor).encode(),hashlib.sha256).hexdigest()
 
 
-def write(directory, manifest, trace, verified_artifacts):
+def write(directory, manifest, trace, verified_artifacts, progress=None):
     from . import persistent_index as pi
     directory = Path(directory)
     artifacts = pi.artifact_inventory(directory)
@@ -42,7 +42,7 @@ def write(directory, manifest, trace, verified_artifacts):
     temporary.unlink(missing_ok=True)
     try:
         sink = Sink()
-        populate(trace,sink)
+        populate(trace,sink,progress)
         envelope = {'schema_version':SCHEMA,'kind':KIND,'tables':sink.tables}
         with temporary.open('wb') as stream:
             with gzip.GzipFile(fileobj=stream,mode='wb',filename='',compresslevel=1,mtime=0) as compressed:
@@ -88,7 +88,7 @@ class Store(DocumentStore):
             self.shared[doc][field] = child
         self.fields = {}
         for name,kind,count,doc in tables.pop('fields'):
-            require(isinstance(name,str) and name not in self.fields and kind in {'mapping','sequence','value'}
+            require(isinstance(name,str) and name not in self.fields and kind in {'mapping','sequence','value','grouped'}
                     and type(count) is int and count>=0 and
                     ((kind=='value' and count==0 and doc in self.documents) or (kind!='value' and doc is None)),
                     'invalid gzip index field')
@@ -104,7 +104,7 @@ class Store(DocumentStore):
             ordinals[field][ordinal] = encoded,doc
         self.ordered = {field:[row for _,row in sorted(rows.items())] for field,rows in ordinals.items()}
         for field,(kind,count,_) in self.fields.items():
-            if kind!='value' and field!='edges':
+            if kind not in {'value','grouped'} and field!='edges':
                 require(len(self.ordered.get(field,[]))==count, 'gzip index sequence gap')
         self.refs = {}
         self.ref_ids = {}
@@ -162,6 +162,9 @@ class Store(DocumentStore):
         ordinal,source,target,event,doc = self.edge_rows[i]
         return ordinal,self.refs[source],self.refs[target],event,doc
     def iter_edges(self):return (self.edge_at(i) for i in range(len(self.edge_rows)))
+    def endpoint_rows(self, reverse=False):
+        for _,source,target,_,_ in reversed(self.edge_rows) if reverse else self.edge_rows:
+            yield self.refs[source],self.refs[target]
     def adjacent_rows(self,encoded,reverse):
         lookup = self.reverse if reverse else self.forward
         return (self.edge_at(i) for i in lookup.get(self.ref_ids.get(encoded),[]))
@@ -175,11 +178,12 @@ class Store(DocumentStore):
 
 def read(directory,manifest,trace_class):
     from . import persistent_index as pi
+    from .index_compatibility import compatible
     path = Path(directory)/NAME
     if not path.is_file():return None,'missing'
     descriptor = manifest.get('verified_index',{})
     if descriptor.get('schema_version')!=SCHEMA:return None,'schema_changed'
-    if descriptor.get('implementation')!=pi.implementation_fingerprint():return None,'implementation_changed'
+    if not compatible(descriptor.get('implementation'),pi.implementation_fingerprint()):return None,'implementation_changed'
     if descriptor.get('binding')!=pi._binding(manifest,manifest['artifacts']):return None,'archive_binding_changed'
     require(descriptor.get('artifact')==NAME and descriptor.get('backend')=='gzip' and
             descriptor.get('gzip_sha256')==manifest['artifacts'][NAME]['sha256'], 'gzip index payload checksum mismatch')

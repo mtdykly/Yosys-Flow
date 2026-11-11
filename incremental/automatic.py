@@ -10,12 +10,14 @@ import shutil
 import subprocess
 import time
 import tempfile
+import traceback
 from types import SimpleNamespace
 from urllib.parse import quote
 import uuid
 
 from yosys_flow.common import PIN, digest, require, require_combinational, token, unescape, write_json
 from yosys_flow.contracts import ContractContext
+from yosys_flow.traversal import evaluate_stack
 from . import rtlil, replace, equivalence
 from .failures import classify
 
@@ -69,35 +71,57 @@ def input_support(modules, name):
     Builtin multi-bit cells conservatively depend on all input bits. This may
     enlarge a patch but cannot classify a genuinely used input as unused.
     """
-    module=modules[name];drivers={};memo={};active=set()
-    for cell in module['cells'].values():
-        for p,d in cell['port_directions'].items():
-            if d=='output':
-                for i,b in enumerate(cell['connections'][p]):
-                    if isinstance(b,int):
-                        require(b not in drivers,'multiple coarse IR drivers');drivers[b]=(cell,p,i)
-    inputs={b for p in module['ports'].values() if p['direction']=='input' for b in p['bits']}
-    child_support={}
-    def visit(bit):
-        if isinstance(bit,str):return set()
-        if bit in inputs:return {bit}
-        if bit in memo:return memo[bit]
-        require(bit not in active,'cycle in new coarse IR');active.add(bit)
-        require(bit in drivers,'undriven output in new coarse IR')
-        cell,port,index=drivers[bit]
-        if cell['type'] in modules:
-            if cell['type'] not in child_support:child_support[cell['type']]=input_support(modules,cell['type'])
-            supports=child_support[cell['type']][port,index]
-            dependencies=[cell['connections'][p][i] for p,i in supports]
-        else:dependencies=[b for p,bs in cell['connections'].items() if cell['port_directions'][p]=='input' for b in bs]
-        result=set().union(*(visit(b) for b in dependencies));active.remove(bit);memo[bit]=result
-        return result
-    by_bit={}
-    for p,info in module['ports'].items():
-        if info['direction']=='input':
-            for i,b in enumerate(info['bits']):by_bit.setdefault(b,set()).add((p,i))
-    return {(p,i):set().union(*(by_bit[b] for b in visit(bit))) for p,info in module['ports'].items()
-            if info['direction']=='output' for i,bit in enumerate(info['bits'])}
+    completed={};active_modules=set()
+
+    def module_steps(name):
+        if name in completed:return completed[name]
+        require(name not in active_modules,'recursive coarse IR hierarchy')
+        active_modules.add(name)
+        try:
+            module=modules[name];drivers={};memo={};active=set()
+            for cell in module['cells'].values():
+                for p,d in cell['port_directions'].items():
+                    if d=='output':
+                        for i,b in enumerate(cell['connections'][p]):
+                            if isinstance(b,int):
+                                require(b not in drivers,'multiple coarse IR drivers');drivers[b]=(cell,p,i)
+            inputs={b for p in module['ports'].values() if p['direction']=='input' for b in p['bits']}
+
+            def bit_steps(bit):
+                if isinstance(bit,str):return set()
+                if bit in inputs:return {bit}
+                if bit in memo:return memo[bit]
+                require(bit not in active,'cycle in new coarse IR');active.add(bit)
+                try:
+                    require(bit in drivers,'undriven output in new coarse IR')
+                    cell,port,index=drivers[bit]
+                    if cell['type'] in modules:
+                        child=yield module_steps(cell['type'])
+                        dependencies=[cell['connections'][p][i] for p,i in child[port,index]]
+                    else:
+                        dependencies=[b for p,bs in cell['connections'].items()
+                                      if cell['port_directions'][p]=='input' for b in bs]
+                    result=set()
+                    for b in dependencies:result.update((yield bit_steps(b)))
+                    memo[bit]=result
+                    return result
+                finally:active.remove(bit)
+
+            by_bit={}
+            for p,info in module['ports'].items():
+                if info['direction']=='input':
+                    for i,b in enumerate(info['bits']):by_bit.setdefault(b,set()).add((p,i))
+            result={}
+            for p,info in module['ports'].items():
+                if info['direction']!='output':continue
+                for i,bit in enumerate(info['bits']):
+                    support=yield bit_steps(bit)
+                    result[p,i]=set().union(*(by_bit[b] for b in support))
+            completed[name]=result
+            return result
+        finally:active_modules.remove(name)
+
+    return evaluate_stack(module_steps(name))
 
 
 def contract_for(context,old,catalog,scopes):
@@ -302,6 +326,11 @@ def reuse_archived(context,args,out,report,frozen_inputs,had_changes):
 
 
 def run(args):
+    with replace.yosys_timeout(getattr(args, 'yosys_timeout', 120.0)):
+        return _run(args)
+
+
+def _run(args):
     out=Path(args.out).resolve();require(not out.exists(),'refusing to overwrite '+str(out));out.mkdir(parents=True)
     work=out/'work';work.mkdir();started=time.perf_counter();stage='baseline'
     selection_mode=getattr(args,'selection_mode','fine')
@@ -309,6 +338,8 @@ def run(args):
         'granularity':('changed_assignments_with_boundary_closure_and_module_fallback' if selection_mode=='fine'
                        else 'changed_module_instances_with_boundary_closure'),
         'selection_mode':selection_mode,'minimal_region_claimed':False,
+        'resource_policy':{'yosys_call_timeout_seconds':float(getattr(args,'yosys_timeout',120.0)),
+                           'separate_source_proof_and_precheck_budgets_unchanged':True},
         'new_full_synthesis_used_only_as_validation_oracle':True,'timings':{},'attempts':[],
         'timing_scope':{
             'baseline_replay_seconds':'legacy field name: archive hash checks, verified-index restore or raw replay, and archived frontend parsing; see baseline_load for the actual path',
@@ -318,16 +349,18 @@ def run(args):
             'netlist_generation_seconds':'all automatic preparation plus local synthesis, binding, splice and complete JSON/IL/Verilog export; includes selection evidence, excludes post-generation validation',
             'post_generation_validation_seconds':'post-export correctness validation only; excluded from generation time',
             'incremental_candidate_ready_seconds':'online preparation and checked candidate construction; excludes new full synthesis and its validation oracle'}}
-    def checkpoint():
+    def checkpoint(detail=None, **details):
         # A killed worker cannot publish its final report. Keep completed phase
         # timings separate from the currently running (possibly timed-out) phase.
         write_json(out/'progress.json',{'stage':stage,'elapsed_seconds':time.perf_counter()-started,
             'completed_timings':report['timings'],'baseline_load':report.get('baseline_load'),
-            'selection_strategy':report.get('selection_strategy')})
+            'selection_strategy':report.get('selection_strategy'),
+            **({'detail':detail,**details} if detail else {})})
     checkpoint()
     try:
         require(selection_mode in {'fine','module'},'selection_mode must be fine or module')
         context=ContractContext(args.base_run,compact=True);top=context.baseline['module']
+        context.progress = checkpoint
         report['baseline_load']=context.load_timings
         require('frontend.il' in context.manifest['artifacts'],'automatic mode requires archived pre-proc frontend.il')
         old=rtlil.parse((context.directory/'frontend.il').read_text())
@@ -431,6 +464,8 @@ def run(args):
         report.update(status='blocked',failure={'stage':stage,'code':exc.code,'detail':exc.detail},published_incremental_netlist=False)
     except Exception as exc:
         report.update(status='failed',failure=classify(stage,exc),published_incremental_netlist=False)
+        (out/'failure-traceback.txt').write_text(traceback.format_exc())
+        report['failure']['traceback']='failure-traceback.txt'
     report['timings']['total_seconds']=time.perf_counter()-started
     write_json(out/'report.json',report)
     return report

@@ -56,7 +56,7 @@ def has_path(edges, sources, target):
     This is the compact cell check, not the full supporting-evidence export.
     A larger reverse event bound subsumes all visits with a smaller bound.
     """
-    sources=set(sources)
+    if not isinstance(sources, (set, frozenset)): sources=set(sources)
     if target in sources:return True
     if not hasattr(edges,'adjacent'):edges=EdgeList(edges)
     queue=[(target,len(edges))];seen={target:len(edges)}
@@ -78,23 +78,33 @@ def has_paths(edges, sources, targets):
     reverse search for each output would revisit it N times. This forward scan
     retains chronological bounds and stops once every requested target is seen.
     """
-    targets, sources = set(targets), set(sources)
+    targets = set(targets)
+    if not isinstance(sources, (set, frozenset)): sources=set(sources)
     if len(targets) <= 8:
         return all(has_path(edges, sources, target) for target in targets)
-    if not hasattr(edges, 'adjacent'): edges = EdgeList(edges)
-    reached, queued, heap = set(sources), set(), []
+    reached = set(sources)
     missing = targets - reached
-    def push(node, bound):
-        for i, edge in edges.adjacent(node):
-            if i > bound and i not in queued:
-                queued.add(i)
-                heapq.heappush(heap, (i, edge))
-    for node in reached: push(node, -1)
-    while missing and heap:
-        i, edge = heapq.heappop(heap)
-        target = edge['to']
-        if target not in reached:
-            reached.add(target)
-            missing.discard(target)
-            if missing: push(target, i)
+    if not missing: return True
+    # A chronological stream preserves event bounds without a query/queue per
+    # source or decoded evidence payload for every edge.
+    for source, target in endpoint_pairs(edges):
+        if source in reached:
+            reached.add(target); missing.discard(target)
+            if not missing: return True
     return not missing
+
+
+def endpoint_pairs(edges, reverse=False):
+    if hasattr(edges, 'endpoint_pairs'):
+        yield from edges.endpoint_pairs(reverse)
+    else:
+        for row in reversed(edges) if reverse else edges:
+            yield row['from'], row['to']
+
+
+def supporting_nodes(edges, seeds):
+    """Reverse chronological ancestry without discarded evidence payloads."""
+    reached = set(seeds)
+    for source, target in endpoint_pairs(edges, reverse=True):
+        if target in reached: reached.add(source)
+    return reached

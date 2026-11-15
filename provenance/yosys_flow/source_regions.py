@@ -95,38 +95,42 @@ def make_cut(context, document, source):
     cells,aliases,primary=source
     resolver=Endpoints(context);by_final=defaultdict(set);anchors=defaultdict(list)
     for (path,wire,offset),value in sorted(aliases.items()):
-        final=resolver.bit(path,wire,offset)
-        if isinstance(final,int):
-            by_final[final].add(value)
-            anchors[final].append({'instance':path,'wire':wire,'offset':offset,'source_bit':value})
+        for final,inverted in resolver.signals(path,wire,offset):
+            if isinstance(final,int):
+                by_final[final].add((value,inverted))
+                anchors[final].append({'instance':path,'wire':wire,'offset':offset,'source_bit':value,'inverted':inverted})
     inputs=[b for b in document['boundary'] if b['direction']=='input']
     outputs=[b for b in document['boundary'] if b['direction']=='output']
     require(inputs and outputs,'source cut requires inputs and outputs')
     require(not document['region']['connections'],'source cut connection rebinding is unsupported')
-    ports={};cuts={};next_bit=2;mapping={};actual_mapping={};reference_outputs={};evidence=[]
+    ports={};cuts={};next_bit=2;mapping={};actual_mapping={};reference_outputs={};evidence=[];inverters={}
     manager=LogicDAG()
     primaries=sorted(b for b in primary if isinstance(b,int))
     full=Circuit(cells,dict(zip(primaries,manager.variables(len(primaries)))),manager)
     def allocate():
         nonlocal next_bit
         value=next_bit;next_bit+=1;return value
+    def invert(value):
+        if isinstance(value,str):return {'0':'1','1':'0','x':'x','z':'x'}[value]
+        if value not in inverters:inverters[value]=allocate()
+        return inverters[value]
     for row in inputs:
         final=row['original_bit'];values=by_final[final]
-        if not values or not all(isinstance(b,int) for b in values):raise MissingInputs([final])
+        if not values or not all(isinstance(b,int) for b,phase in values):raise MissingInputs([final])
         if len(values)>1:
-            try:equal=len({full.value(b) for b in values})==1
+            try:equal=len({full.value(b)^int(phase) for b,phase in values})==1
             except (TraceError,UnsupportedFunction,RecursionError):equal=False
             if not equal:raise MissingInputs([final])
         value=allocate()
-        require(not any(b in cuts for b in values),'distinct boundary inputs alias in source')
-        for old in values:cuts[old]=value
+        require(not any(b in cuts for b,phase in values),'distinct boundary inputs alias in source')
+        for old,phase in values:cuts[old]=invert(value) if phase else value
         actual_mapping[final]=value
         ports[row['port']]={'direction':'input','bits':[value]}
         evidence.append({'port':row['port'],'direction':'input','final_bit':final,'anchors':anchors[final]})
     for row in outputs:
         final=row['original_bit'];values=by_final[final]
         require(values,'source output identity unavailable: '+row['port'])
-        for i,old in enumerate(sorted(values,key=str)):
+        for i,(old,phase) in enumerate(sorted(values,key=str)):
             name=row['port']+'__anchor_'+str(i)
             reference_outputs[name]=old
         evidence.append({'port':row['port'],'direction':'output','final_bit':final,'anchors':anchors[final]})
@@ -181,10 +185,14 @@ def make_cut(context, document, source):
         gate['cells'][name]={**deepcopy(cell),'attributes':{},'hide_name':1,
                             'connections':{p:[actual(b) for b in bs] for p,bs in cell['connections'].items()}}
     for row in outputs:
-        for i,old in enumerate(sorted(by_final[row['original_bit']],key=str)):
+        for i,(old,phase) in enumerate(sorted(by_final[row['original_bit']],key=str)):
             name=row['port']+'__anchor_'+str(i)
-            gold['ports'][name]={'direction':'output','bits':[signal(old)]}
+            value=signal(old)
+            gold['ports'][name]={'direction':'output','bits':[invert(value) if phase else value]}
             gate['ports'][name]={'direction':'output','bits':[actual(row['original_bit'])]}
+    for value,target in inverters.items():
+        gold['cells']['__anchor_not_'+str(target)]={'type':'$_NOT_','parameters':{},'attributes':{},'hide_name':1,
+            'port_directions':{'A':'input','Y':'output'},'connections':{'A':[value],'Y':[target]}}
     for module in (gold,gate):
         module['netnames']={n:{'hide_name':0,'bits':p['bits'],'attributes':{}} for n,p in module['ports'].items()}
     return {'modules':{'gold':gold,'gate':gate}},evidence
@@ -218,6 +226,14 @@ def prove_design(binary, directory, design):
 
 def prove(context, document):
     from .contracts import fingerprint
+    from .partition_store import region_certificate
+    certificate=region_certificate(context,{c['ref'] for c in document['region'].get('cells',[])})
+    if certificate and certificate.get('source_proof',{}).get('status')=='verified' and \
+            certificate.get('source_cut_sha256')==cut_signature(document):
+        saved=certificate['source_proof']
+        require(saved['all_outputs'] and saved['frontend_sha256']==context.baseline['artifacts']['frontend.il']['sha256'],
+                'cached source proof is bound to a different frontend')
+        return {**saved,'reused_from_authenticated_partition':certificate['id']}
     binary=context.manifest['tool']['stock_executable']
     result={'rule':'archived_source_independent_cut_sat_v1','status':'not_proven',
             'frontend_sha256':context.baseline['artifacts']['frontend.il']['sha256'],
@@ -242,3 +258,12 @@ def prove(context, document):
         result['reason']=str(exc) if not isinstance(exc,RecursionError) else 'source_function_depth_limit'
         if isinstance(exc,MissingInputs):result['missing_input_bits']=exc.bits
     return result
+
+
+def cut_signature(document):
+    from .contracts import fingerprint
+    return fingerprint({'boundary':[{k:r[k] for k in ('port','direction','original_bit')}
+                                     for r in document['boundary']],
+        'connections':document['region'].get('connections',[]),
+        'cells':{n:{k:c[k] for k in ('type','parameters','port_directions','connections')}
+                 for n,c in document['region']['recorded_cell_functions'].items()}})

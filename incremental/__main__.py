@@ -7,6 +7,7 @@ import sys
 
 from yosys_flow.common import ROOT, TraceError
 from . import demo, replace, anubis, automatic, nochange, sequential, seq_anubis, experiment as comparison
+from . import netlist_equivalence
 
 
 def positive_seconds(value):
@@ -25,6 +26,16 @@ def positive_count(value):
 def parser():
     cli = argparse.ArgumentParser(description=__doc__)
     commands = cli.add_subparsers(dest='command',required=True)
+    verify = commands.add_parser('verify-netlists',help='独立验证两份完整组合网表；不重跑综合、不发布增量结果')
+    verify.add_argument('--gold',required=True,help='参考 Yosys JSON 网表')
+    verify.add_argument('--gate',required=True,help='候选 Yosys JSON 网表')
+    verify.add_argument('--top',required=True)
+    verify.add_argument('--timeout',type=positive_seconds,default=1200.0,
+                        help='验证各阶段共享的墙钟预算，默认 1200 秒')
+    verify.add_argument('--partition-timeout',type=positive_seconds,default=5.0)
+    verify.add_argument('--matching-budget',type=positive_seconds,default=360.0,
+                        help='内部对应证明上限；同时不超过剩余总预算的 60%%，默认 360 秒')
+    verify.add_argument('--abc',help='默认使用 Yosys 同目录的 yosys-abc；none 仅使用 SAT')
     experiment = commands.add_parser('demo',help='四通道组合 RTL 的局部替换实验')
     experiment.add_argument('--mode',choices=['retained','flatten','both'],default='both')
     experiment.add_argument('--native-yosys',default=str(ROOT/'build/native/install/bin/yosys'))
@@ -106,7 +117,9 @@ def parser():
                       help='module 保留当前记录、契约和拼接，只禁用模块内切片，用于消融实验')
     for command in (auto,execute):
         command.add_argument('--yosys-timeout',type=positive_seconds,default=120.0,
-            help='前端、局部综合及后验检查的单次 Yosys 调用上限（秒，默认 120）；不修改独立来源证明或预检查预算')
+            help='前端/局部综合/全量参考生成的单次工具上限（秒，默认 120）；独立于整网验证及预检查预算')
+        command.add_argument('--whole-equivalence-timeout',type=positive_seconds,default=1200.0,
+            help='每次整网验证各阶段共享的墙钟预算（秒，默认 1200）')
     for command in (auto,benchmark):
         command.add_argument('--no-equivalence-precheck',action='store_true',
             help='关闭叶模块组合等价预检查，直接走原来的局部提取流程')
@@ -116,7 +129,7 @@ def parser():
             help='本次自动流程全部等价预检查的共享墙钟预算（秒，默认 15）')
     compare.add_argument('--equivalence-timeout',type=positive_seconds,default=5.0)
     compare.add_argument('--equivalence-budget',type=positive_seconds,default=15.0)
-    for command in (experiment,execute,benchmark,auto,survey,seq_base,seq_reuse,seq_bench,compare):
+    for command in (experiment,execute,benchmark,auto,survey,seq_base,seq_reuse,seq_bench,compare,verify):
         command.add_argument('--out',required=True,help='新的实验结果目录')
         command.add_argument('--yosys',default='yosys')
     return cli
@@ -124,15 +137,20 @@ def parser():
 
 def main():
     args = parser().parse_args()
+    if args.command == 'verify-netlists':
+        print('开始整网验证；进度与结果：'+str(args.out)+'/report.json',file=sys.stderr,flush=True)
     try:
         result = {'demo':demo.run,'anubis':anubis.run,'auto':automatic.run,'run':replace.run,
                   'anubis-nochange':nochange.run,'seq-baseline':sequential.baseline,
                   'seq-reuse':sequential.reuse,'anubis-sequential':seq_anubis.run,
-                  'compare':comparison.run}[args.command](args)
+                  'compare':comparison.run,'verify-netlists':netlist_equivalence.run}[args.command](args)
     except (TraceError,OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError) as exc:
         print('incremental: '+str(exc),file=sys.stderr)
         return 1
-    if args.command=='run':
+    if args.command=='verify-netlists':
+        result = {k:result[k] for k in ('status','all_top_outputs_verified','total_seconds')}
+        result['report'] = str(args.out)+'/report.json'
+    elif args.command=='run':
         result = {'status':result['status'],'checks':result['checks'],'report':str(args.out)+'/report.json'}
     elif args.command=='anubis':
         result = {'status':result['status'],'counts':result['counts'],
@@ -153,7 +171,7 @@ def main():
         result={k:result[k] for k in ('status','counts','methods','total_seconds')}
         result['report']=str(args.out)+'/report.json'
     print(json.dumps(result,indent=2,ensure_ascii=False))
-    return 1 if result.get('status') in {'failed','blocked','unknown','different','invalidated'} else 0
+    return 1 if result.get('status') in {'failed','blocked','unknown','different','invalid','invalidated'} else 0
 
 
 if __name__ == '__main__':

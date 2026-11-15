@@ -339,6 +339,7 @@ def _run(args):
                        else 'changed_module_instances_with_boundary_closure'),
         'selection_mode':selection_mode,'minimal_region_claimed':False,
         'resource_policy':{'yosys_call_timeout_seconds':float(getattr(args,'yosys_timeout',120.0)),
+                           'whole_equivalence_timeout_seconds':float(getattr(args,'whole_equivalence_timeout',1200.0)),
                            'separate_source_proof_and_precheck_budgets_unchanged':True},
         'new_full_synthesis_used_only_as_validation_oracle':True,'timings':{},'attempts':[],
         'timing_scope':{
@@ -450,6 +451,7 @@ def _run(args):
                 bindings=str(out/'bindings.json'),patch_rtl=str(out/'patch.il'),patch_top='__auto_patch',
                 patch_is_rtlil=True,new_frontend=str(work/'new.frontend.il'),baseline_from_archive=True,
                 new_source=args.new_source,out=str(out/'replacement'),yosys=args.yosys,
+                whole_equivalence_timeout=getattr(args,'whole_equivalence_timeout',1200.0),
                 expected_plan_sha256=report['replacement_plan']['sha256'],
                 additional_input_hashes=frozen_inputs),validated_context=context)
             report.update(status='passed',selected_scopes=scopes,checks=result['checks'],splice=result['splice'])

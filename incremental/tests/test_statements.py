@@ -264,12 +264,14 @@ class StatementTests(unittest.TestCase):
     def test_source_gate_derivation_replays_all_outputs_and_rejects_forgery(self):
         _,out=self.successful('chain')
         contract=json.loads((out/'replacement-plan.json').read_text())
-        self.assertEqual(contract['derivation']['kind'],'source_cells')
+        self.assertEqual(contract['derivation']['kind'],'source_operation')
         context=ContractContext(self.baselines['chain'])
         self.assertEqual(context.validate(contract),contract)
         bad=deepcopy(contract);bad['outputs'][0]['external_users']=[]
         with self.assertRaises(TraceError):context.validate(seal(bad))
         bad=deepcopy(contract);bad['region']['cells'].pop()
+        with self.assertRaises(TraceError):context.validate(seal(bad))
+        bad=deepcopy(contract);bad['derivation']['cell_name']='not_a_captured_operator'
         with self.assertRaises(TraceError):context.validate(seal(bad))
 
     def test_original_constant_only_macro_stays_blocked(self):
@@ -277,3 +279,33 @@ class StatementTests(unittest.TestCase):
         self.assertEqual(result['status'],'blocked',result.get('failure'))
         self.assertIn('consumer rebinding',result['statement_plan']['reason'])
         self.assertFalse((out/'incremental.v').exists())
+
+    def test_shared_operand_scope_does_not_replace_an_unchanged_consumer(self):
+        # Small synthetic regression, explicitly separate from ANUBIS timings.
+        fixture=self.root/'shared-operand';fixture.mkdir()
+        old=fixture/'base.v';new=fixture/'new.v'
+        rtl='module demo(input a,b,c,output y,z);\nassign y=~a & ~b;\nassign z=~a ^ c;\nendmodule\n'
+        old.write_text(rtl);new.write_text(rtl.replace('~a & ~b','~a | ~b'))
+        base=fixture/'baseline'
+        baseline_run(flow_parser().parse_args(['run','--source',str(old),'--top','demo',
+                     '--out',str(base),'--native-yosys',str(NATIVE)]))
+        context=ContractContext(base,compact=True)
+        modules=rtlil.parse((base/'frontend.il').read_text());graph=ir_graph.Graph(modules['demo'],modules)
+        _,operator,_=graph.definition(('\\y',0))
+        from incremental.statements import selector
+        selection=selector(ir_graph.source(operator),'demo')
+        roots=context.operation_roots(selection,operator['name'])
+        self.assertEqual(len(roots),1)
+        created={edge['to'] for sid in context.query(selection)['seeds']
+                 for _,edge in context.trace.edges.adjacent(sid) if edge.get('capture')=='ast_generation_scope'}
+        self.assertGreater(len(created),len(roots))
+        # Preserve all containing-expression sources. Narrow only the impact
+        # start objects, and keep full patch, boundary and final equivalence checks.
+        out=fixture/'incremental'
+        result=automatic.run(parser().parse_args(['auto','--base-run',str(base),
+            '--new-source',str(new),'--out',str(out),'--native-yosys',str(NATIVE)]))
+        self.assertEqual(result['status'],'passed',result.get('failure'))
+        self.assertEqual(result['selection_strategy'],'statement_dependency_slice')
+        self.assertEqual(result['splice']['removed_cells'],1)
+        self.assertEqual(result['splice']['reused_cells'],1)
+        self.assertTrue(all(result['checks'].values()))

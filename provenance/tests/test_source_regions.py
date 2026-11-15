@@ -61,11 +61,58 @@ class SourceRegionTests(unittest.TestCase):
         self.assertEqual(result['status'],'not_proven')
         self.assertFalse(result['all_outputs'])
 
+    def test_authenticated_cached_proof_is_bound_to_connection_selection(self):
+        result=self.prove()
+        self.document['region']['cells']=[{'ref':'a'},{'ref':'b'}]
+        certificate={'id':'fixture','final_cell_refs':['a','b'],'anchors':[],
+                     'source_proof':result,'source_cut_sha256':source_regions.cut_signature(self.document)}
+        self.context._functional_partitions=[certificate]
+        self.assertEqual(self.prove()['reused_from_authenticated_partition'],'fixture')
+        self.document['region']['connections']=[{'ref':'different-source-connection'}]
+        result=self.prove()
+        self.assertEqual(result['status'],'not_proven')
+        self.assertNotIn('reused_from_authenticated_partition',result)
+
     def test_matching_x_outputs_are_not_binary_equivalence(self):
         self.cells['b']['connections']['A']=['x']
         self.document['region']['recorded_cell_functions']=deepcopy(self.cells)
         result=self.prove()
         self.assertEqual(result['status'],'not_proven')
+
+    def test_inverted_input_anchor_is_applied_and_wrong_phase_is_rejected(self):
+        self.context._functional_partitions=[{'final_cell_refs':[], 'anchors':[
+            {'instance':'top','wire':'a','offset':0,'final_bit':6,'inverted':True}]}]
+        self.document['boundary'][0]['original_bit']=6
+        actual=self.document['region']['recorded_cell_functions']
+        actual['a'].update(type='$_ANDNOT_',connections={'A':[3],'B':[6],'Y':[4]})
+        actual['b'].update(type='$_XNOR_',connections={'A':[6],'B':[3],'Y':[5]})
+        self.assertEqual(self.prove()['status'],'verified')
+        self.context._functional_partitions[0]['anchors'][0]['inverted']=False
+        del self.context._partition_endpoints
+        self.assertEqual(self.prove()['status'],'not_proven')
+
+    def test_inverted_output_anchor_is_applied_to_every_source_observation(self):
+        self.context._functional_partitions=[{'final_cell_refs':[], 'anchors':[
+            {'instance':'top','wire':'y','offset':0,'final_bit':4,'inverted':True}]}]
+        self.document['region']['recorded_cell_functions']['a']['type']='$_NAND_'
+        self.assertEqual(self.prove()['status'],'verified')
+
+    def test_one_source_signal_can_bind_an_inverted_input_and_preserved_side_output(self):
+        self.context._functional_partitions=[{'final_cell_refs':[], 'anchors':[
+            {'instance':'top','wire':'a','offset':0,'final_bit':6,'inverted':True},
+            {'instance':'top','wire':'a','offset':0,'final_bit':7,'inverted':False}]}]
+        self.document['boundary'][0]['original_bit']=6
+        self.document['boundary'].append({'port':'side','direction':'output','original_bit':7})
+        actual=self.document['region']['recorded_cell_functions']
+        actual['a'].update(type='$_ANDNOT_',connections={'A':[3],'B':[6],'Y':[4]})
+        actual['b'].update(type='$_XNOR_',connections={'A':[6],'B':[3],'Y':[5]})
+        actual['side']={'type':'$_NOT_','parameters':{},'attributes':{},
+            'port_directions':{'A':'input','Y':'output'},'connections':{'A':[6],'Y':[7]}}
+        result=self.prove()
+        self.assertEqual(result['status'],'verified',result)
+        self.assertEqual(result['output_count'],3)
+        actual['side']['type']='$_BUF_'
+        self.assertEqual(self.prove()['status'],'not_proven')
 
     def test_parent_fallback_proves_unselected_outputs_and_rejects_a_changed_one(self):
         from incremental import automatic, rtlil

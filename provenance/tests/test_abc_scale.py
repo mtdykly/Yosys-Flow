@@ -83,7 +83,7 @@ class AbcScaleTests(unittest.TestCase):
         self.assertEqual(len(selected['cut_proven_refs']),1)
         self.assertFalse(selected['safe_for_incremental_reuse'])
 
-    def test_region_resource_exhaustion_is_explicit_unknown(self):
+    def test_region_resource_exhaustion_still_proves_small_independent_cut(self):
         for setting,limit,reason in [('MAX_BDD_NODES',5,'bdd_node_limit_exceeded'),
                                       ('MAX_BDD_WORK',0,'bdd_work_limit_exceeded')]:
             with self.subTest(setting=setting), patch('yosys_flow.boolean.'+setting,limit):
@@ -95,9 +95,42 @@ class AbcScaleTests(unittest.TestCase):
                 internal = selected['abc_internal'][0]
                 self.assertEqual(internal['fallback_reason'],reason)
                 self.assertEqual(internal['function_proof']['status'],'incomplete')
-                self.assertFalse(selected['cut_proven_refs'])
+                self.assertTrue(selected['cut_proven_refs'])
                 self.assertFalse(selected['joint_cut_proven_refs'])
-                self.assertTrue(selected['candidate_cell_refs'])
+                self.assertFalse(selected['candidate_cell_refs'])
+                local=internal['independent_local']
+                self.assertFalse(local['global_function_proof_required'])
+                self.assertGreater(local['verified_mapping_cuts'],0)
+                self.assertTrue(any(a['status']=='verified' for a in local['attempts']))
+                case,_,out=self.fixtures[32]
+                module=json.loads((out/'after.json').read_text())['modules']['demo']
+                self.assertEqual({unescape(c['name']) for c in selected['final_cells']},
+                                 expectation(case,case['queries'][0],module))
+
+    def test_independent_local_failure_does_not_discard_other_regions(self):
+        from yosys_flow.abc_local import check_mapping
+        calls=[]
+        def limited(target,*args):
+            calls.append(target)
+            if len(calls)==1: raise ProofBudgetExceeded('injected_local_budget')
+            return check_mapping(target,*args)
+        with patch('yosys_flow.boolean.MAX_BDD_NODES',5), \
+             patch('yosys_flow.abc_local.check_mapping',side_effect=limited):
+            _,trace,_=load_run(self.fixtures[32][2],use_index=False)
+        internal=trace.abc_internal[0]
+        self.assertGreater(internal['proved_import_nodes'],0)
+        self.assertTrue(internal['unproved_import_nodes'])
+        self.assertTrue(any(r['reason']=='injected_local_budget'
+                            for rs in internal['unproved_import_reasons'].values() for r in rs))
+
+    def test_late_global_search_failure_preserves_completed_single_cuts(self):
+        with patch('yosys_flow.abc_joint.joint_cuts',side_effect=ProofBudgetExceeded('late_joint_budget')):
+            manifest,trace,_=load_run(self.fixtures[32][2],use_index=False)
+        internal=trace.abc_internal[0]
+        self.assertEqual(internal['fallback_reason'],'late_joint_budget')
+        selected=query_loaded(self.args(32),manifest,trace)
+        self.assertTrue(selected['cut_proven_refs'])
+        self.assertGreater(internal['proved_import_nodes'],0)
 
     def test_local_budget_failure_keeps_other_proofs_and_reports_candidate(self):
         def limited(count, **kwargs):

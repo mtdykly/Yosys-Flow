@@ -7,11 +7,31 @@ class Endpoints:
     """Resolve original interface bits using actual recorded port/copy links."""
     def __init__(self,context): self.context=context;self.cache={};self.evidence=[]
 
+    def signal(self,path,wire,offset):
+        return min(self.signals(path,wire,offset),key=lambda v:v[1])
+
+    def signals(self,path,wire,offset):
+        from .partition_store import signals
+        results=signals(self.context,path,wire,offset)
+        if results:
+            for bit,phase in results:
+                self.evidence.append({'instance':path,'wire':unescape(wire),'offset':offset,'final_bit':bit,
+                                      'inverted':phase,'rule':'authenticated_independent_functional_partition'})
+            return results
+        return [(self.bit(path,wire,offset),False)]
+
     def bit(self,path,wire,offset,seen=frozenset()):
         key=(path,wire,offset)
         if key in self.cache:return self.cache[key]
         if key in seen:return None
         c=self.context;wire=unescape(wire);net=None;rule=None
+        from .partition_store import endpoint
+        certified=endpoint(c,path,wire,offset)
+        if certified is not None:
+            self.cache[key]=certified
+            self.evidence.append({'instance':path,'wire':wire,'offset':offset,'final_bit':certified,
+                                  'rule':'authenticated_independent_functional_partition'})
+            return certified
         if c.trace.view_rule=='electrical_instance_expansion_v1':
             candidate=c.module['netnames'].get(path+'/'+quote(wire,safe=''))
             if candidate and candidate.get('definition',{}).get('instance')==path:

@@ -244,6 +244,7 @@ class DeepRegionTests(unittest.TestCase):
                            {'direction':'output','original_bit':DEPTH+2,'port':'y'}]}
         with patch('yosys_flow.source_regions.Endpoints') as endpoints:
             endpoints.return_value.bit.side_effect = lambda *key:aliases.get(key)
+            endpoints.return_value.signals.side_effect = lambda *key:[(aliases.get(key),False)]
             design,evidence = make_cut(None, doc, (cells, aliases, {2}))
             self.assertEqual(len(design['modules']['gold']['cells']), DEPTH)
             self.assertEqual(len(evidence), 2)
@@ -263,8 +264,8 @@ class DeepRegionTests(unittest.TestCase):
         slicer.units = {'top':(None, SimpleNamespace(module=SimpleNamespace(name='top')))}
         slicer.coarse = {'top':{'cells':cells}}
         slicer.drivers = {('top',i+3):('top','c'+str(i)) for i in range(DEPTH)}
-        input_row = {'old_bit':2,'new_bit':2,'unchanged_full_definition':True}
-        output_row = {'new_bit':DEPTH+2,'instance':'top','new_function_fingerprint':'same'}
+        input_row = {'old_bit':2,'new_bit':2,'old_inverted':False,'unchanged_full_definition':True}
+        output_row = {'new_bit':DEPTH+2,'old_inverted':False,'instance':'top','new_function_fingerprint':'same'}
         slicer.by_new['top',2].append(input_row)
         slicer.aliases[DEPTH+2].append(output_row)
         doc = {'contract_id':'test','region':{'cells':[{'name':n} for n in cells]},

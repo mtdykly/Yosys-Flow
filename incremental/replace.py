@@ -20,6 +20,7 @@ from yosys_flow.hierarchy import electrical_design
 from yosys_flow.region_functions import Circuit, LogicDAG, UnsupportedFunction, ordered_inputs
 from yosys_flow.boolean import BDD, ProofBudgetExceeded
 from .failures import classify
+from .netlist_equivalence import verify as verify_netlists, Options as EquivalenceOptions, require_equivalent
 
 
 _YOSYS_TIMEOUT = ContextVar('incremental_yosys_timeout', default=120.0)
@@ -220,7 +221,9 @@ def run_yosys(binary, out, name, script):
         result = subprocess.run([binary,'-Q','-T','-s',name+'.ys'],cwd=out,capture_output=True,text=True,
                                 timeout=_YOSYS_TIMEOUT.get())
     except subprocess.TimeoutExpired as exc:
-        (out/(name+'.log')).write_text(str(exc)+'\n'+str(exc.stdout or '')+str(exc.stderr or ''))
+        def decoded(value):
+            return value.decode(errors='replace') if isinstance(value, bytes) else value or ''
+        (out/(name+'.log')).write_text(str(exc)+'\n'+decoded(exc.stdout)+decoded(exc.stderr))
         raise
     (out/(name+'.log')).write_text(result.stdout+result.stderr)
     require(result.returncode == 0, f'{name} failed; see {out/(name+".log")}')
@@ -392,6 +395,7 @@ def _run(args, *, validated_context=None):
             'caller_preparation_included':False,
             'timings':dict(timings),
             'yosys_call_timeout_seconds':_YOSYS_TIMEOUT.get(),
+            'whole_equivalence_timeout_seconds':float(getattr(args,'whole_equivalence_timeout',1200.0)),
             'cells':{k:stats[k] for k in ('base_cells','removed_cells','reused_cells','result_cells')},
             'candidate_files':['work/candidate.json','work/candidate.il','work/candidate.v']})
         stage = 'local_output_proof'; step = time.perf_counter()
@@ -417,13 +421,23 @@ def _run(args, *, validated_context=None):
             q = reference['modules'][top]['ports'][n]
             require(p['direction']==q['direction'] and len(p['bits'])==len(q['bits']), 'new top interface changed')
         stage = 'whole_design_equivalence'
-        report['timings']['whole_equivalence_seconds'] = run_yosys(binary,work,'whole-equivalence',
-            equivalence_script('new-reference.json','candidate.json',top))
+        whole = verify_netlists(work/'new-reference.json',work/'candidate.json',top,
+            work/'whole-equivalence',yosys=binary,
+            options=EquivalenceOptions(timeout=getattr(args,'whole_equivalence_timeout',1200.0)))
+        report['whole_equivalence'] = whole
+        report['timings']['whole_equivalence_seconds'] = whole['total_seconds']
+        (work/'whole-equivalence.log').write_text(json.dumps(whole,indent=2)+'\n')
+        require_equivalent('whole-equivalence',whole,work/'whole-equivalence/report.json')
         # Check the deliverable Verilog, not just the in-memory JSON candidate.
         stage = 'deliverable_validation'; step = time.perf_counter()
         run_yosys(binary,work,'verilog-readback',
             f'read_verilog candidate.v\nhierarchy -check -top {top}\nproc\ntechmap\ncheck -assert\nwrite_json readback.json')
-        run_yosys(binary,work,'verilog-equivalence',equivalence_script('candidate.json','readback.json',top))
+        roundtrip = verify_netlists(work/'candidate.json',work/'readback.json',top,
+            work/'verilog-equivalence',yosys=binary,
+            options=EquivalenceOptions(timeout=getattr(args,'whole_equivalence_timeout',1200.0)))
+        report['verilog_equivalence'] = roundtrip
+        (work/'verilog-equivalence.log').write_text(json.dumps(roundtrip,indent=2)+'\n')
+        require_equivalent('verilog-equivalence',roundtrip,work/'verilog-equivalence/report.json')
         timings['verilog_roundtrip_seconds'] = time.perf_counter()-step
         require(all(digest(p) == h for p,h in source_hashes.items()), 'experiment source changed while running')
         require(digest(args.contract)==plan_hash,'replacement plan changed while running')

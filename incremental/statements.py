@@ -1,6 +1,7 @@
 """Plan a submodule region from changed assignments and recorded boundaries."""
 from collections import defaultdict
 from copy import deepcopy
+import json
 from types import SimpleNamespace
 from urllib.parse import quote
 
@@ -9,6 +10,16 @@ from yosys_flow.contracts import SELECTOR_KEYS, fingerprint
 from yosys_flow.diagnostics import group_closure
 from yosys_flow.extract import slice_module
 from . import ir_graph, rtlil
+
+
+def proof_failure_summary(verification):
+    proof=verification.get('source_region_function_proof',{})
+    return json.dumps({'status':verification.get('status'),
+        'blockers':verification.get('blockers',[]),
+        'candidate_count':len(verification.get('candidate_refs',[])),
+        'source_proof':{k:(str(v)[:1500] if k=='reason' else v) for k,v in proof.items()
+                        if k in {'status','reason','all_outputs','command_timeout_seconds','solver_timeout_seconds'}},
+        'details':'full evidence is retained in the run artifacts'},ensure_ascii=False)
 
 
 def selector(location,path):
@@ -85,6 +96,7 @@ class Slice:
     def __init__(self,context,units,coarse,endpoints):
         self.context=context;self.units=units;self.coarse=coarse;self.endpoints=endpoints
         self.aliases=defaultdict(list);self.by_new=defaultdict(list);self.drivers={};self.constants={}
+        self.output_polarities={}
         for path,(old,new) in units.items():
             module=coarse[new.module.name]
             for name,wire in old.wires.items():
@@ -92,19 +104,19 @@ class Slice:
                 net=module['netnames'].get(unescape(name))
                 if not net or len(net['bits'])!=wire['width']:continue
                 for offset,bit in enumerate(net['bits']):
-                    original=endpoints.bit(path,name,offset)
-                    if original in {'0','1'} and (name,offset) in old.inputs and (name,offset) in new.inputs:
-                        self.constants[path,bit]=original
-                    if not isinstance(original,int):continue
-                    # Name/layout aligns a semantic anchor across versions;
-                    # its old electrical identity comes from captured records.
-                    # Full-cone equality is required before REUSING it as input.
-                    old_hash=old.value((name,offset),root=True)
-                    new_hash=new.value((name,offset),root=True)
-                    row={'instance':path,'wire':name,'offset':offset,'old_bit':original,'new_bit':bit,
-                         'old_function_fingerprint':old_hash,'new_function_fingerprint':new_hash,
-                         'unchanged_full_definition':old_hash==new_hash}
-                    self.aliases[original].append(row);self.by_new[path,bit].append(row)
+                    for original,inverted in endpoints.signals(path,name,offset):
+                        if original in {'0','1'} and (name,offset) in old.inputs and (name,offset) in new.inputs:
+                            self.constants[path,bit]=original
+                        if not isinstance(original,int):continue
+                        # Several certified electrical signals may implement
+                        # this source function, including its complement.
+                        old_hash=old.value((name,offset),root=True)
+                        new_hash=new.value((name,offset),root=True)
+                        row={'instance':path,'wire':name,'offset':offset,'old_bit':original,'new_bit':bit,
+                             'old_inverted':inverted,
+                             'old_function_fingerprint':old_hash,'new_function_fingerprint':new_hash,
+                             'unchanged_full_definition':old_hash==new_hash}
+                        self.aliases[original].append(row);self.by_new[path,bit].append(row)
             for name,cell in module['cells'].items():
                 ir_graph.check(cell['type'] not in coarse,'hierarchical coarse cell in local slice')
                 for port,bits in cell['connections'].items():
@@ -119,9 +131,11 @@ class Slice:
         candidates=self.aliases.get(row['original_bit'],[])
         if not candidates:return None
         # An old shared wire cannot be rebound to two different new functions.
-        ir_graph.check(len({c['new_function_fingerprint'] for c in candidates})==1,
+        ir_graph.check(len({(c['new_function_fingerprint'],c['old_inverted']) for c in candidates})==1 or
+                       all(c['unchanged_full_definition'] for c in candidates),
                        'old shared signal has divergent new consumers: '+row['port'])
-        candidate=candidates[0]
+        candidate=min(candidates,key=lambda c:c['old_inverted'])
+        self.output_polarities[row['port']]=candidate['old_inverted']
         return candidate['instance'],candidate['new_bit']
 
     def build(self,contract):
@@ -142,7 +156,7 @@ class Slice:
 
         cuts={};used_cuts={};chosen=set();active=set();visited=set()
         for key,rows in self.by_new.items():
-            options={r['old_bit'] for r in rows if r['unchanged_full_definition'] and r['old_bit'] not in old_driven}
+            options={(r['old_bit'],r['old_inverted']) for r in rows if r['unchanged_full_definition'] and r['old_bit'] not in old_driven}
             if len(options)==1 and isinstance(key[1],int):cuts[key]=next(iter(options))
         stack=[(value,False) for value in reversed(list(outputs.values()))]
         while stack:
@@ -168,7 +182,7 @@ class Slice:
         # rebuild dependencies; never create an extra driver on an input port.
         for key in list(used_cuts):
             if self.drivers.get(key) in chosen:del used_cuts[key]
-        needed_inputs=set(used_cuts.values())|{b for b in observers.values() if isinstance(b,int)}
+        needed_inputs={b for b,_ in used_cuts.values()}|{b for b in observers.values() if isinstance(b,int)}
         boundary_inputs={b['original_bit'] for b in contract['boundary'] if b['direction']=='input'}
         extra=sorted(needed_inputs-boundary_inputs)
         if extra:contract=context.build({'kind':'extend_inputs','parent':contract,'input_bits':extra})
@@ -179,12 +193,21 @@ class Slice:
             value=next_bit;next_bit+=1
             module['netnames']['__slice_'+str(value)]={'hide_name':1,'bits':[value],'attributes':{}}
             return value
+        inverted_values={}
+        def invert(value):
+            if isinstance(value,str):return {'0':'1','1':'0','x':'x','z':'x'}[value]
+            if value not in inverted_values:
+                target=allocate();inverted_values[value]=target
+                module['cells']['__anchor_not_'+str(target)]={'type':'$_NOT_','parameters':{},'attributes':{},
+                    'hide_name':1,'port_directions':{'A':'input','Y':'output'},'connections':{'A':[value],'Y':[target]}}
+            return inverted_values[value]
         for bit,row in input_rows.items():
             external[bit]=allocate()
             module['ports'][row['port']]={'direction':'input','bits':[external[bit]]}
-        for key,bit in used_cuts.items():
-            signals[key]=external[bit]
-            binding_evidence.extend(r for r in self.by_new[key] if r['old_bit']==bit and r['unchanged_full_definition'])
+        for key,(bit,inverted) in used_cuts.items():
+            signals[key]=invert(external[bit]) if inverted else external[bit]
+            binding_evidence.extend(r for r in self.by_new[key] if r['old_bit']==bit and
+                                    r['old_inverted']==inverted and r['unchanged_full_definition'])
         def signal(key):
             if isinstance(key[1],str):return key[1]
             if key in self.constants:return self.constants[key]
@@ -199,6 +222,7 @@ class Slice:
             if row['direction']=='output':
                 bit=observers.get(port)
                 value=(external[bit] if isinstance(bit,int) else bit) if port in observers else signal(outputs[port])
+                if port not in observers and self.output_polarities.get(port):value=invert(value)
                 module['ports'][port]={'direction':'output','bits':[value]}
             module['netnames'][port]={'hide_name':0,'bits':module['ports'][port]['bits'],'attributes':{}}
         bindings={'schema_version':1,'contract_id':contract['contract_id'],
@@ -278,14 +302,28 @@ def plan(context,old,new,oc,nc,coarse,scopes,report,work,yosys):
                                'changed constant assignment requires consumer rebinding')
                 selectors=source_selectors(context,a,change,path)
                 report['seeds'].append({**change,'instance':path,'selectors':selectors})
+                seed=report['seeds'][-1]
+                kind,operator,_=a.definition((change['wire'],change['offset']))
+                seed['impact_selection']=[]
                 mapped=False
                 for item in selectors:
-                    key=fingerprint(item)
+                    recipe={'kind':'source_cells','selector':item}
+                    if kind=='cell':
+                        roots=context.operation_roots(item,operator['name'])
+                        if len(roots)==1 and context.operation_cells(roots):
+                            recipe.update(kind='source_operation',cell_name=operator['name'])
+                            seed['impact_selection'].append({'rule':'captured_operator_creation', 'roots':roots,
+                                'unchanged_operand_sources_removed':False,
+                                'operand_binding_must_be_verified':True})
+                    key=fingerprint(recipe)
                     if key not in mapped_selectors:
-                        query=context.query(item)
-                        mapped_selectors[key]=bool(query['final_cells'])
+                        if recipe['kind']=='source_operation':
+                            mapped_selectors[key]=bool(context.operation_cells(roots))
+                        else:
+                            query=context.query(item)
+                            mapped_selectors[key]=bool(query['final_cells'])
                         if mapped_selectors[key]:
-                            parents.append(context.build({'kind':'source_cells','selector':item}))
+                            parents.append(context.build(recipe))
                     mapped |= mapped_selectors[key]
                 ir_graph.check(mapped,'changed assignment has no mapped final gates; consumer rebinding or module fallback required')
         contract=merge(context,parents);report['seed_cell_count']=len(contract['region']['cells'])
@@ -317,7 +355,7 @@ def plan(context,old,new,oc,nc,coarse,scopes,report,work,yosys):
                     contract=merge(context,[contract,*extra]);continue
                 contract=certified
                 ir_graph.check(contract['verification']['status']=='verified_old_region',
-                               'old statement region is not proven: '+str(contract['verification']))
+                               'old statement region is not proven: '+proof_failure_summary(contract['verification']))
                 bindings['contract_id']=contract['contract_id']
                 context.validate(contract)
                 write_json(work/'statement-slice.json',design)

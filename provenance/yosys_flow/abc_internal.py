@@ -147,20 +147,28 @@ class Network:
         mask = bdd.one if bdd is not None else (1 << (1 << len(self.pis))) - 1
         if inputs is None:
             inputs = bdd.variables(len(self.pis)) if bdd is not None else variables(len(self.pis))
+        return self.functions(inputs, mask), mask
+
+    def functions(self, inputs, mask):
+        """Evaluate a DAG in the supplied algebra, with memoization and cycles."""
         require(len(inputs) == len(self.pis), 'ABC input function count mismatch')
         values = dict(zip(self.pis, inputs))
         active = set()
-        def visit(i):
-            if i in values: return values[i]
-            require(i not in active, 'cycle in ABC internal evidence')
-            active.add(i)
-            n = self.nodes[i]
-            args = [visit(lit//2) ^ (mask if lit & 1 else 0) for lit in n['fanins']]
-            values[i] = evaluate(n, args, mask)
-            active.remove(i)
-            return values[i]
-        for i in self.nodes: visit(i)
-        return values, mask
+        for root in self.nodes:
+            stack = [(root, False)]
+            while stack:
+                i, expanded = stack.pop()
+                if i in values: continue
+                n = self.nodes[i]
+                if expanded:
+                    values[i] = evaluate(n, [values[f//2] ^ (mask if f&1 else 0) for f in n['fanins']], mask)
+                    active.remove(i)
+                else:
+                    require(i not in active, 'cycle in ABC internal evidence')
+                    active.add(i)
+                    stack.append((i, True))
+                    stack.extend((f//2, False) for f in reversed(n['fanins']))
+        return values
 
 
 def script_commands(script):
@@ -394,6 +402,26 @@ def read_evidence(path, script):
 def analyze(path, script, region, imports, input_blif=None, progress=None):
     if progress: progress("abc_internal_evidence")
     rows, nets, cuts, report = read_evidence(path, script)
+    proof, report = analyze_global(rows, nets, cuts, report, region, imports, input_blif, progress)
+    # Global witnesses remain useful, but their budget is not a prerequisite
+    # for independent local proofs. Corrupt evidence (TraceError) never enters
+    # this fallback. The second path validates its own mapping and boundaries.
+    if report['fallback_reason'] and report['commands'] == DEFAULT_COMMANDS:
+        from .abc_local import analyze_local
+        extra, local = analyze_local(rows, nets, cuts, region, imports, input_blif, progress,
+                                     exclude=set(proof))
+        proof.update(extra)
+        report['independent_local'] = local
+        report['proved_import_nodes'] = sum(p['precision']=='abc_internal_cut' for p in proof.values())
+        report['joint_proved_import_nodes'] = sum(p['precision']=='abc_internal_joint_cut' for p in proof.values())
+        report['joint_groups'] = len({g['group_id'] for p in proof.values() for g in p.get('joint_groups', [])})
+        report['unproved_import_nodes'] = sorted(set(imports)-set(proof))
+        report['unproved_import_reasons'] = {n:local['unproved_reasons'].get(n,
+            report['unproved_import_reasons'].get(n,[{'reason':'no_local_proof'}])) for n in report['unproved_import_nodes']}
+    return proof, report
+
+
+def analyze_global(rows, nets, cuts, report, region, imports, input_blif=None, progress=None):
     proof, fallback = {}, None
     bdd = None
     local_bdds, local_failures = [], []
@@ -640,7 +668,9 @@ def analyze(path, script, region, imports, input_blif=None, progress=None):
             item['conversion_events'] = [gm['seq'],nm['seq'],*clone_events]
         proof.update(equivalent)
     except (Unsupported, ProofBudgetExceeded) as exc:
-        proof, fallback = {}, str(exc)
+        # Previously completed independent cuts remain valid if a later search
+        # runs out of resources. Invalid evidence still raises TraceError.
+        fallback = str(exc)
         category = 'proof_budget_exhausted' if isinstance(exc,ProofBudgetExceeded) else (
             'source_conversion_relation_missing' if 'conversion' in str(exc) or 'interface' in str(exc)
             else 'unsupported_proof_strategy')
@@ -668,7 +698,7 @@ def analyze(path, script, region, imports, input_blif=None, progress=None):
 
 
 def prove_cut(net, root, functions, boundary_functions, gate, polarity, global_mask, local_truth=None,
-              *, local_bdds=None, failures=None):
+              *, local_bdds=None, failures=None, node_limit=None):
     """Compare under INDEPENDENT cut inputs, not just reachable PI assignments."""
     covered=set(); boundaries=[]; memo={}; active=set()
     def visit(i):
@@ -684,12 +714,18 @@ def prove_cut(net, root, functions, boundary_functions, gate, polarity, global_m
         if n['op']=='pi': raise Unsupported('unmatched_cut_input')
         if i in active: raise Unsupported('cyclic_cut')
         active.add(i); covered.add(i)
-        args=[visit(lit//2) ^ (local_mask if lit&1 else 0) for lit in n['fanins']]
+        if node_limit is not None and len(covered)>node_limit:
+            raise ProofBudgetExceeded('local_cut_node_limit_exceeded')
+        args=[]
+        for lit in n['fanins']:
+            value = yield visit(lit//2)
+            args.append(value ^ (local_mask if lit&1 else 0))
         value=evaluate(n,args,local_mask)
         active.remove(i); memo[i]=value; return value
     try:
         values, local_mask = cut_domain(len(boundary_functions), local_truth, local_bdds)
-        expected=visit(root) ^ (local_mask if polarity else 0)
+        from .traversal import evaluate_stack
+        expected=evaluate_stack(visit(root)) ^ (local_mask if polarity else 0)
         if expected!=(evaluate(gate,values,local_mask) if local_truth is None else local_truth):
             raise Unsupported('independent_boundary_function_mismatch')
         return covered, boundaries

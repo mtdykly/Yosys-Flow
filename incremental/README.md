@@ -19,6 +19,8 @@ python3 -m incremental anubis --automatic \
 
 默认开启叶模块组合等价预检查：每项 5 秒、共享总预算 15 秒。功能不变且结构上下文满足前提时逐字节复用旧网表；超时或未知继续局部流程，`--no-equivalence-precheck` 可关闭。完整行为、`replacement-plan.json` 格式、计时和限制统一见 [automatic.md](automatic.md)。
 
+候选生成后的完整网表验证覆盖所有顶层输出：结构匹配和独立证明建立内部对应，随后分区 SAT 与 CEC/SAT 都复用这些已证关系，必要时逐层恢复切点定义。`auto` / `run` 的 `--whole-equivalence-timeout` 默认 1200 秒，与 `--yosys-timeout` 分开。已有候选和参考可用 `python3 -m incremental verify-netlists` 单独重试验证，无需重新综合。预算、证据及失败语义见 [整网等价验证](netlist-equivalence.md)。
+
 局部替换支持已覆盖的普通组合层次、连续赋值和组合过程，交付平坦通用门网表。候选来源区域现在可附加独立的旧源码边界功能证明：从归档 `frontend.il` 重建局部函数，对全部输出执行 SAT 等价及二值定义性检查。原候选精度和因果历史标记保留，证明失败仍拒绝发布。依赖缺失、共享消费者无法绑定或验证失败也会拒绝。尚未实现任意语法的最小区域、消费者自动拆分、保持拼接层次、时序局部替换或替换后的连续来源归档。
 
 较大区域的网表复制、拼接检查可使用结构化布尔 DAG 证书，避免仅因 BDD 展开超限而拒绝；它只证明被复制电路的函数一致，源码对应关系由上述独立证明或原有记录证据承担。缺失源码输入锚点会沿真实驱动扩区，必要时退回父模块。恒等连接和常量输出若未被门选区覆盖，必须额外证明其完整新旧函数不变；废弃调试别名中的 `X` 不参与电气检查，实际端口和单元引脚仍要求二值。
@@ -58,7 +60,7 @@ python3 -m incremental run \
   --new-source incremental/examples/four_lanes/new.v --out runs/manual-edit
 ```
 
-`demo` 在保留层次和显式展平下验证四条 8 位组合通道，只修改 `chip/u1/core` 的 `(a & b) ^ c` 为 `(a | b) ^ c`。[旧版](examples/four_lanes/base.v)、[新版](examples/four_lanes/new.v)和[显式 patch](examples/four_lanes/patch.v)均保留。旧设计 152 门，选中 16 门，保留 136 门；16 个新门加 8 个边界缓冲后交付 160 门，不对整网表再优化。独立边界证明验证实际功能和极性，整体 SAT 覆盖全部 72 个输出位，包括未修改通道、`side` 及顶层汇总。
+`demo` 在保留层次和显式展平下验证四条 8 位组合通道，只修改 `chip/u1/core` 的 `(a & b) ^ c` 为 `(a | b) ^ c`。[旧版](examples/four_lanes/base.v)、[新版](examples/four_lanes/new.v)和[显式 patch](examples/four_lanes/patch.v)均保留。旧设计 152 门，选中 16 门，保留 136 门；16 个新门加 8 个边界缓冲后交付 160 门，不对整网表再优化。独立边界证明验证实际功能和极性，完整网表验证覆盖全部 72 个输出位，包括未修改通道、`side` 及顶层汇总。
 
 显式 `run` 需要调用者给定局部功能与绑定，接受完整 v1 契约或 v2 替换计划并重新验证。`bindings.json` 的 `contract_id` 绑定确切内容，输入项可用 `{"port":"in_...","inverted":false}`，输出项为 `"out_..."`，向量位序从低位到高位，全部边界恰好绑定一次。`auto` 则从新版表示和旧记录推导这些信息。两者都不从完整新版综合网表搜索或复制新门。
 

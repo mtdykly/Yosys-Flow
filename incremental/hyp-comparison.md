@@ -1,5 +1,145 @@
 # EPFL hyp 首次建档与局部修改实验（2026-11-09）
 
+## 来源、分段实测与连续复跑（2026-11-15）
+
+案例是 EPFL Combinational Benchmark Suite 的 Hypotenuse，来自 `lsils/benchmarks` 固定提交 `82d8cc6910419298e713a46644ed59fd3df53038` 下的 [`arithmetic/hyp.v`](https://github.com/lsils/benchmarks/blob/82d8cc6910419298e713a46644ed59fd3df53038/arithmetic/hyp.v)。本地原始文件为 `build/epfl-large-screen/sources/hyp.v`，锁文件为同目录上一级的 `sources-manifest.json`。单模块 `top`、256 个输入位、128 个输出位，239,751 行、214,335 条 assign；它是逐位组合逻辑网络，不应把行数当成同等规模的行为级算法源码。
+
+本次完整新版为 `runs/hyp-incremental-20261109/fixture/new.v`，只把第 239742 行 `n214713` 的 AND 改为 OR。不是上游提供的 ECO；它是本项目构造并已确认功能变化的固定修改。
+
+| 部分 | 状态 | 历史实测 |
+|---|---|---:|
+| 旧版插桩捕获（synth / ABC / 写出） | 已完成 | 旧捕获约 66 分钟 |
+| 捕获后的续建档 | 已完成并发布 SQLite | 命令墙钟 3641 秒；其中索引构建 2044.778 秒 |
+| 目标区域补证与新归档发布 | 已完成，6 门 / 5 输入 / 2 输出 | 报告 3148.248 秒；命令墙钟 3150.02 秒 |
+| 完整新版 RTL 全量综合并写出 | 已完成 | 568.034 秒 |
+| 新版 RTL 到增量候选生成 | 已完成 | 383.150 秒自动准备 + 64.643 秒替换阶段 = 447.792 秒 |
+| 该候选与新版参考的完整等价验证 | 后续独立验证通过 | 601.562 秒，全部 128 个输出位 |
+| 一次连续 auto、读回、归档终检及发布 | 尚无当前版本的连续成功报告 | 不能给出完整端到端成功时间 |
+
+旧版原始 RTL 的普通综合筛选为 488.600 秒；自动流程中从已保存前端表示生成新版参考为 482.800 秒，两者都不能替代“完整新版 RTL→网表”的 568.034 秒基线。上述记录来自不同次运行；原 auto 报告仍保留当时等价超时的失败状态，独立验证没有改写历史报告或发布交付文件。447.792 秒使用已准备好的目标证书；已知修改的定点补证成本应单列，不能据此宣称任意未知修改都只需这个在线时间。
+
+已整理串行复跑脚本 [tools/rerun_hyp.sh](tools/rerun_hyp.sh)。它只复跑当前固定 hyp 修改，不改变综合或验证算法。默认固定 CPU 0，各阶段日志和时间放入同一新目录；只有完整 auto 返回 `passed` 才写出总表 `summary.json`。
+
+```bash
+cd /workspace/Yosys-Flow
+# 连旧建档、目标补证一起重跑，再跑新版全量和完整增量交付：
+bash incremental/tools/rerun_hyp.sh --fresh-archive
+
+# 或复用已认证的 hyp-functional-index-20261112，只重跑后续全部流程：
+bash incremental/tools/rerun_hyp.sh
+
+# 仅检查输入并预览命令，不启动综合/建档：
+bash incremental/tools/rerun_hyp.sh --fresh-archive --dry-run
+```
+
+输出默认 `runs/hyp-rerun-日期时间/`，也可用 `HYP_OUT=runs/my-hyp-rerun HYP_CPU=2 bash ...` 指定新目录和 CPU。`full-new.time.txt` 计完整新版 RTL 的普通全量生成；`incremental/report.json` 及 `incremental/replacement/report.json` 分别记录在线生成、参考综合、整网等价、Verilog 重读和终检。最后的 `summary.json` 提取主要计时，包含关系已注明，不能重复相加。
+
+`--fresh-archive` 顺序为：新插桩捕获和索引 → 目标区域补证 → 完整新版全量基线 → 自动增量及全部交付检查。建档与补证各设 21600 秒外层上限；全量基线 3600 秒，自动作业 7200 秒。自动作业内单次综合工具上限 3600 秒、每次整网验证共享预算 1200 秒。没有产物体积上限。
+
+这是固定工具和固定目标的重现实验：补证沿用 `native:cell_1118516@1`，脚本先检查它实际是驱动 `n214713` 的 AND；若新捕获身份改变，会中止，不能静默把旧编号用于另一处逻辑。补证使用 `runs/hyp-target-20261112/partition-checkpoint-constants.json` 提供待重证的匹配候选，工具重新证明，不凭原 JSON 的成功标志接受。因此这是重跑建档与已有候选的补证，不是从零发现任意修改区域的冷启动实验。
+
+本次只通过 shell 语法、嵌入 Python 语法和两种模式的 `--dry-run` 检查；没有启动这份连续大实验。实际新版本建档时间和完整交付总时间，以用户执行后的新报告为准。
+
+
+## 复用内部对应的整网验证通过（2026-11-14）
+
+复用 `runs/hyp-incremental-20261113-042732/replacement/work/` 中已有的 `new-reference.json` 和 `candidate.json`，没有重新综合。报告 `runs/hyp-residual-final-1200-20261114/report.json` 为 **`equivalent`**，`all_top_outputs_verified=true`，全部 **128 个输出位**通过，总耗时 **601.562 秒**，共享预算 **1200 秒**。固定 CPU 2，工具为 `/opt/oss-cad-suite/bin/yosys` 及同目录 ABC。
+
+| 阶段 | 秒 | 结果 |
+|---|---:|---|
+| 读取、检查和布尔编码 | 8.296 | 两份输入绑定到相同顶层输入 |
+| 内部对应 | 228.782 | 独立证明 35,963 组关系；受阻依赖延后处理 |
+| 小分区准备 | 3.044 | 128 个输出仍超过 20,000 节点上限 |
+| 切点任务及逐层恢复 | 90.910 | 首层为抽象反例；后续三层未知，不据此判整网错误 |
+| 完整输入域的剩余任务 | 269.238 | 保留已证节点代入；其中 ABC CEC 268.353 秒，证明等价 |
+
+各阶段以具体报告为准；总时间另含证据摘要、报告及输入哈希复核等开销。这里仅计验证，不含旧建档、候选生成或新版全量参考综合。旧版 600 秒未知与新版 1200 秒预算不同，不能据此给出严格的算法加速比。
+
+改动的关键是后端求解器真正接收了代入已证关系后的网络：两侧剩余网络分别有 225,994 / 225,993 个 AND 节点，其中 142,194 个共同节点使用同一函数表示。抽象切割时，两侧各约 83,800 个节点，但 1,984 个切点之间存在相关性，仍不能仅凭这层抽象完成证明。当前通过的是**保留已证代入的完整输入域 CEC**，不是宣称所有局部算术分区都已解决。
+
+独立的 `runs/hyp-output-negative-20261114/proof/report.json` 对候选网表的单输出反相负例返回 `different`，耗时 9.850 秒；其他 127 个输出结构一致。该负例检查大网表中单个错误输出不会被遗漏。
+
+独立命令不会发布旧失败任务的 `incremental.v`。本次确认已有候选与新版参考等价；旧任务尚未执行的 Verilog 重读及归档终检仍是独立交付检查。
+
+以下命令可单独重试验证，默认和显式预算均为 1200 秒：
+
+```bash
+cd /workspace/Yosys-Flow
+hyp_work="runs/hyp-incremental-20261113-042732/replacement/work"
+hyp_proof="runs/hyp-netlist-proof-$(date +%Y%m%d-%H%M%S)"
+taskset -c 0 python3 -u -m incremental verify-netlists \
+  --gold "$hyp_work/new-reference.json" \
+  --gate "$hyp_work/candidate.json" \
+  --top top --yosys /opt/oss-cad-suite/bin/yosys \
+  --timeout 1200 --out "$hyp_proof"
+```
+
+自动流程 `auto` / 显式替换 `run` 使用 `--whole-equivalence-timeout 1200`；`--yosys-timeout` 继续单独控制综合工具调用。详细策略和证据格式见[整网验证说明](netlist-equivalence.md)。
+
+
+## 历史状态：候选已生成，旧整网证明未完成（2026-11-13）
+
+`runs/hyp-incremental-20261113-042732/` 已生成候选网表和独立全量参考，原整网 miter/SAT 在 3600 秒工具预算下未完成。现在 `auto` 和 `run` 共用新的[通用整网验证流程](netlist-equivalence.md)，并可直接复用这两份文件单独重试验证。
+
+最终复测 `runs/hyp-whole-proof-final-20261113/report.json` 在 600 秒共享预算下仍返回 `unknown`（总耗时 600.651 秒）：内部对应阶段证明了 35,963 组函数关系，但剩余 128 个输出锥仍超过分区大小限制，CEC 和最后 SAT 都未完成。没有发现不等价反例，也没有完成该候选的正确性验收或发布。
+
+无需重新建档或重新生成候选，可运行：
+
+```bash
+cd /workspace/Yosys-Flow
+hyp_work="runs/hyp-incremental-20261113-042732/replacement/work"
+hyp_proof="runs/hyp-netlist-proof-$(date +%Y%m%d-%H%M%S)"
+taskset -c 0 python3 -u -m incremental verify-netlists \
+  --gold "$hyp_work/new-reference.json" \
+  --gate "$hyp_work/candidate.json" \
+  --top top --yosys /opt/oss-cad-suite/bin/yosys \
+  --timeout 1200 --out "$hyp_proof"
+```
+
+命令会立即打印进度文件位置。`report.json` 的 `stage` 显示当前阶段，最终结果明确区分 `equivalent`、`different`、`unknown`、`invalid`。增加预算不保证证明成功；独立验证也不会修改旧失败报告或代替旧任务尚未执行的交付检查。
+
+## 目标区域证明通过，新归档已发布（2026-11-12）
+
+复用 `runs/hyp-shared-index-20261110/` 的原始捕获，已完成目标过滤、带极性的功能边界、检查点分段证明及全部对外输出验证，发布 **`runs/hyp-functional-index-20261112/`**。正式报告 `runs/hyp-partition-publication-v10-20261112/report.json` 为 `verified`，`published_index_verified=true`，进程退出码 0。没有重跑插桩综合，也没有启动完整新版增量。
+
+| 验收项 | 结果 |
+|---|---|
+| 修改起点 | 第 239742 行的 AND，`native:cell_697997@0`，进入 ABC 后为 `native:cell_1118516@1` |
+| 目标过滤 | 证明受影响的 `hypotenuse[0]`；其他 127 个捕获输出不作为修改目标 |
+| 最终区域 | **6 门、5 个独立输入边界、2 个对外输出**，原候选为 163799 门 |
+| 全部对外输出 | `hypotenuse[0]` 及共享的 `hypotenuse[127]`，均通过旧 RTL 切割功能及定义性证明 |
+| DCH 实际复制 | 566934 条关系及其 128 个输出全部通过 |
+| 实际映射 cut | 163799 项通过；163724 项真值表、68 项 BDD、3 项局部 SAT、4 项同源网络 CEC |
+| 原始候选与历史 | 原表保留；8 条未独立证明的历史改写继续为未知，不宣称完整因果历史 |
+| 项目回归 | **498 项通过，0 失败、0 错误、0 跳过** |
+
+两条区域输出不能只检查修改涉及的低位。所选区域吸收了共享的反相门，因此高位输出及其外部使用者也必须保留原功能。证书记录实际信号、极性和来源锚点；普通来源查询仍保留原来的候选含义，自动 `source_operation` 选区使用补充证书。
+
+本次补证报告计时 **3148.248 秒**，完整进程墙钟 **3150.02 秒（52 分 30 秒）**，峰值 RSS **23.140 GiB**。这是单次正式补证、发布和重新加载的成本，包含重验已有普通边界缓存；不包含前面的算法探索，也不是在线增量时间。证明器代码固定后从原始捕获重做，没有用诊断文件中的成功标志直接发布。
+
+| 体积 | 原归档 | 新归档 |
+|---|---:|---:|
+| SQLite | 7285231616 B | 7285288960 B |
+| 整份归档 | 14554524345 B（13.555 GiB） | 15038830022 B（14.006 GiB） |
+
+SQLite 增加 56 KiB；整份归档增加约 461.870 MiB，主要是补充证明及检查点。原始记录独立复制，原归档保持不变。新归档同时携带证据文件，后续读取不依赖临时诊断目录。
+
+**计时边界：这次按已知 ECO 的旧操作定点补证。** 下方命令测量的是已经准备该区域证书后的在线流程。若对另一个未知修改必须临时补证，补证耗时应计入那次在线准备，不能据此声称任意修改的冷启动都已加速。当前还没有这份新归档对应的完整 `hyp` 增量成功时间或加速比。
+
+实现及预算说明见[功能区域细化](../provenance/docs/abc-partitions.md)。正式证书为 `runs/hyp-partition-publication-v10-20261112/certificate.json`；回归报告为 `runs/partition-frozen-regression-20261112/report.json`。以下旧数据按日期保留。
+
+发布后又进行了独立只读验收，见 `runs/hyp-target-20261112/published-selection.json`：认证索引命中，实际 `source_operation` 返回 6 个门，强制禁止原始记录重放、整网候选枚举和重复来源 SAT 后仍通过，原 manifest 摘要不变。该进程包含完整归档加载，报告时间 48.690 秒，不能当成纯查询耗时。`selected-old.v` / `selected-old.json` 是导出的 6 门旧区域，已通过 Yosys 结构检查；`out_258` 对应低位 `hypotenuse[0]`，`out_385` 对应共享高位 `hypotenuse[127]`。这些是旧区域验收产物，不是新版增量网表。
+
+## 此前状态：来源证明阻塞及整网候选诊断（2026-11-11）
+
+后续已增加独立 ABC 局部对应路径，原捕获复核报告计时约 374 秒，进程墙钟约 410 秒，其中局部分析约 53 秒；得到 29459 / 163799 个门的已证明对应。此次修改点仍未证明，目标输出门组触及 4096 节点预算；未生成 `hyp` 增量网表，也未发布替代原索引的新归档。完整结果及独立复核命令见 [诊断文档开头](hyp-provenance-diagnosis.md#后续实现与旧捕获复核)。
+
+用户运行 `runs/hyp-incremental-20261111-054126/` 已结束，状态 `blocked`、原因 `old_region_not_proven`。旧归档加载 47.046 秒、新前端 107.875 秒、差分 88.296 秒，总报告时间 6589.356 秒，进程墙钟 110 分钟，峰值 RSS 62.291 GiB。递归错误已越过，128 个区域输出的记录网表一致性检查通过；旧 RTL 与候选门区域的独立来源证明在执行 SAT 的 Yosys 子进程处超过 60 秒。细粒度路径后退至整模块，同样未获得证明，没有生成 patch 或增量网表。独立来源证明的 50 秒求解/60 秒进程预算不受 `--yosys-timeout 3600` 控制，约 106 分钟的其余选区与准备时间不能全部归因于 SAT。
+
+终端约 4.11 MB 的输出来自完整验证信息被转为错误字符串，其中含 163799 个候选门编号；不是数万次独立失败。原报告保留作证据，本轮未重跑该任务。
+
+随后完成只读根因研究：**ABC 精度分析在全区域 BDD 的 100000 节点上限处停止，尚未尝试局部对应；输出锥回退又因 `hypotenuse[0]` 覆盖整网而将全部来源赋给每个最终门。** 前端修改根实际只沿数据流影响这一输出；共享 NOT 的包含来源进一步放大了操作数关联。详细逐阶段数据、有限结构匹配实验和后续验收见 [hyp-provenance-diagnosis.md](hyp-provenance-diagnosis.md)。
+
 ## 共享集合索引续建档（2026-11-10）
 
 本轮开始检查时，原 PID 182781 已不存在，没有存活任务需要再终止。旧 `.progress.json` 停在 `verified_index_build`，不能据此判断仍在执行；旧目录保留作失败证据。
@@ -55,7 +195,7 @@ hyp_index="runs/hyp-shared-index-$(date +%Y%m%d-%H%M%S)"
 
 ## 使用完成的归档运行增量（手工执行）
 
-现在可以直接复用 `runs/hyp-shared-index-20261110/`，无需再建档。新版使用已经固定且已确认存在功能差异的 `fixture/new.v`，仍然只输入旧归档和完整新版，不手工指定修改位置。本段是运行说明，**尚未执行本次增量测量**；上文的全网候选关联意味着它可能扩为整块电路或阻塞，不能预设有局部复用收益。
+现在使用已发布的 **`runs/hyp-functional-index-20261112/`**。新版使用已经固定且已确认存在功能差异的 `fixture/new.v`，仍然只输入旧归档和完整新版，不手工指定修改位置。此前已测得候选生成 447.792 秒，旧任务中断于整网验证，后续独立验证已通过。本段命令用于当前版本重新获得连续运行和完整交付记录；新版输入适用性、patch、拼接和最终全输出验证仍由自动流程执行。
 
 ```bash
 cd /workspace/Yosys-Flow
@@ -66,16 +206,16 @@ echo "开始 hyp 增量实验，输出目录：$hyp_inc"
 /usr/bin/time -v -o "${hyp_inc}.time.txt" \
   timeout --kill-after=15s 7200s \
   taskset -c 0 python3 -u -m incremental auto \
-    --base-run runs/hyp-shared-index-20261110 \
+    --base-run runs/hyp-functional-index-20261112 \
     --new-source runs/hyp-incremental-20261109/fixture/new.v \
     --yosys /opt/oss-cad-suite/bin/yosys \
     --native-yosys /workspace/Yosys-Flow/build/native/install/bin/yosys \
     --selection-mode fine --no-equivalence-precheck \
-    --yosys-timeout 3600 \
+    --yosys-timeout 3600 --whole-equivalence-timeout 1200 \
     --out "$hyp_inc" 2>&1 | tee "${hyp_inc}.console.log"
 ```
 
-外层 7200 秒覆盖整个在线作业；单次前端、局部综合、参考综合及后验检查的 Yosys 调用可用 3600 秒，避免原来写死的 120 秒上限截断已知需要约 9 分钟的参考综合。其他独立来源证明预算及所有正确性检查保持不变。关闭功能不变预检查，是因为这份固定修改已有具体功能差异反例。新版前端使用当前原生工具，不重跑旧版插桩综合，也不改变旧捕获的工具身份。原版/插桩归档检查改为结构匹配，并不意味着可把新版增量网表与独立参考的 SAT 检查也省略。
+外层 7200 秒覆盖整个在线作业；单次前端、局部综合、参考综合的 Yosys 调用可用 3600 秒，避免默认 120 秒上限截断需要约 9 分钟的参考综合。整网验证另由 `--whole-equivalence-timeout` 控制，默认 1200 秒。其他独立来源证明预算及所有正确性检查保持不变。关闭功能不变预检查，是因为这份固定修改已有具体功能差异反例。新版前端使用当前原生工具，不重跑旧版插桩综合，也不改变旧捕获的工具身份。原版/插桩归档检查改为结构匹配，并不意味着可把新版增量网表与独立参考的 SAT 检查也省略。
 
 第一次手工尝试 `runs/hyp-incremental-20261110-094714/` 成功命中旧索引，旧归档加载与前端表示读取共 48.471 秒，随后因工具相对路径在子进程工作目录下失效而停止；没有开始新版前端或局部综合。已修复公共 Yosys 调用入口，在切换工作目录之前将可执行文件位置转为绝对路径；上方命令也显式使用绝对路径。旧归档与索引无需重建，重跑使用新的输出目录。
 

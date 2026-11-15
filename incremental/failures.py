@@ -4,7 +4,11 @@ import subprocess
 
 def classify(stage, error):
     text = str(error); lower = text.lower()
-    if isinstance(error, subprocess.TimeoutExpired): code = 'tool_timeout'
+    if getattr(error, 'equivalence_status', None) == 'unknown':
+        code = 'equivalence_unknown'
+    elif getattr(error, 'equivalence_status', None) == 'invalid':
+        code = 'equivalence_input_invalid'
+    elif isinstance(error, subprocess.TimeoutExpired): code = 'tool_timeout'
     elif any(s in lower for s in ('latch','state cell','clocked','clock edge','initialization')): code = 'state_outside_combinational_scope'
     elif 'budget' in lower or 'bdd_' in lower: code = 'proof_budget_exhausted'
     elif 'connection-only' in lower or 'requires selected final gates' in lower: code = 'connection_only_region_unsupported'

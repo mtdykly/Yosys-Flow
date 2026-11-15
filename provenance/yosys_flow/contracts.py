@@ -122,6 +122,7 @@ class ContractContext:
         self._users = None
         self._share_plan_sources = True
         self.progress = None
+        self._operation_descendants = {}
 
     def notify(self, step, **details):
         callback = getattr(self, 'progress', None)
@@ -139,6 +140,46 @@ class ContractContext:
             self.queries[key] = query_loaded(args,self.manifest,self.trace,compact=self.compact)
             self.notify('source_query_complete', cells=len(self.queries[key]['final_cells']))
         return self.queries[key]
+
+    def operation_roots(self, selector, cell_name):
+        """Bind a changed frontend operator to its captured creation objects.
+
+        Containing AST sources remain intact. Only this edit-impact recipe
+        starts at the operator rather than at all objects in its source scope.
+        Hierarchical projections keep the conservative existing path until
+        their definition/instance creation bindings are supported explicitly.
+        """
+        from .partition_store import operation_roots
+        certified=operation_roots(self,selector,cell_name)
+        if certified:return certified
+        if len(self.trace.instance_catalog)!=1: return []
+        selection=self.query(selector)
+        from .graph_index import EdgeList
+        edges=self.trace.edges
+        if not hasattr(edges,'adjacent'): edges=EdgeList(edges)
+        roots=set()
+        for sid in selection['seeds']:
+            for _,edge in edges.adjacent(sid):
+                if edge.get('capture')!='ast_generation_scope': continue
+                row=self.trace.objects.get(edge['to'],{})
+                state=row.get('state') or {}
+                if row.get('record_type')=='cell_create' and \
+                   unescape(row.get('name',state.get('name','')))==unescape(cell_name) and \
+                   unescape(row.get('module',state.get('module','')))==self.manifest['configuration']['top']:
+                    roots.add(edge['to'])
+        return sorted(roots)
+
+    def operation_cells(self, roots):
+        key=tuple(sorted(roots))
+        if key not in self._operation_descendants:
+            from .partition_store import operation_certificate
+            certificate=operation_certificate(self,roots)
+            if certificate:
+                self._operation_descendants[key]=set(certificate['final_cell_refs'])
+            else:
+                reached,_=walk(self.trace.edges,roots)
+                self._operation_descendants[key]=reached & set(self.trace.final)
+        return set(self._operation_descendants[key])
 
     def cell(self, ref):
         require(ref in self.trace.final, 'contract cell is not live in this baseline')
@@ -272,10 +313,20 @@ class ContractContext:
             # Keep all candidate refs, original precision and causal-history
             # flags. This is a separate region-level functional certificate.
             return seal(result)
-        if kind in {'selection','source_cells'}:
-            require(set(derivation)=={'kind','selector'}, 'invalid selection derivation')
-            selection = self.query(derivation['selector'])
+        if kind in {'selection','source_cells','source_operation'}:
+            fields={'kind','selector'} | ({'cell_name'} if kind=='source_operation' else set())
+            require(set(derivation)==fields, 'invalid selection derivation')
+            from .partition_store import operation_certificate, source_seeds
+            roots=(self.operation_roots(derivation['selector'],derivation['cell_name'])
+                   if kind=='source_operation' else [])
+            certificate=operation_certificate(self,roots) if roots else None
+            selection = ({'seeds':source_seeds(self,derivation['selector']),
+                          'final_cells':[],'final_connections':[]} if certificate else self.query(derivation['selector']))
             requested = {c['ref'] for c in selection['final_cells']}
+            if kind=='source_operation':
+                roots=self.operation_roots(derivation['selector'],derivation['cell_name'])
+                require(len(roots)==1, 'changed operation has no unique captured creation binding')
+                requested=self.operation_cells(roots)
             # An automatic gate replacement asks for source-associated gates.
             # Source-only observations (e.g. unused constant padding bits) are
             # not electrical outputs of that gate cut. True gate outputs and
@@ -312,7 +363,9 @@ class ContractContext:
         closure = group_closure(self.trace,starting)
         refs = set(closure['required_final_cell_refs'])
         closed = group_closure(self.trace,refs)
-        cells = self.cells(refs)
+        from .partition_store import region_certificate
+        partition=region_certificate(self,refs)
+        cells = ([self._cell(ref,self.trace.objects[ref]) for ref in sorted(refs)] if partition else self.cells(refs))
         connection_rows = [self.connection(ref) for ref in sorted(connections)]
         names = [unescape(c['name']) for c in cells]
         sliced,boundary = slice_module(self.module,names,'region',connection_rows)
@@ -352,8 +405,12 @@ class ContractContext:
         self.notify('region_output_functions', cells=len(cells), boundary_ports=len(boundary))
         functions = verify_outputs(recorded,sliced['modules']['region']['cells'],boundary)
         self.notify('region_supporting_evidence')
-        supporting = supporting_nodes(self.trace.edges,refs|connections)
-        indexed_edges = incoming(self.trace.edges,supporting)
+        # The supplementary proof binds these exact final objects to captured
+        # input objects and covers every outside use. Retaining the original
+        # broad candidates does not require re-expanding them into a false
+        # causal explanation for this independently proved impact region.
+        supporting = set() if partition else supporting_nodes(self.trace.edges,refs|connections)
+        indexed_edges = [] if partition else incoming(self.trace.edges,supporting)
         edges = [e for _,e in indexed_edges]
         indexed_associations = indexed_rows(self.trace,'abc_associations','ref',supporting)
         associations = [r for _,r in indexed_associations]
@@ -363,6 +420,11 @@ class ContractContext:
         provenance = {'record_event_ids':sorted({e['event_id'] for e in edges}),
             'coverage':self.manifest['coverage'], 'coverage_gaps':self.manifest['coverage_gaps'],
             'source_completeness_proven':False, 'complete_causal_history':False}
+        if partition:
+            provenance['functional_partition']={'id':partition['id'],
+                'artifact':self.manifest['functional_partitions']['artifact'],
+                'rule':partition['proof']['rule'], 'all_external_outputs':True,
+                'original_candidate_associations_retained_in_baseline':True}
         if self.compact:
             # Indices name the deterministic, manifest-bound replay view, not
             # arbitrary caller files. validate() reconstructs each reference.

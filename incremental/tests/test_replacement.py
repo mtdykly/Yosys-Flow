@@ -152,7 +152,9 @@ class ReplacementIntegrationTests(unittest.TestCase):
             self.assertEqual(base['ports'],result['ports'])
             local_script = (directory/'work/local-synth.ys').read_text()
             self.assertIn('patch.v',local_script); self.assertNotIn('new.v',local_script)
-            self.assertIn('sat -verify -prove trigger 0',(directory/'work/whole-equivalence.ys').read_text())
+            self.assertEqual(report['whole_equivalence']['status'],'equivalent')
+            self.assertTrue(report['whole_equivalence']['all_top_outputs_verified'])
+            self.assertFalse(report['whole_equivalence']['internal_names_assumed_equal'])
             self.assertFalse(report['safe_for_arbitrary_future_edits'])
 
     def test_flatten_polarity_is_proven_and_does_not_depend_on_original_wire_names(self):

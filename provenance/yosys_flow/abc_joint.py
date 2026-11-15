@@ -6,6 +6,7 @@ sources and excludes the surviving boundary's upstream sources.
 """
 from .abc_internal import Unsupported, cut_domain, evaluate, prove_cut
 from .boolean import ProofBudgetExceeded
+from .common import require
 
 
 def boundary_truth(net, root, boundary, local_bdds, failures):
@@ -13,14 +14,20 @@ def boundary_truth(net, root, boundary, local_bdds, failures):
     try:
         variables, mask = cut_domain(len(boundary), bdds=local_bdds)
         values = dict(zip(boundary, variables))
-        def visit(i):
-            if i not in values:
-                node = net.nodes[i]
-                if node['op'] == 'pi': raise Unsupported('unbound_joint_input')
-                args = [visit(lit//2) ^ (mask if lit&1 else 0) for lit in node['fanins']]
-                values[i] = evaluate(node, args, mask)
-            return values[i]
-        return visit(root)
+        active=set();stack=[(root,False)]
+        while stack:
+            i,done=stack.pop()
+            if i in values: continue
+            node=net.nodes[i]
+            if done:
+                values[i]=evaluate(node,[values[f//2] ^ (mask if f&1 else 0) for f in node['fanins']],mask)
+                active.remove(i)
+            else:
+                require(i not in active,'cycle in ABC joint cut')
+                if node['op']=='pi': raise Unsupported('unbound_joint_input')
+                active.add(i);stack.append((i,True))
+                stack.extend((f//2,False) for f in reversed(node['fanins']))
+        return values[root]
     except ProofBudgetExceeded as exc:
         if failures is not None:
             failures.append({'export_root': root, 'boundary_input_count': len(boundary), 'reason': str(exc)})
@@ -37,17 +44,18 @@ def joint_cuts(first, final, original, initial, final_values, mask, gate_by_name
             continue
         inside, boundary = set(), set()
         seen = set()
-        def collect(i):
-            if i in seen: return
+        stack=[target]
+        while stack:
+            i=stack.pop()
+            if i in seen: continue
             seen.add(i)
             node = final.nodes[i]
             if i in final.pis or (i != target and i in proved_gates):
                 boundary.add(i)
-                return
+                continue
             if node.get('gate'):
                 inside.add(i)
-            for lit in node['fanins']: collect(lit//2)
-        collect(target)
+            stack.extend(lit//2 for lit in node['fanins'])
         # A useful joint group is smaller than a whole output cone: retain at
         # least one independently proved internal boundary, and no proved gate
         # in its interior. Never absorb another output just because it shares PIs.
@@ -127,15 +135,16 @@ only one spelling is part of the shared implementation, not a cut input.
             stops = {i for i in proved_gates if i!=target and
                      all(final_values[i] in funcs or (mask^final_values[i]) in funcs for funcs in ancestor_values)}
             inside, boundary, seen = set(), set(), set()
-            def collect(i):
-                if i in seen: return
+            stack=[target]
+            while stack:
+                i=stack.pop()
+                if i in seen: continue
                 seen.add(i)
                 if i in final.pis or i in stops:
-                    boundary.add(i); return
+                    boundary.add(i); continue
                 node = final.nodes[i]
                 if node.get('gate'): inside.add(i)
-                for lit in node['fanins']: collect(lit//2)
-            collect(target)
+                stack.extend(lit//2 for lit in node['fanins'])
             if not inside or not inside <= name_by_gate.keys(): continue
             names = sorted(name_by_gate[i] for i in inside)
             if any(not mapping_events.get(n) for n in names): continue

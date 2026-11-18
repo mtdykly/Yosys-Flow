@@ -9,7 +9,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from incremental import anubis, automatic, replace, rtlil, statements
+from incremental import automatic, replace, rtlil, statements
+from experiments import anubis
 from incremental.__main__ import parser
 from incremental.tests.test_replacement import NATIVE
 from yosys_flow.cli import parser as flow_parser

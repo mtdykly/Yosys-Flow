@@ -9,7 +9,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from incremental import anubis, automatic, equivalence, rtlil, replace
+from incremental import automatic, equivalence, rtlil, replace
+from experiments import anubis
 from incremental.__main__ import parser
 from incremental.tests.test_replacement import NATIVE
 from yosys_flow.cli import parser as flow_parser

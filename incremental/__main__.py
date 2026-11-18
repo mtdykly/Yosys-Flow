@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 from yosys_flow.common import ROOT, TraceError
-from . import demo, replace, anubis, automatic, nochange, sequential, seq_anubis, experiment as comparison
+from . import replace, automatic, sequential
 from . import netlist_equivalence
 
 
@@ -23,7 +23,7 @@ def positive_count(value):
     return count
 
 
-def parser():
+def parser(include_experiments=True):
     cli = argparse.ArgumentParser(description=__doc__)
     commands = cli.add_subparsers(dest='command',required=True)
     verify = commands.add_parser('verify-netlists',help='独立验证两份完整组合网表；不重跑综合、不发布增量结果')
@@ -36,51 +36,6 @@ def parser():
     verify.add_argument('--matching-budget',type=positive_seconds,default=360.0,
                         help='内部对应证明上限；同时不超过剩余总预算的 60%%，默认 360 秒')
     verify.add_argument('--abc',help='默认使用 Yosys 同目录的 yosys-abc；none 仅使用 SAT')
-    experiment = commands.add_parser('demo',help='四通道组合 RTL 的局部替换实验')
-    experiment.add_argument('--mode',choices=['retained','flatten','both'],default='both')
-    experiment.add_argument('--native-yosys',default=str(ROOT/'build/native/install/bin/yosys'))
-    benchmark = commands.add_parser('anubis',help='固定 ANUBIS 宏修改的双实例组合基准与失败归因')
-    benchmark.add_argument('--mode',choices=['retained','flatten','both'],default='both')
-    benchmark.add_argument('--cases',nargs='+',choices=list(anubis.CASES))
-    benchmark.add_argument('--native-yosys',default=str(ROOT/'build/native/install/bin/yosys'))
-    benchmark.add_argument('--automatic',action='store_true',help='仅把旧记录和完整新版交给 auto，不提供目标实例或 patch')
-    compare = commands.add_parser('compare',help='ANUBIS / EPFL 组合功能修改的全量与增量对比（不含独立 M）')
-    compare.add_argument('--mode',choices=['retained','flatten','both'],default='retained')
-    compare.add_argument('--suite',choices=['anubis-functional','epfl-functional','diagnostic'],default='anubis-functional',
-                         help='ANUBIS 或 EPFL 构造的组合功能修改；diagnostic 显式启用 NOC、合成控制与状态负例')
-    compare.add_argument('--cases',nargs='+',help='所选 suite 中的固定案例；默认该套件全部主案例')
-    compare.add_argument('--methods',nargs='+',choices=['F','P-module','P-fine'],
-                         help='必须包含 F；EPFL 默认 F P-fine，其他套件默认三种方法')
-    compare.add_argument('--native-yosys',default=str(ROOT/'build/native/install/bin/yosys'))
-    compare.add_argument('--repeats',type=positive_count,default=5,help='每个方法至少 1 次，默认 5；单次结果不代表稳定均值')
-    compare.add_argument('--baseline-repeats',type=positive_count,default=1,
-                         help='离线旧建档独立重复次数，默认 1；与在线重复按序配对，共享相同旧输入')
-    compare.add_argument('--index-backend',choices=['sqlite','gzip'],default='sqlite',
-                         help='旧建档和在线选区使用的索引后端，默认 sqlite')
-    compare.add_argument('--precheck',choices=['on','off','both'],default='off',
-                         help='主比较默认关闭等价预检查；on 的运行成本计入生成时间；both 对诊断 NOC 测开/关，其余开启；auto 默认不变')
-    compare.add_argument('--seed',type=int,default=20261024)
-    compare.add_argument('--cpu',type=int,help='串行绑定一个允许的 CPU；默认取当前 affinity 的最小编号')
-    compare.add_argument('--job-timeout',type=positive_seconds,default=600.0)
-    compare.add_argument('--archive-byte-limit',type=positive_count,
-                         help='可选：每个测量进程输出目录的逻辑字节上限；按秒采样，超限保留部分证据并报告 resource_limit')
-    compare.add_argument('--fallback-full',action='store_true',help='失败后实际执行 F，另报尝试加回退成本')
-    compare.add_argument('--liberty',help='可选 Liberty 库：对成功的最终 generic 网表统一映射并估算单元面积；映射和验证时间另列')
-    survey = commands.add_parser('anubis-nochange',help='盘点全部 ANUBIS NOC 宏，单独测量组合模块等价证明')
-    survey.add_argument('--cases',nargs='+',help='清单 ID，例如 dlx_noc1 fpu_noc3；默认全部 30 个宏')
-    survey.add_argument('--inventory-only',action='store_true',help='只校验并输出完整变体清单')
-    survey.add_argument('--case-timeout',type=positive_seconds,default=600.0,
-                        help='每次证明的独立墙钟保护上限，默认 600 秒；无共享预算')
-    survey.add_argument('--frontend-timeout',type=positive_seconds,default=120.0,
-                        help='每版 RTL 前端处理保护上限，默认 120 秒')
-    survey.add_argument('--repeats',type=positive_count,default=3,help='成功证明的独立重复次数，默认 3')
-    survey.add_argument('--with-sequential',action='store_true',
-                        help='展开全部 NOC 的设计上下文，组合用 SAT，支持的时序用 EQY 和旧网表复用')
-    survey.add_argument('--upstream-top',action='store_true',
-                        help='按上游 Yosys 文件清单、真实顶层及默认参数验证；局部反例不冒充顶层反例')
-    survey.add_argument('--eqy',default='eqy')
-    survey.add_argument('--synthesis-timeout',type=positive_seconds,default=600.0,
-                        help='扩展评测中旧版基准综合的保护上限；不综合新版')
     seq_base = commands.add_parser('seq-baseline',help='独立归档并证明单时钟时序旧网表（不启用时序增量）')
     seq_base.add_argument('--source',action='append',required=True)
     seq_base.add_argument('--top',required=True)
@@ -93,11 +48,10 @@ def parser():
     seq_reuse = commands.add_parser('seq-reuse',help='EQY 证明完整新版 RTL 满足条件后，逐字节复用归档旧网表')
     seq_reuse.add_argument('--base-run',required=True)
     seq_reuse.add_argument('--new-source',dest='source',action='append',required=True)
-    seq_bench = commands.add_parser('anubis-sequential',help='原始 ANUBIS ALPHA 寄存器文件的时序等价、反例和整网表复用实验')
     for command in (seq_base,seq_reuse):
         command.add_argument('--define',action='append',help='本版 RTL 的预处理宏 NAME[=VALUE]')
         command.add_argument('--include',action='append',help='RTL include 搜索目录')
-    for command in (seq_base,seq_reuse,seq_bench):
+    for command in (seq_base,seq_reuse):
         command.add_argument('--eqy',default='eqy')
         command.add_argument('--proof-timeout',type=positive_seconds,default=120.0,
                              help='全部时序证明义务共享的墙钟上限，默认 120 秒；超时不复用')
@@ -120,59 +74,48 @@ def parser():
             help='前端/局部综合/全量参考生成的单次工具上限（秒，默认 120）；独立于整网验证及预检查预算')
         command.add_argument('--whole-equivalence-timeout',type=positive_seconds,default=1200.0,
             help='每次整网验证各阶段共享的墙钟预算（秒，默认 1200）')
-    for command in (auto,benchmark):
-        command.add_argument('--no-equivalence-precheck',action='store_true',
-            help='关闭叶模块组合等价预检查，直接走原来的局部提取流程')
-        command.add_argument('--equivalence-timeout',type=positive_seconds,default=5.0,
-            help='每个等价证明的墙钟预算（秒，包含表示转换，默认 5）')
-        command.add_argument('--equivalence-budget',type=positive_seconds,default=15.0,
-            help='本次自动流程全部等价预检查的共享墙钟预算（秒，默认 15）')
-    compare.add_argument('--equivalence-timeout',type=positive_seconds,default=5.0)
-    compare.add_argument('--equivalence-budget',type=positive_seconds,default=15.0)
-    for command in (experiment,execute,benchmark,auto,survey,seq_base,seq_reuse,seq_bench,compare,verify):
-        command.add_argument('--out',required=True,help='新的实验结果目录')
+    auto.add_argument('--no-equivalence-precheck',action='store_true',help='关闭叶模块组合等价预检查')
+    auto.add_argument('--equivalence-timeout',type=positive_seconds,default=5.0)
+    auto.add_argument('--equivalence-budget',type=positive_seconds,default=15.0)
+    for command in (execute,auto,seq_base,seq_reuse,verify):
+        command.add_argument('--out',required=True,help='新的运行目录')
         command.add_argument('--yosys',default='yosys')
+    # Preserve the historical parser API for callers/tests. Normal core CLI
+    # execution below excludes experiment imports and registrations.
+    if include_experiments:
+        from experiments.__main__ import register
+        register(commands)
     return cli
 
 
-def main():
-    args = parser().parse_args()
-    if args.command == 'verify-netlists':
+def main(argv=None):
+    argv=sys.argv[1:] if argv is None else argv
+    if argv and argv[0] in {'demo','anubis','compare','anubis-nochange','anubis-sequential'}:
+        # Compatibility for existing terminal commands; the implementation
+        # and preferred entry point now live in the experiments package.
+        from experiments.__main__ import main as experimental_main
+        return experimental_main(argv)
+    args=parser(include_experiments=False).parse_args(argv)
+    if args.command=='verify-netlists':
         print('开始整网验证；进度与结果：'+str(args.out)+'/report.json',file=sys.stderr,flush=True)
     try:
-        result = {'demo':demo.run,'anubis':anubis.run,'auto':automatic.run,'run':replace.run,
-                  'anubis-nochange':nochange.run,'seq-baseline':sequential.baseline,
-                  'seq-reuse':sequential.reuse,'anubis-sequential':seq_anubis.run,
-                  'compare':comparison.run,'verify-netlists':netlist_equivalence.run}[args.command](args)
+        result={'auto':automatic.run,'run':replace.run,'seq-baseline':sequential.baseline,
+                'seq-reuse':sequential.reuse,'verify-netlists':netlist_equivalence.run}[args.command](args)
     except (TraceError,OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError) as exc:
         print('incremental: '+str(exc),file=sys.stderr)
         return 1
     if args.command=='verify-netlists':
-        result = {k:result[k] for k in ('status','all_top_outputs_verified','total_seconds')}
-        result['report'] = str(args.out)+'/report.json'
+        result={k:result[k] for k in ('status','all_top_outputs_verified','total_seconds')}
     elif args.command=='run':
-        result = {'status':result['status'],'checks':result['checks'],'report':str(args.out)+'/report.json'}
-    elif args.command=='anubis':
-        result = {'status':result['status'],'counts':result['counts'],
-                  'cases':[{k:r[k] for k in ('case','mode','status')} for r in result['cases']],
-                  'report':str(args.out)+'/report.json'}
+        result={'status':result['status'],'checks':result['checks']}
     elif args.command=='auto':
-        result={k:result[k] for k in ('status','selected_scopes','checks','failure') if k in result}|{'report':str(args.out)+'/report.json'}
-    elif args.command=='anubis-nochange':
-        result={k:result[k] for k in ('status','unique_macros_in_inventory','counts','budget_observations')}
-        result['report']=str(args.out)+'/report.json'
+        result={k:result[k] for k in ('status','selected_scopes','checks','failure') if k in result}
     elif args.command in {'seq-baseline','seq-reuse'}:
         result={k:result[k] for k in ('status','reused','next_action','failure') if k in result}
-        result['report']=str(args.out)+('/baseline.json' if args.command=='seq-baseline' else '/report.json')
-    elif args.command=='anubis-sequential':
-        result={k:result[k] for k in ('status','baseline_status','counts')}
-        result['report']=str(args.out)+'/report.json'
-    elif args.command=='compare':
-        result={k:result[k] for k in ('status','counts','methods','total_seconds')}
-        result['report']=str(args.out)+'/report.json'
+    result['report']=str(args.out)+('/baseline.json' if args.command=='seq-baseline' else '/report.json')
     print(json.dumps(result,indent=2,ensure_ascii=False))
     return 1 if result.get('status') in {'failed','blocked','unknown','different','invalid','invalidated'} else 0
 
 
-if __name__ == '__main__':
+if __name__=='__main__':
     raise SystemExit(main())

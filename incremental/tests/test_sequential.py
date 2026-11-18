@@ -13,7 +13,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from incremental import nochange, sequential
+from incremental import sequential
+from experiments import nochange
 from incremental.__main__ import parser
 from yosys_flow.common import TraceError, digest
 

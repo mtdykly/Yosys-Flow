@@ -90,9 +90,9 @@ python3 -m incremental auto --base-run runs/old-run --new-source new.v \
 
 规范化差分是结构比较，不是功能等价证明。SAT 未能证明的等价改写仍可能被当作修改，独立语句重排也可能产生保守扩区。实际执行局部替换的路径始终保留最终全输出 SAT 验收；整份旧网表直接复用的路径使用前述组合证明，不执行新版完整综合。
 
-模块差分先用逐行相等比较去掉共同前后缀，仅在不相同的中段运行差分匹配；没有忽略高频行或改变修改判定。区域输出的来源证据用位集合同时执行原先的逆序边扫描，保留事件次序和每个输出的证据列表，避免为每个输出再次扫描同一组边。具体耗时归因见 [cost-attribution.md](cost-attribution.md)。
+结构差分先剥离共同块，再对变化块做有预算的匹配；超预算区间保守保留为变化，具体规则见前文。区域输出的来源证据用位集合同时执行原先的逆序边扫描，保留事件次序和每个输出的证据列表，避免为每个输出再次扫描同一组边。具体耗时归因见 [耗时归因](../experiments/docs/cost-attribution.md)。
 
-深组合依赖使用显式栈：前端结构指纹及过程临时量、局部 patch 提取、模块输入依赖、旧源码证明切片和区域输出函数均不再按逻辑深度递归调用 Python。保留已完成节点缓存和活动路径环检测；异常退出会清理指纹计算中的活动标记。指纹格式、具名输入切点、赋值与分支优先级、全部输出验证规则不变，也不提高解释器递归上限。深链专项及 `hyp` 已保存文件的复查见 [hyp-comparison.md](hyp-comparison.md#深依赖显式栈修复与复查2026-11-11)。
+深组合依赖使用显式栈：前端结构指纹及过程临时量、局部 patch 提取、模块输入依赖、旧源码证明切片和区域输出函数均不再按逻辑深度递归调用 Python。保留已完成节点缓存和活动路径环检测；异常退出会清理指纹计算中的活动标记。指纹格式、具名输入切点、赋值与分支优先级、全部输出验证规则不变，也不提高解释器递归上限。深链专项及 `hyp` 已保存文件的复查见 [hyp 结果](../experiments/docs/hyp.md)。
 
 选区进度另标记 `source_anchor_fingerprints`、`local_dependency_slice`、`source_cut_verification`，分别表示新旧完整依赖指纹、局部粗网表提取、旧源码边界功能验证。若出现未处理异常，`report.json` 的 `failure.traceback` 指向 `failure-traceback.txt`，保留完整 Python 调用栈；该文件不代表已生成可交付网表。
 
@@ -127,12 +127,12 @@ python3 -m incremental auto --base-run runs/old-run --new-source new.v \
 | `report.json` | 状态、扩区尝试、门数、哈希、逐阶段耗时及失败原因 |
 | `failure-traceback.txt` | 非预期异常的完整调用栈，仅失败时生成 |
 
-`status=unchanged` 或 `reused_equivalent` 时不生成 patch，报告 `reuse`、证明依据和逐字节复用检查。实际替换成功仍为 `passed`；`blocked` 或 `failed` 非零退出。`changes` 保留原始差异，`remaining_changes` 是预检查后待处理差异。替换路径的 `netlist_generation_seconds` 截止于完整新版 JSON/IL/Verilog 写出，包含旧索引加载或记录重放、新版前端、预检查、差分、选区、计划、绑定、局部综合与拼接；生成后的检查单列为 `post_generation_validation_seconds`。历史 `incremental_candidate_ready_seconds` 仍含部分检查，仅用于诊断，详见 [计时定义](comparison.md#时间到整份新版网表生成)。直接复用路径用 `timings.total_seconds` 观察完整在线成本，不能把 SAT 求解耗时当作总耗时。
+`status=unchanged` 或 `reused_equivalent` 时不生成 patch，报告 `reuse`、证明依据和逐字节复用检查。实际替换成功仍为 `passed`；`blocked` 或 `failed` 非零退出。`changes` 保留原始差异，`remaining_changes` 是预检查后待处理差异。替换路径的 `netlist_generation_seconds` 截止于完整新版 JSON/IL/Verilog 写出，包含旧索引加载或记录重放、新版前端、预检查、差分、选区、计划、绑定、局部综合与拼接；生成后的检查单列为 `post_generation_validation_seconds`。历史 `incremental_candidate_ready_seconds` 仍含部分检查，仅用于诊断，详见 [计时定义](../experiments/docs/comparison.md)。直接复用路径用 `timings.total_seconds` 观察完整在线成本，不能把 SAT 求解耗时当作总耗时。
 
 用 ANUBIS 复现自动模式：
 
 ```bash
-python3 -m incremental anubis --automatic \
+python3 -m experiments anubis --automatic \
   --cases compare_local9 --mode retained --out runs/automatic-anubis
 ```
 

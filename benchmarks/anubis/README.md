@@ -4,14 +4,14 @@
 
 本命令在仓库检出中运行，使用随仓库保存的语料；不是完整 ANUBIS 设计集或官方评分流程。没有接入 YSYX、EPFL 或其他外部测试库。原有内部回归测试不删除。
 
-`incremental compare` 的主要时间与网表规模比较仅使用下文有实际功能变化的组合适配案例 `compare_local9`、`control_local2`，默认关闭功能不变预检查。主计时覆盖从输入到整份新版网表写出，拼接后的正确性验证单列；通过验证才纳入加速比和规模统计。其余 NOC、锁存器负例和人工控制可显式选作诊断，不进入主要性能结论，也不与原始 30 个 NOC 宏调查混算。配置和计时口径见 [对比实验](../../incremental/comparison.md)，固定目录见 [comparison-cases.json](comparison-cases.json)。
+`incremental compare` 的主要时间与网表规模比较仅使用下文有实际功能变化的组合适配案例 `compare_local9`、`control_local2`，默认关闭功能不变预检查。主计时覆盖从输入到整份新版网表写出，拼接后的正确性验证单列；通过验证才纳入加速比和规模统计。其余 NOC、锁存器负例和人工控制可显式选作诊断，不进入主要性能结论，也不与原始 30 个 NOC 宏调查混算。配置和计时口径见 [对比实验](../../experiments/docs/comparison.md)，固定目录见 [comparison-cases.json](comparison-cases.json)。
 
 ## 按上游顶层与配置验证 NOC
 
 判断原始 NOC 是否影响实际设计，使用这个入口：
 
 ```bash
-python3 -m incremental anubis-nochange --upstream-top \
+python3 -m experiments anubis-nochange --upstream-top \
   --repeats 1 --case-timeout 600 --frontend-timeout 300 \
   --out runs/anubis-noc-upstream-final
 ```
@@ -46,13 +46,13 @@ FPU 的独立模块配置与原始顶层不同：`fp_lead0 Fast=0` 在真实实�
 ```bash
 # 默认：全部清单，单次证明保护上限 600 秒，无共享总预算
 # 成功证明串行重复 3 次；输出目录必须不存在
-python3 -m incremental anubis-nochange --out runs/anubis-nochange
+python3 -m experiments anubis-nochange --out runs/anubis-nochange
 
 # 只盘点，不启动 Yosys
-python3 -m incremental anubis-nochange --inventory-only --out runs/nochange-inventory
+python3 -m experiments anubis-nochange --inventory-only --out runs/nochange-inventory
 
 # 单独复查；只改变评测保护上限，不改变 auto 默认值
-python3 -m incremental anubis-nochange --cases dlx_noc1 fpu_noc0 \
+python3 -m experiments anubis-nochange --cases dlx_noc1 fpu_noc0 \
   --case-timeout 1200 --frontend-timeout 120 --repeats 5 --out runs/nochange-selected
 ```
 
@@ -83,7 +83,7 @@ python3 -m incremental anubis-nochange --cases dlx_noc1 fpu_noc0 \
 ## 包含时序的模块上下文诊断（非上游顶层）
 
 ```bash
-python3 -m incremental anubis-nochange --with-sequential \
+python3 -m experiments anubis-nochange --with-sequential \
   --case-timeout 600 --frontend-timeout 300 --repeats 3 \
   --out runs/anubis-noc-combined
 ```
@@ -113,11 +113,11 @@ python3 -m incremental anubis-nochange --with-sequential \
 
 ```bash
 make NATIVE_JOBS=4
-python3 -m incremental anubis --out runs/anubis-demo
-python3 -m incremental anubis --cases compare_local9 --mode retained --out runs/anubis-local9
-python3 -m incremental anubis --cases bypass_with_adder --out runs/anubis-arithmetic
+python3 -m experiments anubis --out runs/anubis-demo
+python3 -m experiments anubis --cases compare_local9 --mode retained --out runs/anubis-local9
+python3 -m experiments anubis --cases bypass_with_adder --out runs/anubis-arithmetic
 # 自动差分、提取与绑定：算法仅收到旧记录和完整新版
-python3 -m incremental anubis --automatic --out runs/anubis-automatic
+python3 -m experiments anubis --automatic --out runs/anubis-automatic
 ```
 
 默认运行六项用例，各执行保留层次和显式展平两种模式。结果目录必须不存在。输出 `report.json` 区分 `passed`、`expected_rejection`、`blocked`、`failed`；有阻塞而无异常时汇总为 `completed_with_limitations`，命令正常退出，但这不表示所有实验通过。完整回归对已知阻塞检查具体原因，并要求零跳过。
@@ -160,7 +160,7 @@ python3 -m incremental anubis --automatic --out runs/anubis-automatic
 4. 没有消费者的内部观察别名保留原驱动并验证原值；真正旧直连变新逻辑仍拒绝。错误绑定、位序、极性、遗漏输出、新依赖、组合环及共享消费者拆分反例继续验收。
 5. 报告分开记录旧基准成本、查询/重放/契约、绑定与局部综合/拼接、完整新版验证及总成本。当前重放和证明成本可能大于原版全量综合，**没有加速结论**。
 
-性能数据统一保留在 [v4 对比实验](../../incremental/comparison.md)，只将功能修改的组合案例纳入主要时间和规模比较。重新生成完整回归可运行 `python3 provenance/tools/run_regression.py --out runs/anubis-regression`；它保存逐用例输入、脚本、网表、日志和 `anubis/report.json`。输出目录需新建，历史运行产物不是测试依赖。
+性能数据统一保留在 [对比实验](../../experiments/docs/comparison.md)，只将功能修改的组合案例纳入主要时间和规模比较。重新生成完整回归可运行 `python3 provenance/tools/run_regression.py --out runs/anubis-regression`；它保存逐用例输入、脚本、网表、日志和 `anubis/report.json`。输出目录需新建，历史运行产物不是测试依赖。
 
 模块内自动切片的选择数量由 `incremental/tests/test_statements.py` 验收；当前功能修改的实际规模见 v4 对比报告。默认开启预检查后，`bypass_noc1` 的反转条件并交换分支、`compare_noc2` 的 `!=` 改 `~(==)` 都可证明功能不变，直接复用全部旧门；`compare_local9` 留下反例并进入原局部路径。没有先综合完整新版去判断是否等价。
 
@@ -172,6 +172,6 @@ python3 -m incremental anubis --automatic --out runs/anubis-automatic
 
 ## 独立时序预检查
 
-`python3 -m incremental anubis-sequential --proof-timeout 180 --out runs/anubis-sequential` 使用同一锁定版本中原始 `alpha/regfile.v`，保留完整 32×64 位数组与初始化。先做一次旧版默认综合并证明，再分别验证 `ANUBIS_NOC_5` 初始化循环反转、`ANUBIS_LOCAL_0` 写条件修改、`ANUBIS_LOCAL_2` 旁路修改。仅证明等价的版本获得整份旧网表复制；其余保留输出反例或未证明状态。输入、EQY 配置、分区、SBY 日志、证明耗时和文件哈希均归档。
+`python3 -m experiments anubis-sequential --proof-timeout 180 --out runs/anubis-sequential` 使用同一锁定版本中原始 `alpha/regfile.v`，保留完整 32×64 位数组与初始化。先做一次旧版默认综合并证明，再分别验证 `ANUBIS_NOC_5` 初始化循环反转、`ANUBIS_LOCAL_0` 写条件修改、`ANUBIS_LOCAL_2` 旁路修改。仅证明等价的版本获得整份旧网表复制；其余保留输出反例或未证明状态。输入、EQY 配置、分区、SBY 日志、证明耗时和文件哈希均归档。
 
 这是一份时序模块的三项原始宏实验，不是全部时序 NOC 的覆盖统计；NOC_5 的改写在展开时已可消除。`test_sequential.py` 另使用明确记录的 2 位数据宽度适配和同步复位/故障控制，不能计作额外的上游原始案例。单时钟、初始状态、全输出覆盖和整网表复用的条件见 [时序入口说明](../../incremental/sequential.md)。不带 `--with-sequential` 的组合调查口径保持不变；全部 NOC 的时序上下文调查见上文。

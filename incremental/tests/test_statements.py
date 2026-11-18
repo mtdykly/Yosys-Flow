@@ -7,7 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from incremental import anubis, automatic, ir_graph, rtlil
+from incremental import automatic, ir_graph, rtlil
+from experiments import anubis
 from incremental.__main__ import parser
 from incremental.tests.test_replacement import NATIVE
 from yosys_flow.cli import parser as flow_parser

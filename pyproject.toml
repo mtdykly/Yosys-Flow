@@ -12,10 +12,11 @@ dependencies = []
 [project.scripts]
 yosys-flow = "yosys_flow.cli:main"
 yosys-incremental = "incremental.__main__:main"
+yosys-experiments = "experiments.__main__:main"
 
 [tool.setuptools]
-packages = ["yosys_flow", "incremental"]
-package-dir = {"yosys_flow" = "provenance/yosys_flow", "incremental" = "incremental"}
+packages = ["yosys_flow", "incremental", "experiments"]
+package-dir = {"yosys_flow" = "provenance/yosys_flow", "incremental" = "incremental", "experiments" = "experiments"}
 
 [tool.setuptools.package-data]
 incremental = ["examples/four_lanes/*.v"]

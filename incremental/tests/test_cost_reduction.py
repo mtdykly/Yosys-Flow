@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 from incremental import rtlil, statements
 from incremental.ir_graph import Unsupported
-from incremental.profile import Recorder
+from experiments.profile import Recorder
 from yosys_flow.contracts import output_associations
 from yosys_flow.extract import slice_module
 

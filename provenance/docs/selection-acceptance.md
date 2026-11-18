@@ -157,4 +157,4 @@ python3 -m yosys_flow extract runs/selection-demo --source provenance/examples/s
 
 这项验收只针对给定修改及绑定，不改变来源选择精度或旧契约的安全声明。当前交付结果为展平网表，保持层次外形和自动拆分共享消费者仍未实现。详见 [实验说明](../../incremental/README.md)。
 
-使用 `make test` 生成本次完整回归报告；实验命令与计时口径见 [对比实验](../../incremental/comparison.md)。历史运行目录不作为实现或测试依赖。
+使用 `make test` 生成本次完整回归报告；实验命令与计时口径见 [对比实验](../../experiments/docs/comparison.md)。历史运行目录不作为实现或测试依赖。

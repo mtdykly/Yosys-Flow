@@ -4,7 +4,7 @@
 
 ## 运行
 
-构建见 [native-m1.md](native-m1.md)。
+构建见 [build.md](build.md)。
 
 ```bash
 make NATIVE_JOBS=4
@@ -40,6 +40,6 @@ python3 -m yosys_flow validate runs/comb-demo
 
 运行器检查生命周期、来源引用、最终 cell/连接与 JSON 的一致性，再比较独立原版同流程的完整 JSON modules，并做组合等价检查。导出复制实际所选集合，生成边界端口，另做 Verilog 重读等价；包含 `$pmux` 的开发检查点保留其未定义值语义。
 
-`retired_cells` / `retired_connections` 说明历史对象退休，不等于整条语句无影响。共享与候选来源保持可见；当前结果继续报告部分覆盖和 `end_to_end_exact=false`。来源选择的独立验收见 [selection-acceptance.md](selection-acceptance.md)，后续工作见 [default-synth-plan.md](default-synth-plan.md)。
+`retired_cells` / `retired_connections` 说明历史对象退休，不等于整条语句无影响。共享与候选来源保持可见；当前结果继续报告部分覆盖和 `end_to_end_exact=false`。来源选择的独立验收见 [selection-acceptance.md](selection-acceptance.md)，后续工作见 [roadmap.md](roadmap.md)。
 
 固定 ABC 的构建、内部钩子、精度规则和验收见 [abc-internals.md](abc-internals.md)。

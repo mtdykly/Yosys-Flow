@@ -37,6 +37,7 @@ def main():
     out.mkdir(parents=True, exist_ok=False)
     suite = unittest.defaultTestLoader.discover(str(PROVENANCE_ROOT/'tests'))
     suite.addTests(unittest.TestLoader().discover(str(ROOT/'incremental/tests'),top_level_dir=str(ROOT)))
+    suite.addTests(unittest.TestLoader().discover(str(ROOT/'experiments/tests'),top_level_dir=str(ROOT)))
     ids = list(test_ids(suite))
     started = time.perf_counter()
     # Keep external experiment artifacts alongside the regression report.
@@ -90,16 +91,16 @@ def main():
                   'region_contracts': ['test_contracts', 'test_plans', 'test_hierarchy'],
                   'hierarchical_instances': ['test_hierarchy'],
                   'local_replacement_experiment': ['incremental.tests.test_replacement'],
-                  'anubis_external_edits': ['incremental.tests.test_anubis'],
+                  'anubis_external_edits': ['experiments.tests.test_anubis'],
                   'automatic_difference_extraction_and_binding': ['incremental.tests.test_automatic',
                                                                  'incremental.tests.test_statements',
                                                                  'incremental.tests.test_partition_slice'],
-                  'controlled_comparison_accounting': ['incremental.tests.test_experiment',
-                                                      'incremental.tests.test_experiment_metrics'],
+                  'controlled_comparison_accounting': ['experiments.tests.test_experiment',
+                                                      'experiments.tests.test_experiment_metrics'],
                   'equivalence_precheck_and_whole_netlist_reuse': ['incremental.tests.test_equivalence'],
-                  'anubis_nochange_inventory_and_proof_measurements': ['incremental.tests.test_nochange',
-                                                                    'incremental.tests.test_nochange_full',
-                                                                    'incremental.tests.test_nochange_top'],
+                  'anubis_nochange_inventory_and_proof_measurements': ['experiments.tests.test_nochange',
+                                                                    'experiments.tests.test_nochange_full',
+                                                                    'experiments.tests.test_nochange_top'],
                   'sequential_precheck_and_whole_netlist_reuse': ['incremental.tests.test_sequential'],
                   'export_correctness': ['test_export'],
                   'input_contract': ['test_combinational']},

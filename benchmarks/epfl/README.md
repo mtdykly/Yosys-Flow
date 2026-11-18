@@ -3,7 +3,7 @@
 上游是 [EPFL Combinational Benchmark Suite](https://github.com/lsils/benchmarks)，固定提交为 [`82d8cc6910419298e713a46644ed59fd3df53038`](https://github.com/lsils/benchmarks/tree/82d8cc6910419298e713a46644ed59fd3df53038)。`lock.json` 锁定六个原始 Verilog、MIT `LICENSE` 和 README 的 SHA-256；下载缓存放在被 Git 忽略的 `build/epfl/upstream/`。
 
 ```bash
-python3 -m incremental.epfl fetch
+python3 -m experiments.epfl fetch
 ```
 
 这些是**基于 EPFL 人工构造的功能修改对**，不是上游提供的新旧版本或真实历史修改。原始文件是单模块、逐位 `assign` 描述的组合网络；保持原模块名 `top`、接口、其他信号名和所有无关源码字节，没有加 wrapper、`keep` 或人工模块边界。每个新版只把一个内部赋值的 `&` 改成 `|`。
@@ -23,4 +23,4 @@ python3 -m incremental.epfl fetch
 
 十二个案例及失败结果均保留，不按增量是否成功筛选。自动流程仅收到旧综合记录和完整新版 RTL；修改行、拓扑类别和反例只进入实验清单，不作为选区或连接提示。每个原电路的两个案例在同一重复轮次内共享相同旧 RTL 字节及建档。单模块案例只测保留层次模式，不再重复没有意义的展平实验。行数按完整原始文件的物理行统计，包含注释和空行。
 
-测量入口、计时和工艺库面积口径见 [incremental/comparison.md](../../incremental/comparison.md)。
+测量入口、计时和工艺库面积口径见 [experiments/docs/comparison.md](../../experiments/docs/comparison.md)。

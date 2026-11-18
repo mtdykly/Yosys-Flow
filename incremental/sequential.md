@@ -62,7 +62,7 @@ python3 -m incremental seq-baseline \
 
 ```bash
 # 原始 ANUBIS ALPHA 32×64 位寄存器文件：一个等价修改、两个真实修改
-python3 -m incremental anubis-sequential \
+python3 -m experiments anubis-sequential \
   --proof-timeout 180 --out runs/anubis-sequential
 
 python3 -m unittest incremental.tests.test_sequential -v
@@ -72,7 +72,7 @@ python3 -m unittest incremental.tests.test_sequential -v
 
 专项回归为速度将同一寄存器文件数据宽度明确缩为 2 位，并另构造同步复位适配及错误注入，验证第二输出、真实状态修改、初始化、复位值、X、时钟、接口、超时、分区不完整和归档损坏。报告区分原始宏和这些适配控制，不把本仓库测试数当作 ANUBIS 原始用例数。当前没有时序修改后的局部重综合能力，也没有时序证明一定节省总耗时的结论。
 
-重新生成包含 35 个模块/参数配置的诊断时，运行 `python3 -m incremental anubis-nochange --with-sequential --case-timeout 600 --frontend-timeout 300 --repeats 3 --out runs/anubis-noc-combined`。该入口使用相同的时序保护与证明实现，记录旧基准成本、每次新版证明和复用总时间；不支持的异步复位、前端未驱动信号、基准未证明等分别报告。配置清单和统计规则见 [完整 NOC 调查](../benchmarks/anubis/README.md)。这不是把 30 个 `NOC` 标签预设为等价，也不会用组合叶模块的亚秒耗时推定时序预算。
+重新生成包含 35 个模块/参数配置的诊断时，运行 `python3 -m experiments anubis-nochange --with-sequential --case-timeout 600 --frontend-timeout 300 --repeats 3 --out runs/anubis-noc-combined`。该入口使用相同的时序保护与证明实现，记录旧基准成本、每次新版证明和复用总时间；不支持的异步复位、前端未驱动信号、基准未证明等分别报告。配置清单和统计规则见 [完整 NOC 调查](../benchmarks/anubis/README.md)。这不是把 30 个 `NOC` 标签预设为等价，也不会用组合叶模块的亚秒耗时推定时序预算。
 
 验证原始 CPU/FPU 顶层的 NOC 修改应使用 `anubis-nochange --upstream-top`。它不额外添加启动复位；先检查实际层次和参数，再做必要证明。独立 FPU 模块配置的局部反例不能作为顶层不等价证据。完整顶层仍可能遇到双边沿、多时钟、异步复位或未驱动输出等限制；详细配置见 ANUBIS 文档。
 

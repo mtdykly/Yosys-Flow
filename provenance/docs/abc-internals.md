@@ -85,7 +85,7 @@ python3 -m yosys_flow extract runs/abc-chain --source provenance/examples/chain.
 
 ## 全局超限后的独立局部路径（2026-11-11）
 
-后续已增加[目标功能区域细化](abc-partitions.md)，复用原捕获的 DCH 合并、实际复制和映射 cut，通过分段及全部输出证明发布新索引。`hyp` 固定修改点已得到 6 门区域；下文本节的 29459 门和目标仍阻塞数据保留为 11 月 11 日的历史结果，当前结果及手工增量命令见 [hyp-comparison.md](../../incremental/hyp-comparison.md)。
+后续已增加[目标功能区域细化](abc-partitions.md)，复用原捕获的 DCH 合并、实际复制和映射 cut，通过分段及全部输出证明发布新索引。`hyp` 固定修改点已得到 6 门区域；下文本节的 29459 门和目标仍阻塞数据保留为 11 月 11 日的历史结果，当前结果及手工增量命令见 [hyp-comparison.md](../../experiments/docs/hyp.md)。
 
 `abc_local.py` 与 `structural.py` 增加以下路径，只有全局策略未完成时才调用：
 
@@ -98,7 +98,7 @@ python3 -m yosys_flow extract runs/abc-chain --source provenance/examples/chain.
 
 原始历史记录仍按原规则检查。独立局部通过只证明所列对象与边界的功能对应，**不表示未使用的历史事件已经全部通过函数校验**，也不消除前序 pass 的候选精度。
 
-验收包括全局节点/工作量预算被强制耗尽后的 32 输入小目标、局部失败隔离、晚期失败保留先前结果、choice cut、改写门组排除公共上游、极性损坏及深 DAG 环检测。`hyp` 的旧捕获复核得到 29459 个已证明门，但此次 AND→OR 修改点仍触及局部门组节点上限；详见 [hyp 诊断与实测](../../incremental/hyp-provenance-diagnosis.md)。这不是已完成 `hyp` 局部替换的结果。
+验收包括全局节点/工作量预算被强制耗尽后的 32 输入小目标、局部失败隔离、晚期失败保留先前结果、choice cut、改写门组排除公共上游、极性损坏及深 DAG 环检测。`hyp` 的旧捕获复核得到 29459 个已证明门，但此次 AND→OR 修改点仍触及局部门组节点上限；详见 [hyp 诊断与实测](../../experiments/docs/hyp.md)。这不是已完成 `hyp` 局部替换的结果。
 
 ## 多级重结合的精度里程碑
 

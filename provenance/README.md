@@ -8,7 +8,7 @@
 
 ## 快速运行
 
-依赖 Python 3.10+、Make、C++20、CMake ≥ 3.28、Ninja、Bison、Flex、m4、zlib 开发文件、固定版本的独立原版 Yosys（含其 ABC）。详见[构建说明](docs/native-m1.md#构建)。
+依赖 Python 3.10+、Make、C++20、CMake ≥ 3.28、Ninja、Bison、Flex、m4、zlib 开发文件、固定版本的独立原版 Yosys（含其 ABC）。详见[构建说明](docs/build.md#构建)。
 
 ```bash
 make NATIVE_JOBS=4
@@ -91,13 +91,13 @@ python3 -m yosys_flow run --source provenance/examples/hierarchy.v --top demo --
 
 验收分别检查转换记录、来源选择和子网表导出。运行器比较原版与插桩版的完整 JSON modules，并做整体等价检查；导出另做边界与 Verilog 重读等价检查。`provenance/tests/test_combinational.py` 检查输入范围，其他测试保留组合过程、来源选择、共享、参数、常量、边界和损坏记录的回归。
 
-近期按具体案例完善 **ABC 区域对应、边界和候选解释**，允许共享门组；完整内部历史及逐门独占归属不作为层次扩展的门槛。当前重点是一次插桩全量综合后，靠记录定位并说明区域约束；已有普通组合层次、ROBDD 符号功能校验及独立边界证明，尚未实现 SAT 后端或完整局部验证分解。新增 ABC 钩子由具体证明缺口驱动，独立增量实验见仓库根目录的 `incremental/`。详见[阶段计划](docs/default-synth-plan.md)。
+近期按具体案例完善 **ABC 区域对应、边界和候选解释**，允许共享门组；完整内部历史及逐门独占归属不作为层次扩展的门槛。当前重点是一次插桩全量综合后，靠记录定位并说明区域约束；已有普通组合层次、ROBDD 符号功能校验及独立边界证明，尚未实现 SAT 后端或完整局部验证分解。新增 ABC 钩子由具体证明缺口驱动，独立增量实验见仓库根目录的 `incremental/`。详见[阶段计划](docs/roadmap.md)。
 
 `python3 provenance/tools/benchmark_abc.py --out runs/abc-baseline --repeats 3` 运行 7 组小型案例和 8/10/12/16/32 输入共享链。每个样本只执行一次插桩全量 synth，多个查询复用其记录；独立原版对照另行执行。报告保存漏选/多选、候选原因、边界/反查/导出验收、日志与快照数量、分阶段计时及可用的内存测量。规模案例现在也要求精确符合独立预期：12/16/32 输入区域中的单门目标均只选中该门。重复运行用于成本采样，不是每次定位都要综合。复杂区域耗尽符号证明预算时仍回退，详见[限制与预算](docs/abc-internals.md#符号功能校验与独立切点预算)。
 
 - [默认 synth 的实现与限制](docs/native-synth.md)
 - [层次、展平与实例查询](docs/hierarchy.md)
-- [当前计划与后续优先级](docs/default-synth-plan.md)
+- [当前计划与后续优先级](docs/roadmap.md)
 - [ABC 内部钩子与切点证明](docs/abc-internals.md)
 - [区域诊断与规模基线](docs/abc-diagnostics.md)
 - [区域契约、全部输出验证与合并](docs/region-contracts.md)

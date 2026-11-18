@@ -91,6 +91,6 @@ python3 provenance/tools/run_regression.py --out runs/netlist-equivalence-regres
 
 同一组 32 项外部正反例全部符合预期，报告为 `runs/residual-equivalence-frontier-benchmarks-20261114/report.json`。这里沿用上一节的 14 份真实增量候选及其负例、4 项 arbiter 验证器样例，不将 arbiter 样例计为增量成功。
 
-`hyp` 最终复测报告 `runs/hyp-residual-final-1200-20261114/report.json` 为 `equivalent`，全部 128 个输出位通过，601.562 秒，预算 1200 秒。其中内部对应 228.782 秒，切点尝试及逐层恢复约 90.910 秒，完整输入域剩余任务的 CEC 268.353 秒。抽象层未完成证明，最终完整输入域求解成功；不能把 35,963 组内部对应当成独立的整网结论。单输出反相的大电路负例在 9.850 秒内拒绝。详细规模、命令和计时边界见 [hyp 复测](hyp-comparison.md)。
+`hyp` 最终复测报告 `runs/hyp-residual-final-1200-20261114/report.json` 为 `equivalent`，全部 128 个输出位通过，601.562 秒，预算 1200 秒。其中内部对应 228.782 秒，切点尝试及逐层恢复约 90.910 秒，完整输入域剩余任务的 CEC 268.353 秒。抽象层未完成证明，最终完整输入域求解成功；不能把 35,963 组内部对应当成独立的整网结论。单输出反相的大电路负例在 9.850 秒内拒绝。详细规模、命令和计时边界见 [hyp 复测](../experiments/docs/hyp.md)。
 
 最终项目完整回归 **524 项通过，零失败、零错误、零跳过**，报告用时 675.905 秒，见 `runs/residual-equivalence-final-regression-20261114/report.json`。这是项目测试总数，不是基准电路数量。

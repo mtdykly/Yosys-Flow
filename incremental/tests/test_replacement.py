@@ -7,7 +7,8 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 
-from incremental import demo, replace
+from incremental import replace
+from experiments import demo
 from incremental.__main__ import parser
 from yosys_flow.cli import parser as flow_parser
 from yosys_flow.common import ROOT, TraceError, digest, write_json

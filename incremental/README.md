@@ -1,58 +1,32 @@
 # 来源驱动的局部综合与替换
 
-用户提供**旧综合归档和完整新版 RTL**，工具自动发现变化、选择旧网表区域、提取新版局部功能、推导连接并生成完整新版网表。来源记录是依据，在线轻量替换计划描述本次删门、边界和证据引用；完整契约不是自动流程的重复输出。
+输入是**旧综合归档与完整新版 RTL**。工具自动找修改、确定旧门区域、提取新版局部功能并绑定边界，输出完整新版网表。在线轻量替换计划引用旧来源证据；完整契约用于独立审查与导出。
 
 ## 自动入口
 
 ```bash
 python3 -m incremental auto \
   --base-run runs/old-run --new-source path/to/new.v --out runs/edit
-
-# ANUBIS 准备器仅提供旧归档和完整新版，不提供修改位置或 patch
-python3 -m incremental anubis --automatic \
-  --cases compare_local9 --mode retained --out runs/automatic-anubis
 ```
 
-`--out` 须不存在。旧归档包含首次插桩 `synth` 的网表、前端表示和来源证据；新建归档另保存验证索引，已有旧归档可以重放。顶层、参数、宏和层次模式继承归档。默认 `--selection-mode fine` 从变化赋值及依赖切片起步，`module` 仅用于同框架的粒度对照。
+输出目录须不存在；多个文件重复 `--new-source`。顶层、参数、宏及层次模式继承旧归档。SQLite/gzip 自动识别，不需要再次选后端。默认 `--selection-mode fine` 从变化赋值与依赖切片起步；`module` 是同框架中的粒度对照，并非独立模块级增量算法。
 
-首次使用 `yosys_flow run` 建档时可选 `--index-backend sqlite|gzip`，默认 SQLite；gzip 是共享去重结构的内存查询后端。`incremental auto` 自动读取归档中选定的后端，参数和替换规则相同，不需要再次指定后端。选择 gzip 不会启动长期驻留服务；每个新的命令进程仍会加载一次索引。
+默认叶模块等价预检查每项 5 秒、总预算 15 秒；证明功能不变且上下文符合条件时，复用完整旧网表。超时或未知进入增量流程，`--no-equivalence-precheck` 可关闭。结构差分按 cell、连接和完整 process 分块，临时名采用全模块一致映射，重复匹配有计算预算；无法判断的区域保守记为变化。
 
-默认开启叶模块组合等价预检查：每项 5 秒、共享总预算 15 秒。功能不变且结构上下文满足前提时逐字节复用旧网表；超时或未知继续局部流程，`--no-equivalence-precheck` 可关闭。完整行为、`replacement-plan.json` 格式、计时和限制统一见 [automatic.md](automatic.md)。
+候选生成后，整网验证复用已证内部对应划分求解，默认共享预算 1200 秒。通过全部验收才发布结果。已有候选与参考可用 `verify-netlists` 单独重试，不必重新综合。当前能力和已知失败见[状态页](../docs/status.md)。
 
-新旧前端差分按 cell、连接和完整 process 等对象分块，使用全模块一致的临时名称对齐和有计算预算的匹配，避免重复参数行及编号偏移造成长时间搜索。超出预算的区间保守记为变化，后续语句选区和验证照常执行；已有建档无需重建。具体规则和 `stress_3000` 复核见 [结构差分与计算预算](automatic.md#结构差分与计算预算)。
+| 说明 | 内容 |
+|---|---|
+| [自动流程](automatic.md) | 差分、选区、patch、绑定、计划格式、失败条件与计时 |
+| [整网验证](netlist-equivalence.md) | 结构匹配、已证切点、分区及 CEC/SAT |
+| [时序预检查](sequential.md) | 独立 EQY/SBY 的整份旧网表复用，不提供时序局部替换 |
+| [区域契约](../provenance/docs/region-contracts.md) | 显式审查、合并与导出 |
 
-候选生成后的完整网表验证覆盖所有顶层输出：结构匹配和独立证明建立内部对应，随后分区 SAT 与 CEC/SAT 都复用这些已证关系，必要时逐层恢复切点定义。`auto` / `run` 的 `--whole-equivalence-timeout` 默认 1200 秒，与 `--yosys-timeout` 分开。已有候选和参考可用 `python3 -m incremental verify-netlists` 单独重试验证，无需重新综合。预算、证据及失败语义见 [整网等价验证](netlist-equivalence.md)。
-
-局部替换支持已覆盖的普通组合层次、连续赋值和组合过程，交付平坦通用门网表。候选来源区域现在可附加独立的旧源码边界功能证明：从归档 `frontend.il` 重建局部函数，对全部输出执行 SAT 等价及二值定义性检查。原候选精度和因果历史标记保留，证明失败仍拒绝发布。依赖缺失、共享消费者无法绑定或验证失败也会拒绝。尚未实现任意语法的最小区域、消费者自动拆分、保持拼接层次、时序局部替换或替换后的连续来源归档。
-
-较大区域的网表复制、拼接检查可使用结构化布尔 DAG 证书，避免仅因 BDD 展开超限而拒绝；它只证明被复制电路的函数一致，源码对应关系由上述独立证明或原有记录证据承担。缺失源码输入锚点会沿真实驱动扩区，必要时退回父模块。恒等连接和常量输出若未被门选区覆盖，必须额外证明其完整新旧函数不变；废弃调试别名中的 `X` 不参与电气检查，实际端口和单元引脚仍要求二值。
-
-## 性能对比
-
-```bash
-python3 -m incremental compare --mode retained --repeats 3 --out runs/comparison
-```
-
-默认只比较 ANUBIS 功能修改组合适配例 `compare_local9`、`control_local2`，关闭等价预检查。`F` 是完整新版全量综合，`P-module` 和 `P-fine` 使用同一来源/替换框架的两种选区粒度；独立方法 `M` 不在本项目内。
-
-主要时间截止于局部逻辑接回旧网表、完整 JSON/IL/Verilog 写出。首次建档和生成后验证分别记录；通过验证的样本才参与速度和通用门数量比较。可选 `--liberty` 将成功交付的网表统一映射，报告标准单元面积、独立映射时间及生成加映射时间；固定 Nangate45 库的获取方法见 [工艺库说明](../benchmarks/libraries/README.md)。NOC、负例及人工控制只作诊断。固定案例、统计与测量结果见 [comparison.md](comparison.md)。
-
-扩展到更大组合电路时，使用 `--suite epfl-functional`，默认 F/P-fine、原始单模块、不重复展平模式。六个 EPFL 电路各有两处固定功能修改；离线验证修改有效性，在每轮共享相同旧电路的建档，保留来源阻塞和资源超限。运行说明及历史结果见 [epfl-comparison.md](epfl-comparison.md)。
-
-`compare --index-backend sqlite|gzip` 选择建档与在线查询后端；`--repeats 2 --baseline-repeats 2` 同时重复在线方法和离线建档，各自报告均值。两后端在全部主适配 ANUBIS 组合修改与六个 EPFL 电路上的时间、映射面积和存储对比见 [backend-comparison.md](backend-comparison.md)。
-
-针对来源或边界证据不足的 B 项，补齐独立旧源码功能证明后，按同样案例每项复测一次：96 项中 88 项成功，8 项因 `arbiter` 旧建档超时未启动，没有剩余 B。实际复用粒度、时间、面积和存储的两张表见 [单次复测报告](backend-support-comparison.md)；当前 P-fine 的生成时间仍慢于 F。
-
-针对 `adder_local`、`adder_shared` 和 `arbiter` 建档的进一步耗时归因与优化见 [cost-attribution.md](cost-attribution.md)。诊断工具 `python3 -m incremental.profile JOB.json --profile-out NEW_DIRECTORY` 记录嵌套阶段、独占墙钟时间、扩区规模和 Python CPU 采样；它不改变来源与验证规则，带诊断开销的时间和未启用诊断的正式生成时间分别报告。
-
-优化后的跨案例归因见 [cost-attribution-suite.md](cost-attribution-suite.md)：覆盖此前 ANUBIS 与六个 EPFL 电路的 16 个修改/层次组合，分别列出未加诊断的在线阶段、选区内部热点、实际复用比例，以及 `arbiter` 的离线建档阻塞。CPU 采样区分网表生成前后，后验验证不混入在线瓶颈判断。
-
-更大规模的 `hyp` 实验见 [hyp-comparison.md](hyp-comparison.md)：239,751 行源码，已确认局部修改影响顶层功能，新版全量生成曾测得 568.034 秒。早期建档超时后，已有捕获现已成功续建为共享集合 SQLite 索引。首次在线尝试在选区阶段发生大集合重复解码，峰值内存 242.4 GiB；当前已修复内存共享、批量路径检查和计划来源集合编码。尚未完成该案例增量替换，不报告其增量加速比；文档保留失败记录与手工命令。
-
-## 显式区域实验与审查接口
+## 显式区域接口
 
 ```bash
-python3 -m incremental demo --out runs/incremental-demo
+# 创建四通道组合示例及其区域契约
+python3 -m experiments demo --out runs/incremental-demo
 
 python3 -m incremental run \
   --base-run runs/incremental-demo/retained/base-run \
@@ -62,21 +36,10 @@ python3 -m incremental run \
   --new-source incremental/examples/four_lanes/new.v --out runs/manual-edit
 ```
 
-`demo` 在保留层次和显式展平下验证四条 8 位组合通道，只修改 `chip/u1/core` 的 `(a & b) ^ c` 为 `(a | b) ^ c`。[旧版](examples/four_lanes/base.v)、[新版](examples/four_lanes/new.v)和[显式 patch](examples/four_lanes/patch.v)均保留。旧设计 152 门，选中 16 门，保留 136 门；16 个新门加 8 个边界缓冲后交付 160 门，不对整网表再优化。独立边界证明验证实际功能和极性，完整网表验证覆盖全部 72 个输出位，包括未修改通道、`side` 及顶层汇总。
+`run` 接受完整契约或轻量计划；调用者显式提供 patch 和绑定。`auto` 则自动推导。两者均检查边界、极性、所有外部使用者、保留门、单驱动、无环以及全部顶层输出，不能把旧区域证明当作任意修改都安全的保证。
 
-显式 `run` 需要调用者给定局部功能与绑定，接受完整 v1 契约或 v2 替换计划并重新验证。`bindings.json` 的 `contract_id` 绑定确切内容，输入项可用 `{"port":"in_...","inverted":false}`，输出项为 `"out_..."`，向量位序从低位到高位，全部边界恰好绑定一次。`auto` 则从新版表示和旧记录推导这些信息。两者都不从完整新版综合网表搜索或复制新门。
+当前支持已覆盖的连续赋值、组合过程和普通组合层次。共享消费者分化、消失切点、常量或直连输出无法绑定时仍可能拒绝；不能保证最小区域。交付网表为平坦结构，替换后的连续来源归档尚未实现。
 
-所有未选门的类型、参数、属性和连接保持不变。局部函数证明、外部消费者检查、组合环检查、整体新版等价及 Verilog 重读通过后才发布网表；旧局部证明不自动保证任意修改安全。错误位序/极性、遗漏输出、新依赖、共享输出分化等反例由现有测试覆盖。独立契约命令见 [区域契约](../provenance/docs/region-contracts.md)。
+## 测试与实验
 
-## NOC 与时序前置检查
-
-原始 NOC 使用上游顶层及配置，不以独立子模块反例代替顶层结论：
-
-```bash
-python3 -m incremental anubis-nochange --upstream-top --repeats 1 \
-  --frontend-timeout 300 --out runs/anubis-noc-upstream
-```
-
-模块边界调查与 `--with-sequential` 仍作为独立诊断。固定宏清单、参数及上游顶层结果见 [ANUBIS 文档](../benchmarks/anubis/README.md)。`seq-baseline` / `seq-reuse` 使用 EQY/SBY，在已声明的时钟、初始化或启动复位条件下证明整网表可以复用；失败/未知不进入组合增量。命令、语义和待补证明见 [sequential.md](sequential.md)。
-
-运行 `make test` 生成完整回归报告。当前本地结果集中在 `runs/comparison-anubis-functional-v4/`，其中 `validation/` 保留相关回归摘要；其余历史运行产物已清理。`runs/` 不提交。
+`incremental/tests/` 保留差分、选区、拼接、等价和失败拒绝等主流程回归。`experiments/tests/` 验证基准适配与统计，`make test` 统一执行两者及来源回归。性能比较、EPFL、NOC 调查与耗时归因统一见[实验入口](../experiments/README.md)。

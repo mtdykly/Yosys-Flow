@@ -94,7 +94,7 @@ def main():
     version = subprocess.check_output([cmake, "--version"], text=True)
     match = re.search(r"cmake version (\d+)\.(\d+)", version)
     if not match or tuple(map(int, match.groups())) < (3, 28):
-        parser.error("CMake >= 3.28 is required; see provenance/docs/native-m1.md for local installation")
+        parser.error("CMake >= 3.28 is required; see provenance/docs/build.md for local installation")
     build = base / "build"
     options = ["-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_DISABLE_FIND_PACKAGE_Git=TRUE",
                "-DYOSYS_CHECKOUT_INFO=0e82bbefe-provenance", "-DYOSYS_WITHOUT_SLANG=ON",

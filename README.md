@@ -1,64 +1,55 @@
 # Yosys-Flow
 
-通过一次插桩全量综合保存**原始组合 RTL → 默认 `synth` 最终通用门级网表**的来源关系。新版 RTL 到来后，自动差分、查询旧记录、确定局部边界、局部综合并拼接成完整新版网表。
+通过一次插桩的默认 Yosys `synth` 保存**组合 RTL 到最终通用门网表的来源关系**。新版 RTL 到来后，工具消费旧归档，自动差分、确定局部边界、提取 patch、局部综合并拼接完整新版网表。
 
-首次建档保存原始事件、最终网表和可复用的验证索引。默认 SQLite 按需读取，`run --index-backend gzip` 可选择整包加载的去重 gzip；后续查询与增量自动识别后端。两者共用去重结构与来源查询规则。ABC 的 AIG/GIA 历史网络采用检查点与差量记录，原生事件共享大来源/成员集合；原始证据与完整性检查继续保留，详见[记录与查询存储](provenance/docs/storage.md)。在线增量生成轻量替换计划，引用旧证据；完整区域契约保留为独立的审查、验证及导出接口。来源覆盖仍为 `partial`，候选或无法绑定的区域可能阻塞，不能将查询结果直接视为任意修改都可安全替换。
+支持单模块及普通组合子模块层次。默认 `synth -top` 保留层次，`--flatten` 显式展平；局部替换交付平坦网表。来源覆盖仍为 `partial`，候选区域必须满足证据与全部输出检查。时序局部替换、memory、generate、循环和函数/任务不在当前支持范围。独立的 EQY 等价预检查可以证明并复用整份时序旧网表。
 
-ABC 全局函数计算超限后，会继续尝试独立的局部映射与切点证明，各目标分别保留成功或未知。单模块直接表达式可从实际操作创建对象追踪修改影响，保留共享操作数来源。已有捕获可通过[功能区域细化](provenance/docs/abc-partitions.md)补充有极性的边界、全部输出及旧 RTL 证明，并发布独立的新索引。`hyp` 的固定 AND→OR 修改点已从整网候选细化为 **6 门、5 输入、2 输出**的已验证区域，新归档已通过认证加载，已有增量候选的 128 位整网等价验证也已通过（601.562 秒）；完整交付终检及时间收益仍需分别验收。见 [hyp 结果与运行命令](incremental/hyp-comparison.md)和[根因诊断](incremental/hyp-provenance-diagnosis.md)。
+## 使用
 
-支持普通组合子模块的多层实例。默认 `synth -top` **保留层次**，显式 `--flatten` 请求展平并尊重 `keep_hierarchy`；当前局部替换交付平坦网表。时序、memory、generate、循环、函数/任务不在来源记录与局部替换范围。独立的 [EQY 时序等价预检查](incremental/sequential.md) 可以在已声明的状态条件下证明并复用整份旧网表，不提供时序局部替换。
-
-## 构建与首次建档
-
-所有命令在仓库根目录执行，运行目录须不存在。依赖 Python 3.10+、Make、C++20、CMake ≥ 3.28、Ninja、Bison、Flex、m4、zlib 开发文件和固定版本 `0e82bbefe` 的独立原版 Yosys/ABC，详见[构建说明](provenance/docs/native-m1.md#构建)。
+所有命令在仓库根目录执行，输出目录须不存在。依赖 Python 3.10+ 和固定版本 Yosys/ABC；编译工具链及版本要求见[构建说明](provenance/docs/build.md)。
 
 ```bash
 make NATIVE_JOBS=4
+
+# 一次插桩全量综合、验证和建索引
 python3 -m yosys_flow run \
   --source provenance/examples/hierarchy.v --top demo --out runs/old-run
+
+# 查询原始语句关联的最终逻辑
 python3 -m yosys_flow query runs/old-run \
   --source provenance/examples/hierarchy.v --line 4 --instance demo/u0/inner
-```
 
-`provenance/` 保存原生 Yosys/ABC 钩子、事件重放、索引、查询、区域导出与独立契约工具。现有 `python3 -m yosys_flow` 命令通过仓库兼容入口加载该目录。命令和支持范围见 [来源子系统](provenance/README.md)。
-
-如果插桩综合已经完整写出记录和最终网表，但后处理被中断，可以续建档：
-
-```bash
-python3 -m yosys_flow resume runs/interrupted-capture --out runs/resumed-archive
-```
-
-它在新目录复用捕获，完成重放、ABC 证据验证、原版对照、结构等价检查和共享集合索引发布。新建档在捕获完成后保存 `capture.json` 检查点；旧捕获的兼容条件见[续建档说明](provenance/docs/storage.md#捕获完成后的续建档)。
-
-## 完整新版 RTL 到增量网表
-
-```bash
+# 只提供旧归档与完整新版 RTL
 python3 -m incremental auto \
   --base-run runs/old-run --new-source path/to/new.v --out runs/edit
 ```
 
-输入只有旧归档与完整新版 RTL，多个文件重复 `--new-source`。顶层、参数、宏及综合模式继承旧记录；无需提供修改行号、目标实例、局部代码或连接。工具从变化赋值及依赖起步，必要时扩区或退到模块范围；旧源码可已被修改或删除。
+首次建档保存原始 JSONL、前端表示、最终网表及验证索引。默认 SQLite 按需查询，`run --index-backend gzip` 使用同样去重结构的内存后端。捕获完成后若后处理被中断，可以 `python3 -m yosys_flow resume OLD_CAPTURE --out NEW_ARCHIVE` 续建档，见[存储与恢复](provenance/docs/storage.md)。
 
-默认先尝试有预算的叶模块 `miter + sat` 等价检查。全部变化证明功能不变且上下文符合前提时，直接复用旧网表；其余变化进入局部替换。实际拼接仍经过全部输出验证，失败不发布网表。替换后的结果尚不能直接作为下一轮来源归档。算法、轻量计划、证据校验和限制见 [自动增量流程](incremental/automatic.md)。
+增量入口继承旧顶层、参数、宏和综合模式；默认从变化赋值及依赖起步，必要时扩区。叶模块等价预检查可直接复用功能不变的旧网表。候选生成后执行整网与导出验证，通过才发布交付结果。新网表尚不能直接作为下一轮来源归档。
 
-生成后的整网验证把已证明的内部对应代入分区及后续 CEC/SAT，逐层恢复切点定义；默认共享验证预算为 1200 秒。`verify-netlists` 可以直接复用已有候选和参考单独重试。见 [完整组合网表等价验证](incremental/netlist-equivalence.md)。
+## 目录与文档
 
-## 测试与对比
+| 目录 | 职责 | 文档 |
+|---|---|---|
+| `provenance/` | 原生 Yosys/ABC 记录、重放、索引、查询、导出与契约 | [来源子系统](provenance/README.md) |
+| `incremental/` | 差分、选区、patch、局部综合、拼接与验证 | [增量入口](incremental/README.md) |
+| `experiments/` | 基准适配、性能对比、耗时归因和独立 NOC 调查 | [实验入口](experiments/README.md) |
+| `benchmarks/` | 固定上游输入、修改清单、许可与工艺库配置 | [ANUBIS](benchmarks/anubis/README.md)、[EPFL](benchmarks/epfl/README.md) |
+| `docs/` | 当前进展与仓库维护约定 | [当前状态](docs/status.md)、[目录与产物](docs/repository.md) |
+
+已验证的固定 hyp 修改可以完成增量生成与整网验证；最新 `stress_3000` 仍在直连输出边界检查处阻塞。具体时间和限制集中在[当前状态](docs/status.md)，避免把历史实验结果当作现版本的普遍保证。
+
+## 验证与性能实验
 
 ```bash
-# 固定 ANUBIS 功能修改组合案例，比较到整份新版网表写出的时间
-python3 -m incremental compare --repeats 3 --out runs/comparison
-# 完整回归；跳过视为失败
+# 完整项目回归，集成测试跳过也视为失败
 make test
+
+# 比较 F、同框架 P-module 与 P-fine
+python3 -m experiments compare --repeats 2 --out runs/comparison
 ```
 
-默认性能套件包含 ANUBIS 派生的功能修改组合案例，比较全量 `F`、同框架模块选区 `P-module` 与默认细粒度 `P-fine`。首次建档与生成后的正确性验证分别计时，不混入在线网表生成成本。默认报告通用门数；通过 `--liberty` 可对交付网表统一工艺映射、估算标准单元面积，映射耗时另列。固定库及获取方法见 [工艺库说明](benchmarks/libraries/README.md)。独立模块级增量方法 `M` 不在本项目中。方法与实测见 [对比实验](incremental/comparison.md)。
+首次建档、在线新版网表生成、生成后的正确性验证分别计时。`--liberty` 可统一映射后求和估算面积，映射时间另列。性能协议见[对比实验](experiments/docs/comparison.md)。历史 `python3 -m incremental compare` 等实验命令保留转发；新文档统一使用 `experiments`。
 
-较大规模的 [EPFL 扩展实验](incremental/epfl-comparison.md) 使用 `--suite epfl-functional`：保留 `adder`、`bar`、`arbiter` 的原始单模块结构，每个固定一处局部和一处共享逻辑修改，默认比较 F 与 P-fine。修改先通过完整顶层的反例资格检查，结果与 ANUBIS 分开报告。
-
-- [增量命令与显式四通道实验](incremental/README.md)
-- [ANUBIS 来源、适配与 NOC 调查](benchmarks/anubis/README.md)
-- [时序等价预检查及待补证明](incremental/sequential.md)
-- [来源覆盖与后续计划](provenance/docs/default-synth-plan.md)
-
-NOC 调查、时序等价预检查和人工诊断用于独立验收，结果不混入功能修改的性能结论。`build/` 是工具缓存，`runs/` 是运行产物，均不提交。各实验与回归报告的目录见相应文档；重新运行命令会生成新的结果目录。
+`build/` 与 `runs/` 不提交。保留的归档及历史汇总见[产物保留规则](docs/repository.md#运行产物)。

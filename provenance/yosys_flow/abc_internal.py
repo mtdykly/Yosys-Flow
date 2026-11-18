@@ -218,9 +218,18 @@ def validate_cleanup(row, before, after):
         require(av==bv^(mask if target&1 else 0), 'ABC cleanup mapping changes local function/polarity')
 
 
-def decode_network(row, networks, epochs, schema):
+def decode_network(row, networks, epochs, schema, features=()):
     """Lossless transport decoding, never an inference of causal object identity."""
     encoding = row.get('encoding')
+    if 'interface_base' in row:
+        require('shared_snapshot_interfaces_v1' in features and encoding == 'delta' and
+                row.get('representation') == 'aig' and type(row['interface_base']) is int and
+                row['interface_base'] == row.get('base_snapshot') and
+                not {'pis', 'pos', 'pi_names', 'po_names'}.intersection(row),
+                'invalid ABC shared interface reference')
+    elif 'shared_snapshot_interfaces_v1' in features:
+        require(isinstance(row.get('pis'), list) and isinstance(row.get('pos'), list),
+                'missing ABC explicit or shared interface')
     if encoding is None:
         require(schema < 5 or row['representation'] == 'ntk', 'missing ABC snapshot encoding')
         return Network(row)
@@ -242,6 +251,12 @@ def decode_network(row, networks, epochs, schema):
         require(before.record.get('network_epoch') == epoch and
                 before.record['command_id'] == row['command_id'] and
                 before.record['representation'] == row['representation'], 'ABC delta crosses network scope')
+        if 'interface_base' in row:
+            # Reuse immutable metadata only after the immediate base, command,
+            # representation and epoch have been checked. Raw evidence stays raw.
+            row = {**row, 'pis': before.pis, 'pos': before.pos}
+            for key in ('pi_names', 'po_names'):
+                if key in before.record: row[key] = before.record[key]
         changes = {n['id']: n for n in row['nodes']}
         require(len(changes) == len(row['nodes']) and set(deleted) <= before.nodes.keys() and
                 not set(deleted).intersection(changes), 'invalid ABC delta disposition')
@@ -273,7 +288,7 @@ def read_evidence(path, script):
             require(row['command_id'] == command_id, 'ABC internal command ID mismatch')
         if kind in NETWORKS | {'history_network'}:
             require(current is not None, 'ABC internal network outside command')
-            networks[seq] = decode_network(row, networks, epochs, rows[0]['schema'])
+            networks[seq] = decode_network(row, networks, epochs, rows[0]['schema'], rows[0].get('features', ()))
         elif kind == 'mapped_cut':
             require(current is not None and current[0] == '&nf', 'ABC mapping cut outside &nf')
             require(row['snapshot'] in networks and networks[row['snapshot']].record['kind'] == 'mapping_network', 'ABC cut has unknown network')

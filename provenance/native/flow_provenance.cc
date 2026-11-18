@@ -5,6 +5,7 @@
 #include "libs/json11/json11.hpp"
 #include <fstream>
 #include <memory>
+#include <chrono>
 
 YOSYS_NAMESPACE_BEGIN
 namespace FlowProvenance {
@@ -18,6 +19,24 @@ static RTLIL::SigSpec captured_outputs;
 static RTLIL::Design *root_design = nullptr;
 static pool<RTLIL::Module*> pending_modules;
 static std::vector<std::string> active_inputs;
+// The vector is mutable; never cache by its address. Every mutation and scope
+// restoration invalidates this handle. A content lookup happens only once per
+// active value, not once per generated cell in a large ABC region.
+static J active_input_encoding;
+static bool active_input_cached = false;
+static long long input_content_lookups = 0, input_cache_hits = 0;
+using Clock = std::chrono::steady_clock;
+static bool profile_capture = false;
+enum ProfileKind { StateBuild, JsonEncode, StreamWrite, Checkpoint, AbcImport, ProfileCount };
+static double profile_seconds[ProfileCount];
+static long long profile_calls[ProfileCount], encoded_bytes = 0;
+static std::vector<Clock::time_point> step_started;
+static Clock::time_point abc_import_started;
+struct ProfileTimer {
+    ProfileKind kind; Clock::time_point start;
+    ProfileTimer(ProfileKind k) : kind(k) { if (profile_capture) start = Clock::now(); }
+    ~ProfileTimer() { if (profile_capture) { profile_seconds[kind] += std::chrono::duration<double>(Clock::now()-start).count(); ++profile_calls[kind]; } }
+};
 static std::string operation;
 static pool<RTLIL::SigBit> active_outputs;
 static Region *capturing_region = nullptr;
@@ -60,7 +79,7 @@ struct SharedOrigins {
 };
 static SharedOrigins active;
 struct CellInfo {
-    int id, version = 0; SharedOrigins origins; std::string precision, state;
+    int id, version = 0; SharedOrigins origins; std::string precision; J state;
     RTLIL::IdString cached_module, cached_name, cached_type;
     dict<RTLIL::IdString, RTLIL::SigSpec> cached_ports;
     dict<RTLIL::IdString, RTLIL::Const> cached_params;
@@ -68,6 +87,10 @@ struct CellInfo {
 };
 static bool audit_scans = false;
 static long long observe_calls = 0, state_builds = 0, checkpoints = 0, skipped_checkpoints = 0, map_builds = 0;
+static dict<int, int> checkpoint_cells;
+static std::vector<int> checkpoint_connections;
+static int checkpoint_sequence = 0;
+static bool full_checkpoints = false;
 static std::map<RTLIL::Module*, std::unique_ptr<SigMap>> connection_maps;
 void connections_reset(RTLIL::Module *module) { connection_maps.erase(module); }
 static SigMap &connection_map(RTLIL::Module *module) {
@@ -79,7 +102,7 @@ static SigMap &connection_map(RTLIL::Module *module) {
 // JSON. Instance port directions can change during hierarchy, so never cache
 // those. Unknown pass mutations are still caught by leaf-pass/final scans.
 static bool unchanged(RTLIL::Cell *cell, const CellInfo &info) {
-    if (audit_scans || info.state.empty() || (root_design && root_design->module(cell->type)) ||
+    if (audit_scans || info.state.is_null() || (root_design && root_design->module(cell->type)) ||
         cell->module->name != info.cached_module || cell->name != info.cached_name || cell->type != info.cached_type ||
         cell->connections() != info.cached_ports || cell->parameters != info.cached_params) return false;
     for (const auto &param : cell->parameters)
@@ -150,11 +173,18 @@ static J ids(const SharedOrigins &value) {
 }
 static J input_ids(const std::vector<std::string> &value) {
     if (full_arrays || value.size() < 32) return value;
+    ++input_content_lookups;
     auto found = input_arrays.find(value);
     if (found != input_arrays.end()) return found->second;
     auto encoded = array_reference(J::array(value.begin(), value.end()), "inputs");
     input_arrays.emplace(value, encoded);
     return encoded;
+}
+static J active_input_ids() {
+    if (active_input_cached) { ++input_cache_hits; return active_input_encoding; }
+    active_input_encoding = input_ids(active_inputs);
+    active_input_cached = true;
+    return active_input_encoding;
 }
 bool enabled() { return output.is_open(); }
 bool tracks(RTLIL::Design *design) { return enabled() && design == root_design; }
@@ -167,7 +197,10 @@ static void emit(J::object row) {
     if (!enabled()) return;
     row["seq"] = ++sequence;
     row["step_id"] = steps.empty() ? 0 : steps.back();
-    output << J(row).dump() << '\n';
+    std::string encoded;
+    { ProfileTimer timer(JsonEncode); encoded = J(std::move(row)).dump(); }
+    encoded_bytes += encoded.size()+1;
+    { ProfileTimer timer(StreamWrite); output << encoded << '\n'; }
     if (!output) log_error("Cannot write native provenance log.\n");
 }
 static J signal(const RTLIL::SigSpec &sig) {
@@ -182,6 +215,7 @@ static std::string ref(const CellInfo &info) {
     return "native:cell_" + std::to_string(info.id) + "@" + std::to_string(info.version);
 }
 static J::object state(RTLIL::Cell *cell) {
+    ProfileTimer timer(StateBuild);
     J::object ports, params, attrs, directions;
     for (auto &it : cell->connections()) {
         ports[it.first.str()] = signal(it.second);
@@ -234,16 +268,17 @@ static void observe(RTLIL::Cell *cell, const std::string &capture) {
     ++observe_calls;
     if (unchanged(cell, info)) return;
     ++state_builds;
-    auto data = state(cell);
+    J data = state(cell);
     remember(cell, info);
-    auto serial = J(data).dump();
-    if (serial == info.state) return;
+    // JSON values are immutable/shared. Compare the typed state and serialize
+    // it only once, as part of the emitted event, instead of dumping twice.
+    if (data == info.state) return;
     auto old = ref(info);
     ++info.version;
     emit({{"record_type", "cell_state"}, {"input", old}, {"ref", ref(info)},
           {"state", data}, {"origins", ids(info.origins)}, {"precision", info.precision},
           {"capture", capture}, {"operation", operation}});
-    info.state = serial;
+    info.state = std::move(data);
 }
 static SharedOrigins collect_origins(const std::vector<RTLIL::Cell*> &targets) {
     if (targets.size() == 1 && cells.count(targets[0])) return cells.at(targets[0]).origins;
@@ -262,7 +297,7 @@ CellScope::CellScope(const std::vector<RTLIL::Cell*> &cs, const std::string &op)
     scope(collect_origins(cs), collect_precision(cs), false),
     previous_inputs(active_inputs), previous_operation(operation), previous_outputs(active_outputs) {
     previous_scope = cell_scope; cell_scope = this;
-    active_inputs.clear(); active_outputs.clear(); operation = op;
+    active_inputs.clear(); active_input_cached = false; active_outputs.clear(); operation = op;
     for (auto c : cs) if (cells.count(c)) {
         observe(c, "before_instrumented_rewrite");
         targets.emplace_back(c, cells.at(c).id);
@@ -297,7 +332,7 @@ CellScope::~CellScope() {
     cell_scope = previous_scope;
     for (auto [cell, id] : targets)
         if (cells.count(cell) && cells.at(cell).id == id) observe(cell, "instrumented_rewrite");
-    active_inputs = previous_inputs; operation = previous_operation; active_outputs = previous_outputs;
+    active_inputs = previous_inputs; active_input_cached = false; operation = previous_operation; active_outputs = previous_outputs;
 }
 RegionCapture::RegionCapture(Region &region, const RTLIL::SigSpec &outputs) : previous(capturing_region), previous_outputs(captured_outputs) { capturing_region = &region; captured_outputs = outputs; }
 RegionCapture::~RegionCapture() { capturing_region = previous; captured_outputs = previous_outputs; }
@@ -306,7 +341,8 @@ RegionScope::RegionScope(const Region &region, RTLIL::Module *module, const RTLI
     const std::string &tempdir, const std::string &executable, const std::string &script,
     const std::vector<std::vector<int>> &fanins) :
     scope(region.origins, "abc_region_candidate", false), previous_inputs(active_inputs), previous_operation(operation), previous_outputs(active_outputs), previous_region(active_region) {
-    active_inputs = region.inputs; operation = "abc_region";
+    active_inputs = region.inputs; active_input_cached = false; operation = "abc_region";
+    if (profile_capture) abc_import_started = Clock::now();
     active_outputs.clear();
     for (auto bit : region.outputs) active_outputs.insert(bit);
     if (!tracks(module)) return;
@@ -334,11 +370,14 @@ RegionScope::RegionScope(const Region &region, RTLIL::Module *module, const RTLI
         nodes.push_back(J::object{{"id", i}, {"fanins", inputs}, {"cell", region.node_cells.at(signals[i], "")}});
     }
     emit({{"input_nodes", nodes}, {"record_type", "abc_region"}, {"internal_trace_schema", 5}, {"module", module->name.str()}, {"invocation_id", active_region},
-        {"inputs", input_ids(region.inputs)}, {"origins", ids(region.origins)}, {"signals", signal(signals)},
+        {"inputs", active_input_ids()}, {"origins", ids(region.origins)}, {"signals", signal(signals)},
         {"input_ports", input_ports}, {"output_ports", output_ports}, {"artifacts", artifacts}, {"executable", executable},
         {"precision", "abc_region_candidate"}});
 }
-RegionScope::~RegionScope() { active_inputs = previous_inputs; operation = previous_operation; active_outputs = previous_outputs; active_region = previous_region; }
+RegionScope::~RegionScope() {
+    if (profile_capture) { profile_seconds[AbcImport] += std::chrono::duration<double>(Clock::now()-abc_import_started).count(); ++profile_calls[AbcImport]; }
+    active_inputs = previous_inputs; active_input_cached = false; operation = previous_operation; active_outputs = previous_outputs; active_region = previous_region;
+}
 AbcImportScope::AbcImportScope(RTLIL::Cell *mapped, const dict<RTLIL::IdString, RTLIL::SigSpec> &target_ports) : previous(abc_node), previous_boundary(abc_boundary) {
     abc_node = mapped->name.str(); abc_boundary = -1;
     J::object ports, targets;
@@ -354,11 +393,11 @@ AbcImportScope::~AbcImportScope() { abc_node = previous; abc_boundary = previous
 void created(RTLIL::Cell *cell) {
     if (!tracks(cell->module)) return;
     if (cell->is_builtin_ff()) log_error("Combinational-only flow rejects state cell %s (%s).\n", log_id(cell), log_id(cell->type));
-    cells[cell] = {++object_id, 0, active, precision, ""};
+    cells[cell] = {++object_id, 0, active, precision, J()};
     emit({{"record_type", "cell_create"}, {"ref", ref(cells.at(cell))}, {"origins", ids(active)},
           {"cloned_from", cloning_source}, {"flatten_event", cloning_source.empty() ? "" : flatten_context},
           {"precision", precision}, {"module", cell->module->name.str()}, {"name", cell->name.str()},
-          {"inputs", input_ids(active_inputs)}, {"operation", operation}, {"abc_invocation", active_region}, {"abc_node", abc_node}, {"abc_boundary", abc_boundary}});
+          {"inputs", active_input_ids()}, {"operation", operation}, {"abc_invocation", active_region}, {"abc_node", abc_node}, {"abc_boundary", abc_boundary}});
     if (cell_scope) cell_scope->generated.emplace_back(cell, cells.at(cell).id);
     process_created(cell);
     if (active.empty() && precision != "process_pending") gap("cell_created_without_semantic_source_binding");
@@ -408,7 +447,7 @@ void contribute(RTLIL::Cell *target, RTLIL::Cell *donor, const std::string &op) 
     emit({{"record_type", "cell_contribution"}, {"inputs", J::array{old, input}},
           {"output", ref(t)}, {"origins", ids(t.origins)}, {"precision", t.precision}, {"operation", op}});
     for (auto &r : active_inputs) if (r == old) {
-        r = ref(t); active.insert(d.origins.begin(), d.origins.end()); precision = merged_precision(precision, d.precision);
+        r = ref(t); active_input_cached = false; active.insert(d.origins.begin(), d.origins.end()); precision = merged_precision(precision, d.precision);
     }
 }
 void assignment(RTLIL::Module *module, const RTLIL::SigSpec &lhs, const RTLIL::SigSpec &rhs, const Origins &origins, const std::string &p, const std::string &cloned_from) {
@@ -421,7 +460,7 @@ void assignment(RTLIL::Module *module, const RTLIL::SigSpec &lhs, const RTLIL::S
           {"module", module->name.str()}, {"lhs", signal(lhs)}, {"rhs", signal(rhs)},
           {"flatten_event", cloning_source.empty() ? "" : flatten_context},
           {"source_offsets", cloning_offsets},
-          {"cloned_from", cloned_from}, {"origins", ids(origins)}, {"precision", p}, {"inputs", input_ids(active_inputs)}, {"operation", operation}, {"abc_invocation", active_region}, {"abc_node", abc_node}, {"abc_boundary", abc_boundary}});
+          {"cloned_from", cloned_from}, {"origins", ids(origins)}, {"precision", p}, {"inputs", active_input_ids()}, {"operation", operation}, {"abc_invocation", active_region}, {"abc_node", abc_node}, {"abc_boundary", abc_boundary}});
 }
 void connected(RTLIL::Module *module, const RTLIL::SigSig &conn) {
     auto cached = connection_maps.find(module);
@@ -568,30 +607,69 @@ Origins process_sources(RTLIL::Process *proc, const RTLIL::SigSpec &sig) {
 #include "hierarchy_provenance.inc"
 
 static void checkpoint(RTLIL::Design *design, bool final) {
+    ProfileTimer timer(Checkpoint);
     ++checkpoints;
-    J::array snapshot;
+    // Keep the independent design scan. Compress only the audit payload; a
+    // lack of instrumented events is never evidence that a pass did nothing.
+    bool full = final || full_checkpoints || !checkpoint_sequence || checkpoints % 32 == 1;
+    J::array snapshot, additions, removals;
+    dict<int, int> current;
     for (auto module : design->modules()) for (auto cell : module->cells()) {
         if (!cells.count(cell)) { gap("cell_missing_from_lifecycle"); continue; }
         observe(cell, "structural_observation");
-        snapshot.push_back(ref(cells.at(cell)));
+        const auto &info = cells.at(cell);
+        current[info.id] = info.version;
+        if (full) snapshot.push_back(ref(info));
+        else if (!checkpoint_cells.count(info.id) || checkpoint_cells.at(info.id) != info.version)
+            additions.push_back(ref(info));
     }
-    J::object record{{"record_type", final ? "run_end" : "checkpoint"}, {"cells", snapshot}};
+    if (!full) for (const auto &old : checkpoint_cells)
+        if (!current.count(old.first) || current.at(old.first) != old.second)
+            removals.push_back("native:cell_" + std::to_string(old.first) + "@" + std::to_string(old.second));
+    J::object record{{"record_type", final ? "run_end" : "checkpoint"},
+        {"checkpoint_encoding", full ? "full" : "delta"},
+        {"cell_count", double(current.size())}, {"connection_count", double(connections.size())}};
+    if (full) record["cells"] = std::move(snapshot);
+    else {
+        record["base_checkpoint"] = checkpoint_sequence;
+        record["cell_additions"] = std::move(additions);
+        record["cell_removals"] = std::move(removals);
+    }
     J::object connection_versions;
-    for (auto &info : connections) connection_versions[info.ref] = info.revision;
+    size_t index = 0;
+    for (auto &info : connections) {
+        if (full || index >= checkpoint_connections.size() || checkpoint_connections[index] != info.revision)
+            connection_versions[info.ref] = info.revision;
+        if (index >= checkpoint_connections.size()) checkpoint_connections.push_back(info.revision);
+        else checkpoint_connections[index] = info.revision;
+        ++index;
+    }
     record["connections"] = connection_versions;
     if (final) {
         record["input_files"] = J::array(yosys_input_files.begin(), yosys_input_files.end());
         record["recorder_stats"] = J::object{{"observe_calls", double(observe_calls)}, {"state_builds", double(state_builds)},
             {"checkpoints", double(checkpoints)}, {"skipped_checkpoints", double(skipped_checkpoints)},
-            {"signal_map_builds", double(map_builds)}, {"audit_scans", audit_scans}};
+            {"signal_map_builds", double(map_builds)}, {"audit_scans", audit_scans},
+            {"input_content_lookups", double(input_content_lookups)}, {"input_cache_hits", double(input_cache_hits)}};
+        if (profile_capture) {
+            J::object timings;
+            const char *names[] = {"state_build", "json_encode", "stream_write", "checkpoint_inclusive", "abc_import_inclusive"};
+            for (int i = 0; i < ProfileCount; ++i)
+                timings[names[i]] = J::object{{"seconds", profile_seconds[i]}, {"calls", double(profile_calls[i])}};
+            record["capture_profile"] = J::object{{"timings", timings}, {"encoded_bytes", double(encoded_bytes)},
+                {"note", "overlapping scopes; checkpoint timer excludes final checkpoint; encoding/write counters stop before run_end"}};
+        }
     }
     emit(record);
+    checkpoint_cells = std::move(current);
+    checkpoint_sequence = sequence;
 }
 void step_begin(const std::vector<std::string> &args, RTLIL::Design *design) {
     if (!tracks(design) || args[0] == "flow_start" || args[0] == "flow_stop") return;
     connection_maps.clear(); // No cache crosses an arbitrary pass boundary.
     int parent = steps.empty() ? 0 : steps.back();
     steps.push_back(++step_id); passes.push_back(args[0]);
+    if (profile_capture) step_started.push_back(Clock::now());
     emit({{"record_type", "step_begin"}, {"parent_step_id", parent}, {"pass", args[0]}, {"args", args}});
     static const std::set<std::string> supported = {"read_verilog", "hierarchy", "flatten", "flow_hierarchy", "proc", "proc_clean", "proc_rmdead",
         "proc_prune", "proc_init", "proc_arst", "proc_rom", "proc_mux", "proc_dlatch", "proc_dff", "proc_memwr",
@@ -609,8 +687,13 @@ void step_end(RTLIL::Design *design) {
     if (audit_scans || !redundant.count(passes.back())) checkpoint(design, false);
     else ++skipped_checkpoints;
     connection_maps.clear();
-    emit({{"record_type", "step_end"}});
-    output.flush(); // Make completed batches visible to the streaming replayer.
+    J::object end{{"record_type", "step_end"}};
+    if (profile_capture) {
+        end["elapsed_seconds_inclusive"] = std::chrono::duration<double>(Clock::now()-step_started.back()).count();
+        step_started.pop_back();
+    }
+    emit(std::move(end));
+    { ProfileTimer timer(StreamWrite); output.flush(); } // Publish completed batches.
     steps.pop_back(); passes.pop_back();
 }
 struct Start : Pass {
@@ -620,7 +703,13 @@ struct Start : Pass {
             log_cmd_error("flow_start FILE RUN_ID requires an empty design and inactive recorder.\n");
         sequence = source_id = object_id = step_id = 0;
         observe_calls = state_builds = checkpoints = skipped_checkpoints = map_builds = 0;
+        input_content_lookups = input_cache_hits = 0; active_input_cached = false; active_input_encoding = J();
+        profile_capture = std::getenv("YOSYS_FLOW_CAPTURE_PROFILE") != nullptr;
+        for (int i = 0; i < ProfileCount; ++i) { profile_seconds[i] = 0; profile_calls[i] = 0; }
+        encoded_bytes = 0; step_started.clear();
         audit_scans = std::getenv("YOSYS_FLOW_NATIVE_AUDIT") != nullptr;
+        full_checkpoints = audit_scans || std::getenv("YOSYS_FLOW_NATIVE_FULL_CHECKPOINTS") != nullptr;
+        checkpoint_sequence = 0; checkpoint_cells.clear(); checkpoint_connections.clear();
         connection_maps.clear();
         array_id = 0; origin_arrays.clear(); shared_origin_arrays.clear(); input_arrays.clear(); origin_addresses.clear(); origin_pool.clear();
         full_arrays = std::getenv("YOSYS_FLOW_NATIVE_FULL_ARRAYS") != nullptr;
@@ -635,7 +724,7 @@ struct Start : Pass {
         if (existing.good()) log_cmd_error("Refusing to overwrite native provenance output.\n");
         output.open(args[1]);
         if (!output) log_cmd_error("Cannot open provenance output.\n");
-        emit({{"record_type", "run_begin"}, {"schema_version", 2}, {"run_id", args[2]}, {"profile", "native-combinational"}, {"features", J::array{"process_action_proofs", "conservative_precision_merge", "abc_node_correspondence", "conservative_derivation", "techmap_output_bits", "combinational_only", "abc_internal_v5", "shared_native_arrays_v1"}}});
+        emit({{"record_type", "run_begin"}, {"schema_version", 2}, {"run_id", args[2]}, {"profile", "native-combinational"}, {"features", J::array{"process_action_proofs", "conservative_precision_merge", "abc_node_correspondence", "conservative_derivation", "techmap_output_bits", "combinational_only", "abc_internal_v5", "shared_native_arrays_v1", "native_checkpoint_deltas_v1"}}});
     }
 } Start;
 struct Stop : Pass {

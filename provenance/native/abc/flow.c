@@ -5,6 +5,7 @@
 #include "base/main/flow.h"
 #include "map/mio/mio.h"
 #include "misc/nm/nm.h"
+#include <time.h>
 ABC_NAMESPACE_IMPL_START
 static FILE * flow_file;
 static unsigned flow_seq, flow_command;
@@ -42,12 +43,19 @@ static int flow_aig_valid, flow_dirty_size;
 static unsigned char *flow_dirty_marks;
 static Vec_Int_t *flow_dirty;
 static unsigned long long flow_aig_full_visits, flow_aig_dirty_visits;
+static Vec_Int_t *flow_interface_pis, *flow_interface_pos;
+static int flow_full_interfaces;
+static int flow_profile;
+static clock_t flow_command_started;
 static void flow_reset_nodes(void) {
     ABC_FREE(flow_nodes); flow_nodes_size=0; flow_manager=NULL;
     ABC_FREE(flow_dirty_marks); flow_dirty_size=0;
     if (flow_dirty) Vec_IntFree(flow_dirty);
     flow_dirty=NULL; flow_aig_valid=0;
     flow_snapshot=0; flow_observations=0; flow_rep=NULL;
+    if (flow_interface_pis) Vec_IntFree(flow_interface_pis);
+    if (flow_interface_pos) Vec_IntFree(flow_interface_pos);
+    flow_interface_pis=flow_interface_pos=NULL;
 }
 /* Observe mutations, never write ABC scratch fields or modify its graph.
  * Only the currently encoded manager needs a dirty set: switching managers
@@ -210,6 +218,8 @@ void Flow_CommandBefore(Abc_Frame_t *p, int argc, char **argv) {
         if (!flow_file) { perror("ABC provenance open"); exit(2); }
         setvbuf(flow_file,NULL,_IOFBF,1<<20);
         flow_force_full=getenv("YOSYS_FLOW_ABC_FULL_SNAPSHOTS") && !strcmp(getenv("YOSYS_FLOW_ABC_FULL_SNAPSHOTS"),"1");
+        flow_full_interfaces=getenv("YOSYS_FLOW_ABC_FULL_INTERFACES") && !strcmp(getenv("YOSYS_FLOW_ABC_FULL_INTERFACES"),"1");
+        flow_profile=getenv("YOSYS_FLOW_CAPTURE_PROFILE") != NULL;
         flow_force_scan=getenv("YOSYS_FLOW_ABC_SCAN_SNAPSHOTS") && !strcmp(getenv("YOSYS_FLOW_ABC_SCAN_SNAPSHOTS"),"1");
         flow_verify_dirty=getenv("YOSYS_FLOW_ABC_VERIFY_DIRTY") && !strcmp(getenv("YOSYS_FLOW_ABC_VERIFY_DIRTY"),"1");
         flow_checkpoint_interval=0;
@@ -223,7 +233,7 @@ void Flow_CommandBefore(Abc_Frame_t *p, int argc, char **argv) {
         flow_seq=flow_command=flow_epoch=0; flow_reset_nodes();
         flow_entry_ntk=flow_strash_ntk=NULL; flow_entry_gia=NULL;
         flow_entry_snapshot=flow_strash_snapshot=flow_gia_snapshot=0;
-        flow_start("begin"); fputs(",\"schema\":5,\"abc_commit\":\"e026ed5380f3bdc3beea2ff9ffc23236fc549d5b\"",flow_file); flow_end();
+        flow_start("begin"); fputs(",\"schema\":5,\"features\":[\"shared_snapshot_interfaces_v1\"],\"abc_commit\":\"e026ed5380f3bdc3beea2ff9ffc23236fc549d5b\"",flow_file); flow_end();
     }
     if (!flow_file || !strcmp(argv[0],"echo")) return;
     flow_reset_nodes();
@@ -232,6 +242,7 @@ void Flow_CommandBefore(Abc_Frame_t *p, int argc, char **argv) {
     flow_clone_count=0; flow_is_put=!strcmp(argv[0],"&put");
     flow_is_strash=!strcmp(argv[0],"strash"); flow_is_get=!strcmp(argv[0],"&get");
     flow_relations=flow_copies=flow_rewrites=flow_entry_copies=0;
+    if (flow_profile) flow_command_started=clock();
     ++flow_command; flow_start("command_begin"); fputs(",\"argv\":[",flow_file);
     { int i; for(i=0;i<argc;i++){ if(i) fputc(',',flow_file); flow_string(argv[i]); } }
     fputc(']',flow_file); flow_end(); flow_flush();
@@ -248,7 +259,9 @@ void Flow_CommandAfter(Abc_Frame_t *p, int argc, char **argv, int status) {
     if (!strcmp(argv[0],"&fraig")) {
         flow_entry_ntk=flow_strash_ntk=NULL; flow_entry_gia=NULL;
     }
-    flow_start("command_end"); fprintf(flow_file,",\"status\":%d,\"equivalences\":%u,\"history_copies\":%u,\"replacements\":%u,\"entry_copies\":%u,\"mapped_clones\":%u",status,flow_relations,flow_copies,flow_rewrites,flow_entry_copies,flow_clone_count); flow_end();
+    flow_start("command_end"); fprintf(flow_file,",\"status\":%d,\"equivalences\":%u,\"history_copies\":%u,\"replacements\":%u,\"entry_copies\":%u,\"mapped_clones\":%u",status,flow_relations,flow_copies,flow_rewrites,flow_entry_copies,flow_clone_count);
+    if (flow_profile) fprintf(flow_file,",\"cpu_seconds_inclusive\":%.9f",(double)(clock()-flow_command_started)/CLOCKS_PER_SEC);
+    flow_end();
     flow_flush();
     if (!strcmp(argv[0],"write_blif") || status) {
         flow_start("end"); fprintf(flow_file,",\"status\":%d,\"capture_stats\":{\"aig_full_node_visits\":%llu,\"aig_dirty_node_visits\":%llu,\"checkpoint_interval\":%u,\"scan_snapshots\":%d}",status,flow_aig_full_visits,flow_aig_dirty_visits,flow_checkpoint_interval,flow_force_scan); flow_end(); flow_flush();
@@ -286,14 +299,28 @@ static void flow_aig_audit(Aig_Man_t *p) {
     }
 }
 static unsigned flow_aig(Aig_Man_t *p, const char *kind) {
-    Aig_Obj_t *o; int i,id,first=1,sparse; unsigned seq;
+    Aig_Obj_t *o; int i,id,first=1,sparse,same_interface; unsigned seq, previous=flow_snapshot;
     seq=flow_start(kind); flow_encoding(p,"aig",kind,seq);
     sparse=flow_delta && flow_sparse_command && !flow_force_scan;
-    fputs(",\"representation\":\"aig\",\"pis\":[",flow_file);
-    Aig_ManForEachCi(p,o,i) { if(i) fputc(',',flow_file); fprintf(flow_file,"%d",o->Id); }
-    fputs("],\"pos\":[",flow_file);
-    Aig_ManForEachCo(p,o,i) { if(i) fputc(',',flow_file); fprintf(flow_file,"%d",o->Id); }
-    fputs("],\"nodes\":[",flow_file);
+    same_interface=flow_delta && !flow_full_interfaces && flow_interface_pis && flow_interface_pos &&
+        Vec_IntSize(flow_interface_pis)==Aig_ManCiNum(p) && Vec_IntSize(flow_interface_pos)==Aig_ManCoNum(p);
+    if (same_interface) {
+        Aig_ManForEachCi(p,o,i) if(Vec_IntEntry(flow_interface_pis,i)!=o->Id) { same_interface=0; break; }
+        Aig_ManForEachCo(p,o,i) if(Vec_IntEntry(flow_interface_pos,i)!=o->Id) { same_interface=0; break; }
+    }
+    fputs(",\"representation\":\"aig\"",flow_file);
+    if (same_interface) fprintf(flow_file,",\"interface_base\":%u",previous);
+    else {
+        if (!flow_interface_pis) flow_interface_pis=Vec_IntAlloc(Aig_ManCiNum(p));
+        if (!flow_interface_pos) flow_interface_pos=Vec_IntAlloc(Aig_ManCoNum(p));
+        Vec_IntClear(flow_interface_pis);Vec_IntClear(flow_interface_pos);
+        fputs(",\"pis\":[",flow_file);
+        Aig_ManForEachCi(p,o,i) { if(i) fputc(',',flow_file); fprintf(flow_file,"%d",o->Id); Vec_IntPush(flow_interface_pis,o->Id); }
+        fputs("],\"pos\":[",flow_file);
+        Aig_ManForEachCo(p,o,i) { if(i) fputc(',',flow_file); fprintf(flow_file,"%d",o->Id); Vec_IntPush(flow_interface_pos,o->Id); }
+        fputc(']',flow_file);
+    }
+    fputs(",\"nodes\":[",flow_file);
     if (sparse) {
         if (flow_dirty) {
             Vec_IntSort(flow_dirty,0);

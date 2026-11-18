@@ -32,12 +32,13 @@ class DifferenceTests(unittest.TestCase):
     def test_large_repeated_body_only_searches_changed_middle(self):
         old=[['connect','\\A','0']]*12000+[['cell','$and']]+[['end']]*12000
         new=old[:12000]+[['cell','$or']]+old[12001:]
-        original=rtlil.difflib.SequenceMatcher
-        with patch.object(rtlil.difflib,'SequenceMatcher',wraps=original) as matcher:
-            edits=list(rtlil.changed_ranges(old,new))
+        from incremental.rtlil_diff import Work, opcodes, row_key
+        work=Work()
+        edits=[row for row in opcodes(list(map(row_key,old)),list(map(row_key,new)),work)
+               if row[0]!='equal']
         self.assertEqual(edits,[('replace',12000,12001,12000,12001)])
-        self.assertEqual(len(matcher.call_args.kwargs['a']),1)
-        self.assertEqual(len(matcher.call_args.kwargs['b']),1)
+        self.assertEqual(work.cells,1)
+        self.assertEqual(work.fallbacks,0)
 
 
 class EvidenceScanTests(unittest.TestCase):

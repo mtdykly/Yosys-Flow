@@ -5,13 +5,13 @@ oracle. Canonical comparison only removes source metadata and alpha-renames
 generated identifiers; every delivered result still requires whole-output SAT.
 """
 from dataclasses import dataclass
-import difflib
 import json
 import re
 from urllib.parse import quote
 
 from yosys_flow.common import require, unescape
 from yosys_flow.contracts import fingerprint
+from .rtlil_diff import Work, compare_objects, opcodes, row_key
 
 TOKEN = re.compile(r'"(?:\\.|[^"\\])*"|[^\s]+')
 IGNORED = {'\\src','\\hdlname','\\top','\\module_not_derived','\\cells_not_processed','\\dynports'}
@@ -49,20 +49,36 @@ class Module:
                 if line.startswith('  cell ') and (ts:=tokens(line)) and unescape(ts[1]) in modules}
 
     def canonical(self, modules):
+        return self.canonical_objects(modules)[0]
+
+    def canonical_objects(self, modules):
+        """Keep writer-order token rows and whole top-level object boundaries.
+
+        Attributes belong to the following object; nested process actions,
+        switches, cases and sync blocks stay inside their enclosing process.
+        The canonical rows retain the historical normalization exactly.
+        """
         generated={}
         for line in self.lines:
             ts=tokens(line)
             if ts and ts[0] in {'wire','cell','process'} and ts[-1].startswith('$'):
                 generated.setdefault(ts[-1], '@generated_'+str(len(generated)))
-        result=[]
+        result=[]; starts=[0]; pending=None
         for line in [*self.attributes,*self.lines]:
             ts=tokens(line)
             if not ts or ts[0].startswith('#'): continue
             if ts[0]=='attribute' and ts[1] in IGNORED: continue
+            top_level=line.startswith('  ') and not line.startswith('    ')
+            if top_level and ts[0]=='attribute' and pending is None:
+                pending=len(result)
+            elif (top_level and ts[0] not in {'attribute','end'}) or line=='end':
+                start=len(result) if pending is None else pending
+                if start != starts[-1]: starts.append(start)
+                pending=None
             if ts[0]=='module': ts=['module','@self']
             if ts[0]=='cell' and unescape(ts[1]) in modules: ts[1]='@child_module'
             result.append([generated.get(t,t) for t in ts])
-        return result
+        return result,list(zip(starts,[*starts[1:],len(result)]))
 
     def render(self):
         attributes=[s for s in self.attributes if tokens(s)[:2]!=['attribute','\\top']]
@@ -100,25 +116,10 @@ def catalog(modules, top):
 
 
 def changed_ranges(old, new):
-    """Diff only the unequal middle; identical prefixes/suffixes need no search.
-
-    RTLIL contains many repeated parameter/connect records. SequenceMatcher
-    with autojunk=False can spend quadratic time matching the unchanged body.
-    Trimming uses exact row equality, never hashes or popular-token suppression.
-    Returned indices still refer to the complete canonical representations.
-    """
-    start = 0
-    while start < min(len(old), len(new)) and old[start] == new[start]:
-        start += 1
-    end_old, end_new = len(old), len(new)
-    while end_old > start and end_new > start and old[end_old-1] == new[end_new-1]:
-        end_old -= 1
-        end_new -= 1
-    matcher = difflib.SequenceMatcher(a=list(map(str, old[start:end_old])),
-                                     b=list(map(str, new[start:end_new])), autojunk=False)
-    for tag, i, j, k, l in matcher.get_opcodes():
+    """Exact row edits with bounded matching; ambiguous large gaps are edits."""
+    for tag, i, j, k, l in opcodes(list(map(row_key,old)),list(map(row_key,new)),Work()):
         if tag != 'equal':
-            yield tag, start+i, start+j, start+k, start+l
+            yield tag, i, j, k, l
 
 
 def compare(old, new, top):
@@ -130,27 +131,28 @@ def compare(old, new, top):
     """
     oc,nc=catalog(old,top),catalog(new,top)
     require(old[top].ports()==new[top].ports(),'automatic mode requires an unchanged top interface')
-    changes=[];unchanged=[]
+    changes=[];unchanged=[];comparisons=[]
     def walk(path):
         a,b=old[oc[path]],new[nc[path]]
-        ac,bc=a.canonical(old),b.canonical(new)
+        (ac,ab),(bc,bb)=a.canonical_objects(old),b.canonical_objects(new)
         if ac!=bc:
-            delta=[]
-            for tag,i,j,k,l in changed_ranges(ac,bc):
-                delta.append({'operation':tag,'old':ac[i:j],'new':bc[k:l]})
-            changes.append({'instance':path,'old_module':a.name,'new_module':b.name,
-                'old_src':a.source,'new_src':b.source,'old_fingerprint':fingerprint(ac),
-                'new_fingerprint':fingerprint(bc),'ir_changes':delta})
-            return
+            edits,stats=compare_objects(ac,bc,ab,bb)
+            comparisons.append({'instance':path,**stats})
+            if edits:
+                delta=[{'operation':tag,'old':ac[i:j],'new':bc[k:l]} for tag,i,j,k,l in edits]
+                changes.append({'instance':path,'old_module':a.name,'new_module':b.name,
+                    'old_src':a.source,'new_src':b.source,'old_fingerprint':fingerprint(ac),
+                    'new_fingerprint':fingerprint(bc),'ir_changes':delta,'diff_statistics':stats})
+                return
         unchanged.append(path)
         for child in sorted(a.children(old)):
             target=path+'/'+quote(child,safe='')
             require(target in nc,'unchanged parent has different child instance')
             walk(target)
     walk(quote(top,safe=''))
-    return {'rule':'instance_path_and_alpha_normalized_pre_proc_rtlil_v1',
+    return {'rule':'instance_path_and_structured_pre_proc_rtlil_v2',
             'scope':'smallest_changed_module_instances_not_minimal_statement_slices',
-            'changes':changes,'unchanged_local_bodies':unchanged},oc,nc
+            'changes':changes,'unchanged_local_bodies':unchanged,'diff_statistics':comparisons},oc,nc
 
 
 def source_selector(module, instance):

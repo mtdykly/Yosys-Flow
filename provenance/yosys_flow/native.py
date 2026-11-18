@@ -63,8 +63,9 @@ class NativeTrace:
         precision_rank = {"cell": 0, "process_action": 1, "cell_group_candidate": 2,
                           "process_signal_candidate": 3, "abc_region_candidate": 4, "process_pending": 5}
         conservative_merge = "conservative_precision_merge" in header.get("features", [])
-        from .native_storage import Arrays, same_array
+        from .native_storage import Arrays, Checkpoints, same_array
         arrays = Arrays(header.get("features", []))
+        checkpoints = Checkpoints(header.get("features", []))
         checked_origins = {}
         if progress: progress("native_replay", total_records=len(self.records))
         ended = False
@@ -391,11 +392,7 @@ class NativeTrace:
                 self.regions.append(row)
                 self.events.append(row)
             elif kind in {"checkpoint", "run_end"}:
-                require(len(row["cells"]) == len(set(row["cells"])) and set(row["cells"]) == live,
-                        "native snapshot does not match lifecycle replay")
-                if "connections" in row:
-                    require(row["connections"] == {r: obj["revision"] for r, obj in self.assignments.items()},
-                            "native connection snapshot differs from replay")
+                checkpoints.check(row, live, self.assignments)
                 if kind == "run_end":
                     require(not stack, "unclosed native steps or premature end")
                     ended = True

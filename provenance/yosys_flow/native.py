@@ -60,6 +60,8 @@ class NativeTrace:
         self.flatten_events = {}
         live, stack, steps, retired = set(), [], set(), set()
         self.gaps = []
+        self.object_gaps = {}
+        step_names = {}
         precision_rank = {"cell": 0, "process_action": 1, "cell_group_candidate": 2,
                           "process_signal_candidate": 3, "abc_region_candidate": 4, "process_pending": 5}
         conservative_merge = "conservative_precision_merge" in header.get("features", [])
@@ -82,6 +84,7 @@ class NativeTrace:
                 sid = row["step_id"]
                 require(sid > 0 and sid not in steps and row["parent_step_id"] == (stack[-1] if stack else 0), "invalid native step nesting")
                 steps.add(sid)
+                step_names[sid] = row['pass']
                 stack.append(sid)
             else:
                 require(row["step_id"] == (stack[-1] if stack else 0), "native record has wrong step ID")
@@ -141,8 +144,11 @@ class NativeTrace:
                     self.check_flatten_clone(row, self.objects)
                 inputs = row.get("inputs", [])
                 if inputs and not row.get("abc_invocation"):
-                    require(set(inputs) <= self.objects.keys() and ref not in inputs, "unknown or circular native derivation input")
-                    expected = set().union(*(set(self.objects[r]["origins"]) for r in inputs))
+                    from .optimization import input_object, RULES
+                    known = all(r in self.objects or (row.get('operation') in RULES and
+                                'optimization_rewrites_v1' in header.get('features', []) and r in self.assignments) for r in inputs)
+                    require(known and ref not in inputs, "unknown or circular native derivation input")
+                    expected = set().union(*(set(input_object(self, r)["origins"]) for r in inputs))
                     require(set(row["origins"]) == expected, "native creation origins differ from derivation inputs")
                 if row.get("abc_invocation"):
                     region = invocations.get(row["abc_invocation"])
@@ -150,8 +156,12 @@ class NativeTrace:
                             same_array(row["origins"], region["origins"]) and row["precision"] == "abc_region_candidate",
                             "native ABC output does not match its region")
                 elif inputs:
-                    expected_precision = self.objects[inputs[0]]["precision"] if len(inputs) == 1 else "cell_group_candidate"
-                    if len(inputs) > 1 and "conservative_derivation" in header.get("features", []):
+                    if row.get('operation') in RULES:
+                        from .optimization import precision as rewrite_precision
+                        expected_precision = rewrite_precision(self, inputs, group=row['operation']=='opt_share_operators')
+                    else:
+                        expected_precision = self.objects[inputs[0]]["precision"] if len(inputs) == 1 else "cell_group_candidate"
+                    if row.get('operation') not in RULES and len(inputs) > 1 and "conservative_derivation" in header.get("features", []):
                         expected_precision = max([expected_precision, *(self.objects[r]["precision"] for r in inputs)], key=precision_rank.__getitem__)
                     require(row["precision"] == expected_precision, "native derivation changed association precision")
                 self.edges += [{"from": source, "to": ref, "event_id": sequence,
@@ -247,6 +257,10 @@ class NativeTrace:
                 self.edges = [e for e in self.edges if e["to"] != ref]
                 self.edges += [{"from": r, "to": ref, "event_id": sequence,
                                 "capture": "process_connection", "precision": self.assignments[ref]["precision"]} for r in inputs]
+            elif kind == 'optimization_rewrite':
+                from .optimization import replay
+                require('optimization_rewrites_v1' in header.get('features', []), 'undeclared optimization evidence')
+                replay(self, row, live, retired, step_names[row['step_id']])
             elif kind in {"cell_state", "merge", "cell_contribution"}:
                 inputs = [row["input"]] if kind == "cell_state" else row["inputs"]
                 require(len(inputs) == (1 if kind == "cell_state" else 2) and len(set(inputs)) == len(inputs),
@@ -316,8 +330,11 @@ class NativeTrace:
                 self.events.append(row)
                 inputs = row.get("inputs", [])
                 if inputs and not row.get("abc_invocation"):
-                    require(set(inputs) <= self.objects.keys(), "unknown native connection derivation input")
-                    require(set(row["origins"]) == set().union(*(set(self.objects[r]["origins"]) for r in inputs)),
+                    from .optimization import input_object, RULES
+                    require(all(r in self.objects or (row.get('operation') in RULES and
+                            'optimization_rewrites_v1' in header.get('features', []) and r in self.assignments and
+                            r != row['ref']) for r in inputs), "unknown native connection derivation input")
+                    require(set(row["origins"]) == set().union(*(set(input_object(self, r)["origins"]) for r in inputs)),
                             "native connection origins differ from derivation inputs")
                 if row.get("abc_invocation"):
                     region = invocations.get(row["abc_invocation"])
@@ -397,7 +414,13 @@ class NativeTrace:
                     require(not stack, "unclosed native steps or premature end")
                     ended = True
             elif kind == "coverage_gap":
-                self.gaps.append(row["reason"])
+                if row.get('ref'):
+                    require(row['ref'] in self.objects, 'object coverage gap refers to unknown object')
+                    self.object_gaps[row['seq']] = row
+                    obj = self.objects[row['ref']]
+                    obj['direct_source_gaps'] = [*obj.get('direct_source_gaps', []), row['seq']]
+                elif row['reason'] not in self.gaps:
+                    self.gaps.append(row["reason"])
             elif kind == "step_end":
                 require(bool(stack), "unmatched native step end")
                 stack.pop()
@@ -415,6 +438,8 @@ class NativeTrace:
         # Effective query associations must never mutate the captured log.
         from .abc_provenance import refine
         if not defer_refinement: refine(self, progress=progress)
+        from .optimization import propagate_gaps
+        propagate_gaps(self)
 
     @staticmethod
     def flatten_signal(bits, event):
@@ -429,7 +454,7 @@ class NativeTrace:
                 {s.get('cloned_from') for s in sources}==set(original['origins']) and
                 row['precision']==original['precision'], 'flatten clone sources differ from original')
 
-    def compare_abc_artifacts(self, directory, progress=None):
+    def compare_abc_artifacts(self, directory, progress=None, *, evidence_pipeline=None, manifest=None):
         internal = {}
         self.abc_internal = []
         for region in self.regions:
@@ -443,7 +468,9 @@ class NativeTrace:
             if region.get("internal_trace_schema") in {1, 2, 3, 4, 5}:
                 from .abc_internal import analyze
                 proof, summary = analyze(files["input.blif.flow.jsonl"], files["script"].read_text(), region,
-                                         self.abc_imports.get(region["invocation_id"], {}), files["input.blif"].read_text(), progress=progress)
+                                         self.abc_imports.get(region["invocation_id"], {}), files["input.blif"].read_text(), progress=progress,
+                                         evidence_consumer=(lambda decoded,confirmed:evidence_pipeline.capture(
+                                             directory,region,manifest,decoded,progress,confirmed)) if evidence_pipeline else None)
                 require(summary["schema"] == region["internal_trace_schema"], "ABC internal trace schema differs from declaration")
                 internal[region["invocation_id"]] = proof
                 self.abc_internal.append({"invocation_id": region["invocation_id"], **summary})
@@ -483,6 +510,12 @@ class NativeTrace:
 
 def run_native(args, *, resume_capture=None):
     require(args.flow in {"synth", "m1", "m1-opt"}, "unsupported native flow")
+    require(not getattr(args,'evidence_out',None) or getattr(args,'prepare_evidence',False),
+            '--evidence-out requires --prepare-evidence')
+    if getattr(args,'prepare_evidence',False):
+        require(args.flow=='synth','evidence preparation requires default synth')
+        require(0<getattr(args,'evidence_cec_timeout',60)<=3600,'invalid evidence CEC budget')
+        require(0<getattr(args,'source_timeout',600)<=86400,'invalid source preparation timeout')
     index_backend = getattr(args,'index_backend','sqlite')
     require(index_backend in {'sqlite','gzip'}, 'unsupported index backend')
     skip_stock_equivalence = getattr(args,'skip_stock_equivalence',False)
@@ -540,6 +573,10 @@ def run_native(args, *, resume_capture=None):
         require(digest(native) == prior['tool']['native_sha256'], 'native executable changed since capture')
     run_id = prior['run_id'] if prior else uuid.uuid4().hex
     out.mkdir(parents=True)
+    evidence_pipeline=None
+    if getattr(args,'prepare_evidence',False):
+        from .proof_pipeline import EvidencePipeline
+        evidence_pipeline=EvidencePipeline(args,out)
     manifest = {"schema_version": 2, "run_id": run_id, "status": "running", "flow": args.flow, "input_scope": "combinational",
                 "endpoint": "; ".join(passes), "coverage": "partial", "coverage_gaps": gaps,
                 "safe_for_incremental_reuse": False, "inputs": [], "artifacts": {}, "timings_seconds": {},
@@ -634,12 +671,17 @@ def run_native(args, *, resume_capture=None):
             trace = NativeTrace(out / "yosys.jsonl", progress=progress, defer_refinement=True)
         progress("final_netlist_check")
         trace.compare_netlist(out / "after.json")
-        trace.compare_abc_artifacts(out, progress=progress)
+        trace.compare_abc_artifacts(out, progress=progress,evidence_pipeline=evidence_pipeline,
+                                    manifest={**manifest,'artifacts':checkpoint['artifacts']})
         from .hierarchy import instance_view, electrical_design
         progress("instance_view")
         view = instance_view(trace,after,top)
         freeze_evidence()
         manifest["timings_seconds"]["record_validation"] = time.perf_counter() - validation_start
+        if evidence_pipeline:
+            manifest['timings_seconds']['proof_witness_capture']=evidence_pipeline.seconds
+            manifest['timings_seconds']['record_validation_excluding_proof_witnesses']=(
+                manifest['timings_seconds']['record_validation']-evidence_pipeline.seconds)
         write_json(out / "manifest.json", manifest)
         progress("input_and_tool_binding")
         require({r['executable'] for r in trace.regions} ==
@@ -703,7 +745,7 @@ def run_native(args, *, resume_capture=None):
         manifest["status"] = "complete"
         write_json(out / "manifest.json", manifest)
         progress.finish()
-        return {"run_directory": str(out), "status": "complete", "index_backend":index_backend, **validation}
+        result={"run_directory": str(out), "status": "complete", "index_backend":index_backend, **validation}
     except BaseException as exc:
         progress.finish("failed", error=str(exc))
         manifest.update(status="failed", error=str(exc))
@@ -711,12 +753,17 @@ def run_native(args, *, resume_capture=None):
         raise
     finally:
         if live_replay: live_replay.close()
+    # The archive is already complete. A failed supplementary preparation must
+    # not change its manifest (which also anchors every published proof).
+    if evidence_pipeline:result['proof_evidence']=evidence_pipeline.finish(manifest,view)
+    return result
 
 
-def load_native(directory, manifest, timings=None, *, use_index=True):
+def load_native(directory, manifest, timings=None, *, use_index=True, evidence_pipeline=None, progress=None):
     from .persistent_index import INDEX_NAMES, read_index, build_lookup
     timings = timings if timings is not None else {}
     started = time.perf_counter()
+    if progress:progress('artifact_hashes')
     require(manifest.get("status") == "complete", "native run is incomplete or failed")
     required = {"yosys.jsonl", "after.json", "baseline.json", "validation.json"}
     if manifest.get('validation_policy',{}).get('stock_to_traced_equivalence') != 'skipped_by_request':
@@ -746,14 +793,14 @@ def load_native(directory, manifest, timings=None, *, use_index=True):
         timings["saved_reference_check"] = time.perf_counter() - started - timings["verified_index_load"]
         return manifest, trace, validation
     started = time.perf_counter()
-    trace = NativeTrace(directory / "yosys.jsonl")
+    trace = NativeTrace(directory / "yosys.jsonl",progress=progress,defer_refinement=bool(evidence_pipeline))
     require(trace.records[0]["run_id"] == manifest["run_id"], "native run ID mismatch")
     trace.compare_netlist(directory / "after.json")
     for region in trace.regions:
         require(set(region.get("artifacts", {}).values()) <= manifest["artifacts"].keys(), "ABC evidence missing from artifact manifest")
     timings["record_replay_and_netlist_check"] = time.perf_counter() - started
     started = time.perf_counter()
-    trace.compare_abc_artifacts(directory)
+    trace.compare_abc_artifacts(directory,progress=progress,evidence_pipeline=evidence_pipeline,manifest=manifest)
     timings["abc_artifact_check_and_proof"] = time.perf_counter() - started
     started = time.perf_counter()
     validation = _check_saved_reference(directory, manifest)
@@ -870,6 +917,8 @@ def query_native(args, manifest, trace, *, compact=False):
         state = row["state"]
         final.append({"ref": ref, "module": state["module"], "name": state["name"], "type": state["type"],
                       "precision": row["precision"], "origin_ids": row["origins"],
+                      "source_path_status": "incomplete" if row.get('source_gaps') else "not_established",
+                      "source_gap_ids": row.get('source_gaps', []),
                       **({} if compact else {"all_origins": [trace.sources[s] for s in row["origins"]], "consumers": []})})
         final[-1].update({k:row[k] for k in ('definition_ref','definition_module','definition_name','instance','instance_aliases') if k in row})
         if compact:
@@ -908,7 +957,9 @@ def query_native(args, manifest, trace, *, compact=False):
         if expression_selection and final and not all(b in selected_output_bits for b in lhs_bits):
             continue
         if lhs_bits:
-            connections.append({**row, "lhs_bits": lhs_bits, "rhs_bits": [resolve_bit(b, design) for b in row["rhs"]]})
+            connections.append({**row, "lhs_bits": lhs_bits, "rhs_bits": [resolve_bit(b, design) for b in row["rhs"]],
+                                "source_path_status": "incomplete" if row.get('source_gaps') else "not_established",
+                                "source_gap_ids": row.get('source_gaps', [])})
     if compact:
         # Internal selection result, not an abbreviated public evidence report.
         # Check the SAME selected-source path without expanding all descendants,
@@ -961,6 +1012,7 @@ def query_native(args, manifest, trace, *, compact=False):
             "cell_level_refs": [r["ref"] for r in final if r["precision"] == "cell"],
             "candidate_cell_refs": [r["ref"] for r in final if r["precision"] not in {"cell", "process_action", "abc_internal_cut", "abc_internal_joint_cut"}],
             "end_to_end_exact": False,
+            "object_coverage_gaps": [trace.object_gaps[k] for k in sorted({g for r in final+connections for g in r['source_gap_ids']})],
             "edges": selected_edges, "events": [r for r in events if r["seq"] in evidence_ids or
                 (r["record_type"] == "connection_state" and r["ref"] in reachable) or
                 (r["record_type"] in {"process_action", "process_action_detail", "process_discard"} and seeds.intersection(r["origins"]))],

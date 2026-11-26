@@ -99,7 +99,7 @@ def outside_paths(module, names, boundary):
 
 
 class ContractContext:
-    def __init__(self, directory, *, compact=False):
+    def __init__(self, directory, *, compact=False, proof_evidence=None):
         self.compact = compact
         self.directory = Path(directory).resolve()
         manifest_hash = digest(self.directory/'manifest.json')
@@ -110,6 +110,22 @@ class ContractContext:
         require(hashlib.sha256(netlist).hexdigest()==self.manifest['artifacts']['after.json']['sha256'],
                 'after.json changed during contract creation')
         require(manifest_hash==digest(self.directory/'manifest.json'), 'manifest changed during contract creation')
+        self._initialize(manifest_hash, proof_evidence)
+
+    @classmethod
+    def from_validated(cls, directory, manifest, trace):
+        """Internal handoff after run_native has verified and published this run."""
+        context=cls.__new__(cls)
+        context.compact=True;context.directory=Path(directory).resolve()
+        data=(context.directory/'manifest.json').read_bytes()
+        require(json.loads(data)==manifest and manifest['status']=='complete',
+                'validated archive changed before evidence handoff')
+        context.manifest,context.trace=manifest,trace
+        context.load_timings={'validated_context_reused':True}
+        context._initialize(hashlib.sha256(data).hexdigest(), False)
+        return context
+
+    def _initialize(self, manifest_hash, proof_evidence):
         self.module = self.trace.design
         self.baseline = {'run_id':self.manifest['run_id'], 'endpoint':self.manifest['endpoint'],
                          'module':self.manifest['configuration']['top'],
@@ -123,6 +139,9 @@ class ContractContext:
         self._share_plan_sources = True
         self.progress = None
         self._operation_descendants = {}
+        self.proof_timings = {}
+        from .proof_regions import attach
+        attach(self, proof_evidence)
 
     def notify(self, step, **details):
         callback = getattr(self, 'progress', None)
@@ -153,12 +172,16 @@ class ContractContext:
         certified=operation_roots(self,selector,cell_name)
         if certified:return certified
         if len(self.trace.instance_catalog)!=1: return []
-        selection=self.query(selector)
+        if selector.get('instance') not in (None,self.manifest['configuration']['top']): return []
+        # A creation lookup does not need to materialize every final candidate
+        # sharing the enclosing AST source. Walk the indexed source edges only.
+        from .partition_store import source_seeds
+        seeds=source_seeds(self,selector)
         from .graph_index import EdgeList
         edges=self.trace.edges
         if not hasattr(edges,'adjacent'): edges=EdgeList(edges)
         roots=set()
-        for sid in selection['seeds']:
+        for sid in seeds:
             for _,edge in edges.adjacent(sid):
                 if edge.get('capture')!='ast_generation_scope': continue
                 row=self.trace.objects.get(edge['to'],{})
@@ -167,7 +190,10 @@ class ContractContext:
                    unescape(row.get('name',state.get('name','')))==unescape(cell_name) and \
                    unescape(row.get('module',state.get('module','')))==self.manifest['configuration']['top']:
                     roots.add(edge['to'])
-        return sorted(roots)
+        roots=sorted(roots)
+        from .proof_regions import derive
+        derive(self, roots)
+        return roots
 
     def operation_cells(self, roots):
         key=tuple(sorted(roots))
@@ -177,7 +203,11 @@ class ContractContext:
             if certificate:
                 self._operation_descendants[key]=set(certificate['final_cell_refs'])
             else:
-                reached,_=walk(self.trace.edges,roots)
+                policy=getattr(self,'evidence_budget',None)
+                if policy:
+                    from .online_evidence import bounded_walk
+                    reached=bounded_walk(self,roots)
+                else:reached,_=walk(self.trace.edges,roots)
                 self._operation_descendants[key]=reached & set(self.trace.final)
         return set(self._operation_descendants[key])
 
@@ -206,9 +236,11 @@ class ContractContext:
         return [self._cell(ref,row) for ref,row in rows]
 
     def _cell(self, ref, row):
+        from .optimization import coverage_fields
         state = row['state']
         result = {k:state[k] for k in ('module','name','type')}
         result.update(ref=ref, precision=row['precision'], origin_ids=row['origins'])
+        result.update(coverage_fields(row))
         result.update({k:row[k] for k in ('definition_ref','definition_module','definition_name',
                                          'instance','instance_aliases') if k in row})
         cell = self.module['cells'][unescape(state['name'])]
@@ -225,9 +257,10 @@ class ContractContext:
         return result
 
     def connection(self, ref):
+        from .optimization import coverage_fields
         require(ref in self.trace.assignments and self.trace.assignments[ref]['lhs'], 'contract connection is not live')
         row = self.trace.assignments[ref]
-        return {**row,'lhs_bits':[resolve_bit(b,self.module) for b in row['lhs']],
+        return {**row,**coverage_fields(row),'lhs_bits':[resolve_bit(b,self.module) for b in row['lhs']],
                 'rhs_bits':[resolve_bit(b,self.module) for b in row['rhs']]}
 
     def validate(self, document, depth=0):
@@ -295,14 +328,14 @@ class ContractContext:
         additional_inputs = []
         kind = derivation.get('kind')
         if kind=='source_cut':
-            from .source_regions import prove
+            from .proof_regions import prove_source
             require(set(derivation)=={'kind','parent'}, 'invalid source cut derivation')
             parent=self._parent(derivation['parent'],depth+1)
             result=deepcopy(parent)
             result['derivation']={'kind':'source_cut','parent':self._recipe(parent) if self.compact else parent}
             blockers=result['verification']['blockers']
             if blockers==['candidate_source_associations']:
-                proof=prove(self,parent)
+                proof=prove_source(self,parent)
                 result['verification']['source_region_function_proof']=proof
                 if proof['status']=='verified':
                     blockers.remove('candidate_source_associations')
@@ -362,6 +395,8 @@ class ContractContext:
         require(starting or connections, 'no mapped final objects for a region contract; this does not prove no RTL effect')
         closure = group_closure(self.trace,starting)
         refs = set(closure['required_final_cell_refs'])
+        policy=getattr(self,'evidence_budget',None)
+        if policy:policy.check_nodes(len(refs),'closed_final_region_cells')
         closed = group_closure(self.trace,refs)
         from .partition_store import region_certificate
         partition=region_certificate(self,refs)
@@ -421,10 +456,15 @@ class ContractContext:
             'coverage':self.manifest['coverage'], 'coverage_gaps':self.manifest['coverage_gaps'],
             'source_completeness_proven':False, 'complete_causal_history':False}
         if partition:
+            stored_library=getattr(self,'proof_evidence',None)
+            library_partition=partition['id'] in getattr(self,'_proof_library_certificate_ids',set())
             provenance['functional_partition']={'id':partition['id'],
-                'artifact':self.manifest['functional_partitions']['artifact'],
+                'artifact':('proof-evidence:regions.sqlite3' if library_partition else
+                            self.manifest['functional_partitions']['artifact']),
                 'rule':partition['proof']['rule'], 'all_external_outputs':True,
                 'original_candidate_associations_retained_in_baseline':True}
+            if stored_library and library_partition:
+                provenance['functional_partition']['proof_library_sha256']=stored_library.document['sha256']
         if self.compact:
             # Indices name the deterministic, manifest-bound replay view, not
             # arbitrary caller files. validate() reconstructs each reference.

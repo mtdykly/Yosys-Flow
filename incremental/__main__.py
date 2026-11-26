@@ -65,6 +65,11 @@ def parser(include_experiments=True):
     execute.add_argument('--new-source',action='append',required=True)
     auto=commands.add_parser('auto',help='从旧综合记录和完整新版 RTL 自动推导修改区域、局部代码及绑定')
     auto.add_argument('--base-run',required=True)
+    auto.add_argument('--proof-evidence',help='旧设计持久证明库；默认自动发现 <base-run>.proofs')
+    auto.add_argument('--region-proof-budget',type=positive_seconds,default=60,
+                      help='在线旧区域补证共享预算，默认 60 秒；独立于生成后的整网验证')
+    auto.add_argument('--region-node-limit',type=positive_count,default=4096,
+                      help='在线局部选区/证明节点上限，默认 4096；超限明确阻塞')
     auto.add_argument('--new-source',action='append',required=True)
     auto.add_argument('--native-yosys',default=str(ROOT/'build/native/install/bin/yosys'))
     auto.add_argument('--selection-mode',choices=['fine','module'],default='fine',
@@ -74,9 +79,11 @@ def parser(include_experiments=True):
             help='前端/局部综合/全量参考生成的单次工具上限（秒，默认 120）；独立于整网验证及预检查预算')
         command.add_argument('--whole-equivalence-timeout',type=positive_seconds,default=1200.0,
             help='每次整网验证各阶段共享的墙钟预算（秒，默认 1200）')
-    auto.add_argument('--no-equivalence-precheck',action='store_true',help='关闭叶模块组合等价预检查')
-    auto.add_argument('--equivalence-timeout',type=positive_seconds,default=5.0)
-    auto.add_argument('--equivalence-budget',type=positive_seconds,default=15.0)
+    # Legacy scripts still select the precheck explicitly; keep the streamlined
+    # help while accepting the established options.
+    auto.add_argument('--no-equivalence-precheck',action='store_true',help=argparse.SUPPRESS)
+    auto.add_argument('--equivalence-timeout',type=positive_seconds,default=5.0,help=argparse.SUPPRESS)
+    auto.add_argument('--equivalence-budget',type=positive_seconds,default=15.0,help=argparse.SUPPRESS)
     for command in (execute,auto,seq_base,seq_reuse,verify):
         command.add_argument('--out',required=True,help='新的运行目录')
         command.add_argument('--yosys',default='yosys')

@@ -20,7 +20,7 @@ test: all
 test-native: test
 
 incremental-demo: all
-	$(PYTHON) -m experiments demo --out "$(INCREMENTAL_OUT)"
+	$(PYTHON) -m incremental demo --out "$(INCREMENTAL_OUT)"
 
 clean:
 	rm -rf build

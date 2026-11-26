@@ -41,7 +41,7 @@ def network_blif(net):
 
 
 def capture(directory, region, manifest, out, progress=None, *, include_rewrites=False,
-            mapping_cec_timeout=60,mapping_cec_attempts=8):
+            mapping_cec_timeout=60,mapping_cec_attempts=8, decoded=None, confirmed=None):
     """Derive witnesses from the authenticated raw capture, never a cache flag."""
     directory, out = Path(directory), Path(out)
     out.mkdir(parents=True, exist_ok=False)
@@ -52,7 +52,8 @@ def capture(directory, region, manifest, out, progress=None, *, include_rewrites
         artifacts[key] = path
     if progress:
         progress('read_captured_checkpoints')
-    rows, nets, cuts, summary = read_evidence(artifacts['input.blif.flow.jsonl'], artifacts['script'].read_text())
+    rows, nets, cuts, summary = (decoded if decoded is not None else
+        read_evidence(artifacts['input.blif.flow.jsonl'], artifacts['script'].read_text()))
     stages = []; previous = None
     for seq, net in nets.items():
         if net.record['kind'] != 'network':
@@ -86,8 +87,14 @@ def capture(directory, region, manifest, out, progress=None, *, include_rewrites
         with gzip.open(path,'wt') as stream:json.dump(document,stream,separators=(',',':'),allow_nan=False)
         rewrites={'artifact':path.name,'sha256':digest(path),'rule':document['rule'],
                   'statistics':document['statistics']}
+    replayed=None
+    if confirmed:
+        from .evidence_relations import equations
+        pairs=equations(confirmed['proofs'],confirmed['imports'],nets)
+        path=out/'verified-replay-equations.json';write_json(path,pairs)
+        replayed={'artifact':path.name,'sha256':digest(path),'count':len(pairs)}
     write_json(out / 'checkpoints.json', {'artifacts': {k: digest(v) for k, v in artifacts.items()},
-                                        'stages': stages,'lemmas':lemmas,'copies':copies,'mappings':mappings,'rewrites':rewrites})
+        'stages': stages,'lemmas':lemmas,'copies':copies,'mappings':mappings,'rewrites':rewrites,'replayed':replayed})
     del rows, nets, cuts
     gc.collect()
     return stages

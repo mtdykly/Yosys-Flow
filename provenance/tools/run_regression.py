@@ -84,10 +84,10 @@ def main():
               'acceptance_layers': {
                   'record_consistency': ['test_native', 'test_synth', 'test_cli', 'test_hierarchy',
                                          'test_persistent_index', 'test_sqlite_index', 'test_gzip_index',
-                                         'test_native_storage', 'test_abc_delta'],
+                                         'test_native_storage', 'test_abc_delta', 'test_optimization'],
                   'source_selection': ['test_process', 'test_selection', 'test_abc_internal', 'test_abc_factoring',
                                        'test_boolean', 'test_abc_scale', 'test_abc_local', 'test_abc_partition',
-                                       'test_abc_rewrites', 'test_abc_copy', 'test_abc_mapping', 'test_partition_archive', 'test_diagnostics', 'test_contracts'],
+                                       'test_abc_rewrites', 'test_abc_copy', 'test_abc_mapping', 'test_partition_archive', 'test_partition_targets', 'test_proof_store', 'test_proof_resume', 'test_boundary_scan', 'test_boundary_forms', 'test_fraig_evidence', 'test_rewrite_recovery', 'test_proof_pipeline', 'test_online_evidence', 'test_diagnostics', 'test_contracts', 'test_optimization'],
                   'region_contracts': ['test_contracts', 'test_plans', 'test_hierarchy'],
                   'hierarchical_instances': ['test_hierarchy'],
                   'local_replacement_experiment': ['incremental.tests.test_replacement'],

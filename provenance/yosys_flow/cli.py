@@ -14,6 +14,19 @@ def parser():
     cli = argparse.ArgumentParser(description="组合 RTL 的 Yosys 默认 synth 来源追踪与子网表导出")
     # 添加子命令
     commands = cli.add_subparsers(dest="command", required=True)
+    evidence = commands.add_parser('prepare-evidence', help='仅根据旧建档准备可复用函数证明库，不指定修改位置')
+    evidence.add_argument('directory')
+    evidence.add_argument('--out', help='新目录，默认 <directory>.proofs')
+    evidence.add_argument('--cec-timeout', type=float, default=60)
+    evidence.add_argument('--structural-only', action='store_true', help='仅持久化结构恒等关系，不运行检查点证明')
+    evidence.add_argument('--refine-outputs', action='store_true', help='离线尝试细化所有旧输出的缺失边界，可能耗时较长')
+    evidence.add_argument('--resume',action='store_true',help='从同一 --out 的已认证检查点继续；不接受旧版未签名临时材料')
+    evidence.add_argument('--enhance-budget',type=float,default=3600,help='本次增强计算墙钟预算；默认 3600 秒，0 不限；基础准备另计')
+    evidence.add_argument('--batch-outputs',type=int,default=8,help='每批旧输出数量，完成后提交证据，默认 8')
+    evidence.add_argument('--cache-engines',type=int,default=1,help='内存保留的桥接计算状态数量，默认 1，其余使用已认证磁盘状态')
+    evidence.add_argument('--no-boundary-scan',action='store_true',help='跳过通用相邻检查点局部函数扫描（默认启用）')
+    evidence.add_argument('--boundary-budget',type=float,default=600,help='通用边界扫描预算秒，默认 600，0 不限；预算停止仍保存已证明关系')
+    evidence.add_argument('--source-timeout',type=float,default=600,help='离线准备旧 RTL 组合表示的工具上限，默认 600 秒')
     # 定义 run 命令及其基本参数
     execute = commands.add_parser("run", help="仅组合 RTL：默认 synth、来源记录、原版对照和等价检查")
     execute.add_argument("--source", action="append", required=True, help="RTL 源文件，可重复")
@@ -38,6 +51,15 @@ def parser():
     resume.add_argument("--index-backend", choices=("sqlite", "gzip"), help="默认沿用原索引后端")
     resume.add_argument("--skip-stock-equivalence", action="store_true",
                         help="显式跳过原版与插桩网表的 equiv_simple；保留结构一致性、ABC 证据和索引校验，并记录未执行项")
+    rebuild=commands.add_parser('reindex',help='复用已完成的旧归档，重放并重建索引；不调用新旧综合')
+    rebuild.add_argument('directory',help='已完成的原始归档，不接受按目标细化的派生归档')
+    rebuild.add_argument('--out',required=True,help='新归档目录，原目录保持不变')
+    rebuild.add_argument('--index-backend',choices=('sqlite','gzip'))
+    for command in (execute,resume,rebuild):
+        command.add_argument('--prepare-evidence',action='store_true',help='复用本轮重放和已验证设计，建索引后发布基础函数证据')
+        command.add_argument('--evidence-out',help='独立的新证据目录，默认 <out>.proofs；须配合 --prepare-evidence')
+        command.add_argument('--evidence-cec-timeout',type=float,default=60)
+        command.add_argument('--source-timeout',type=float,default=600)
     validate = commands.add_parser("validate", help="重新检查哈希、事件引用、结构重放及网表")
     validate.add_argument("directory")
     verify_contract = commands.add_parser('contract-validate', help='对照同一次来源记录重新验证契约、全部输出和义务')
@@ -77,9 +99,15 @@ def main(argv=None):
     try:
         if args.command == "run":
             result = run(args)
+        elif args.command == 'prepare-evidence':
+            from .prepare_evidence import prepare
+            result = prepare(args)
         elif args.command == "resume":
             from .capture import resume
             result = resume(args)
+        elif args.command == 'reindex':
+            from .reindex import reindex
+            result=reindex(args)
         elif args.command == "query":
             result = query(args)
         elif args.command == "extract":

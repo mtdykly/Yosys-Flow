@@ -4,6 +4,8 @@
 
 本页只描述当前实现和操作约束。历史后端微基准见[同数据对比](../../experiments/docs/index-backends.md)，完整增量实验见[后端实测](../../experiments/docs/backend-results.md)，最新大案例结果见 [hyp](../../experiments/docs/hyp.md)。历史回归次数不代表当前测试总数；运行 `make test` 可生成新的完整报告。
 
+旧设计已证函数关系另有[持久证据库](proof-evidence.md)：`functions.sqlite3` 保存可组合的对应与极性，区域缓存保存经过全部输出验证的区域。`prepare-evidence` 先发布基础关系，默认补入已采用的 FRAIG 事实、对旧日志未知改写做有预算补证，并扫描通用检查点边界，再可选按输出分批增强，可用 `--resume` 从认证的状态继续；新发布库在 `generations/` 中保持不可变，区域缓存按函数库摘要隔离。`run/resume --prepare-evidence` 复用本轮 ABC 解析结果及已验证视图，建索引后发布基础库；完整旧归档可用 `reindex --prepare-evidence` 在新目录重新验证和建索引，无需旧插桩二进制或重新执行完整综合。统一类型描述在 `relations/`，可按需查询的旧源组合表示在 `source/`。这些库补充来源索引，不替代原始记录；恢复状态、旧发布版本和旧源表示均增加离线体积。在线必要证明与生成后的独立验证分别计时，具体命令见 [hyp 实验](../../experiments/docs/hyp.md)。
+
 ## 后端选择
 
 ```bash
@@ -45,6 +47,18 @@ python3 -m yosys_flow query runs/storage-gzip --source provenance/examples/comb.
 * ABC 日志 `command_end.cpu_seconds_inclusive`：各条 ABC 命令及其钩子的进程 CPU 时间。它与原生 pass 的墙钟时间口径不同，不能混作不重叠的分段总和。
 
 建议同时给 Yosys 加 `-t`，保留人能直接阅读的日志阶段时间戳，并继续用 `/usr/bin/time -v` 测完整捕获墙钟和 RSS。该计时选项只添加诊断字段，不改变来源或证明结果。
+
+### 改写准备成本（2026-11-21）
+
+`wreduce` 的逐对象入口使用 `DeferredRewrite`，仅保存 cell、规则和映射的引用。固定版本源码中的端口修改、参数修改、连接和删除表达式在执行前调用 `rewrite_touch()`；第一次调用才建立旧状态和前提，后续调用复用同一次记录。辅助函数、早退删除和递归裁位都在该作用域内。没有改写的对象不创建 `RewriteScope`，也不查询常量前提。插桩生成检查各类修改表达式的出现次数，升级源码时不静默遗漏钩子。
+
+嵌套的 `opt_expr` 改写只有在外层对象身份及实际 RTLIL 状态仍匹配时才复用观察结果，不能仅靠记录器版本号跳过检查。来源集合的保存/恢复共享不可变集合，cell 作用域输入/输出上下文使用移动并在退出时恢复。完整检查点、未知 pass 的扫描和最终核对保持启用。
+
+常量前提按需查询，缓存的是有向连接证据的终点和连接 ID，不是假定某个同名信号恒为某常量。使用时再次与当前 SigMap 的终点比较；连接变更、重映射、wire 删除、pass 切换使缓存失效。每模块最多 4096 项，满时清空；使用指针身份和位偏移而非可改名的 wire 哈希，保留环检测。取反前提仍保存不可变的 cell 版本，以便原门删除后使用。审计模式恢复提前准备，并禁用常量路径缓存命中，供语义对照。
+
+细计时启用时，`run_end.capture_work` 按 `pass/调用位置` 汇总观察/未变命中、延迟访问、实际重写准备、空重写、事件写出、常量查询和缓存命中；`capture_profile.timings.premise_query` 记录常量前提查询的包含时间。计数不逐门写日志；观察计数器按当前 pass 缓存位置，避免每次构造统计键。诊断计数仍有开销，前后性能测量必须使用相同开关。
+
+单独 hyp 捕获用 `bash experiments/tools/capture_hyp.sh`。该入口直接运行 native Yosys，不启动后台重放、普通对照综合或索引构建，适用于与 1017.800 s 的历史单独捕获比较。当前修补版优化前工具另保存在忽略的 `build/capture-before-lazy/install/`；用 `HYP_NATIVE` 指定可进行同条件对照。它不是产生历史 1017.800 s 的更早二进制。hyp 的本次加速幅度须以用户重跑结果为准。
 
 ## 共享反向索引与分批维护
 

@@ -5,8 +5,10 @@ oracle. Canonical comparison only removes source metadata and alpha-renames
 generated identifiers; every delivered result still requires whole-output SAT.
 """
 from dataclasses import dataclass
+from itertools import chain
 import json
 import re
+import time
 from urllib.parse import quote
 
 from yosys_flow.common import require, unescape
@@ -15,6 +17,7 @@ from .rtlil_diff import Work, compare_objects, opcodes, row_key
 
 TOKEN = re.compile(r'"(?:\\.|[^"\\])*"|[^\s]+')
 IGNORED = {'\\src','\\hdlname','\\top','\\module_not_derived','\\cells_not_processed','\\dynports'}
+IGNORED_PREFIXES = tuple('attribute '+name+' ' for name in sorted(IGNORED))
 
 
 def tokens(line): return TOKEN.findall(line)
@@ -36,8 +39,12 @@ class Module:
     def ports(self):
         result={}
         for line in self.lines:
+            if not line.startswith('  wire '): continue
+            # Necessary substring filter only; token membership below remains
+            # authoritative, including identifiers containing "input".
+            if not any(word in line for word in ('input','output','inout')): continue
             ts=tokens(line)
-            if not line.startswith('  wire ') or not {'input','output','inout'}&set(ts): continue
+            if not {'input','output','inout'}&set(ts): continue
             def value(key,default): return int(ts[ts.index(key)+1]) if key in ts else default
             direction=next(k for k in ('input','output','inout') if k in ts)
             result[unescape(ts[-1])]={'direction':direction,'width':value('width',1),
@@ -60,11 +67,16 @@ class Module:
         """
         generated={}
         for line in self.lines:
+            if not line.lstrip().startswith(('wire','cell','process')): continue
             ts=tokens(line)
             if ts and ts[0] in {'wire','cell','process'} and ts[-1].startswith('$'):
                 generated.setdefault(ts[-1], '@generated_'+str(len(generated)))
         result=[]; starts=[0]; pending=None
-        for line in [*self.attributes,*self.lines]:
+        for line in chain(self.attributes,self.lines):
+            # The pinned writer emits these exact prefixes. Other whitespace
+            # still takes the token-based check below. Retained attributes and
+            # similarly named attributes must never be dropped.
+            if line.lstrip().startswith(IGNORED_PREFIXES): continue
             ts=tokens(line)
             if not ts or ts[0].startswith('#'): continue
             if ts[0]=='attribute' and ts[1] in IGNORED: continue
@@ -129,20 +141,31 @@ def compare(old, new, top):
     definitions at that instance. Port bindings and instance additions/removals
     ARE part of the parent comparison and select that whole parent.
     """
+    started=time.perf_counter()
     oc,nc=catalog(old,top),catalog(new,top)
     require(old[top].ports()==new[top].ports(),'automatic mode requires an unchanged top interface')
     changes=[];unchanged=[];comparisons=[]
+    timings={'hierarchy_and_ports_seconds':time.perf_counter()-started,
+             'canonicalization_seconds':0.0, 'object_difference_seconds':0.0,
+             'report_fingerprints_seconds':0.0}
     def walk(path):
         a,b=old[oc[path]],new[nc[path]]
+        step=time.perf_counter()
         (ac,ab),(bc,bb)=a.canonical_objects(old),b.canonical_objects(new)
+        timings['canonicalization_seconds']+=time.perf_counter()-step
         if ac!=bc:
+            step=time.perf_counter()
             edits,stats=compare_objects(ac,bc,ab,bb)
+            timings['object_difference_seconds']+=time.perf_counter()-step
             comparisons.append({'instance':path,**stats})
             if edits:
                 delta=[{'operation':tag,'old':ac[i:j],'new':bc[k:l]} for tag,i,j,k,l in edits]
+                step=time.perf_counter()
+                old_hash,new_hash=fingerprint(ac),fingerprint(bc)
+                timings['report_fingerprints_seconds']+=time.perf_counter()-step
                 changes.append({'instance':path,'old_module':a.name,'new_module':b.name,
-                    'old_src':a.source,'new_src':b.source,'old_fingerprint':fingerprint(ac),
-                    'new_fingerprint':fingerprint(bc),'ir_changes':delta,'diff_statistics':stats})
+                    'old_src':a.source,'new_src':b.source,'old_fingerprint':old_hash,
+                    'new_fingerprint':new_hash,'ir_changes':delta,'diff_statistics':stats})
                 return
         unchanged.append(path)
         for child in sorted(a.children(old)):
@@ -150,9 +173,11 @@ def compare(old, new, top):
             require(target in nc,'unchanged parent has different child instance')
             walk(target)
     walk(quote(top,safe=''))
+    timings['total_seconds']=time.perf_counter()-started
     return {'rule':'instance_path_and_structured_pre_proc_rtlil_v2',
             'scope':'smallest_changed_module_instances_not_minimal_statement_slices',
-            'changes':changes,'unchanged_local_bodies':unchanged,'diff_statistics':comparisons},oc,nc
+            'changes':changes,'unchanged_local_bodies':unchanged,'diff_statistics':comparisons,
+            'timings_seconds':timings},oc,nc
 
 
 def source_selector(module, instance):

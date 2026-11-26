@@ -28,12 +28,12 @@ _SEMANTIC_FILES = ("native.py", "capture.py", "native_storage.py", "jsonl_record
                    "abc_provenance.py", "abc_internal.py", "abc_snapshots.py", "abc_joint.py", "abc_local.py", "structural.py", "traversal.py",
                    "abc_partition.py", "abc_checkpoints.py", "abc_lemmas.py", "abc_rewrites.py", "abc_copy.py", "abc_mapping.py", "partition_archive.py", "partition_store.py", "source_endpoints.py", "source_regions.py",
                    "abc_lineage.py", "boolean.py", "index_store.py", "sqlite_index.py", "gzip_index.py",
-                   "graph_index.py", "source_index.py", "origin_sets.py", "diagnostics.py")
+                   "graph_index.py", "source_index.py", "origin_sets.py", "diagnostics.py", "optimization.py")
 _FIELDS = {
     "records", "sources", "objects", "assignments", "events", "edges", "regions",
     "removals", "process_nodes", "process_actions", "process_discards",
     "process_connection_proofs", "abc_imports", "techmap_bits", "hierarchy",
-    "flatten_events", "gaps", "final", "abc_associations", "abc_fallbacks",
+    "flatten_events", "gaps", "object_gaps", "final", "abc_associations", "abc_fallbacks",
     "abc_internal", "design", "instance_catalog", "view_rule", "lookup_index",
 }
 

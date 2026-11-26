@@ -201,6 +201,8 @@ def resume(args):
         out=str(out), native_yosys=native, yosys=args.yosys or manifest['tool']['stock_executable'],
         source=config['sources'], include=config['include_dirs'], define=config['defines'],
         param=config['parameters'], top=config['top'], flatten=config.get('flatten',False),
-        skip_stock_equivalence=getattr(args,'skip_stock_equivalence',False))
+        skip_stock_equivalence=getattr(args,'skip_stock_equivalence',False),
+        prepare_evidence=getattr(args,'prepare_evidence',False),evidence_out=getattr(args,'evidence_out',None),
+        evidence_cec_timeout=getattr(args,'evidence_cec_timeout',60),source_timeout=getattr(args,'source_timeout',600))
     from .native import run_native
     return run_native(options, resume_capture=(directory, manifest))

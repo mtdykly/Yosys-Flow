@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import time
+from contextlib import contextmanager
 from urllib.parse import quote
 
 from .common import PIN, TraceError, digest, require, require_combinational, token
@@ -25,8 +27,14 @@ class MissingInputs(TraceError):
 
 
 def command(binary, directory, script):
-    result = subprocess.run([binary, '-Q', '-T', '-p', script], cwd=directory,
-                            capture_output=True, text=True, timeout=60)
+    from .online_evidence import current
+    policy=current();timeout=min(60,policy.remaining()) if policy else 60
+    try:
+        result = subprocess.run([binary, '-Q', '-T', '-p', script], cwd=directory,
+                                capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if policy:policy.block('old_region_tool_timeout',timeout_seconds=timeout)
+        raise
     require(result.returncode == 0, 'source cut tool error: '+result.stderr[-1200:])
     return result.stdout
 
@@ -81,6 +89,11 @@ def flatten(modules, top):
 
 def archived(context, directory, binary):
     if hasattr(context,'_source_coarse'):return context._source_coarse
+    store=getattr(context,'proof_evidence',None)
+    if store is not None and getattr(store,'source',None) is not None:
+        store.source.metrics['lowering_reused']+=1
+        context._source_coarse=store.source
+        return store.source
     path=context.directory/'frontend.il'
     require(digest(path)==context.baseline['artifacts']['frontend.il']['sha256'],
             'archived source frontend changed')
@@ -92,13 +105,19 @@ def archived(context, directory, binary):
 
 
 def make_cut(context, document, source):
-    cells,aliases,primary=source
-    resolver=Endpoints(context);by_final=defaultdict(set);anchors=defaultdict(list)
-    for (path,wire,offset),value in sorted(aliases.items()):
-        for final,inverted in resolver.signals(path,wire,offset):
-            if isinstance(final,int):
-                by_final[final].add((value,inverted))
-                anchors[final].append({'instance':path,'wire':wire,'offset':offset,'source_bit':value,'inverted':inverted})
+    from .source_cache import StoredSource
+    indexed=isinstance(source,StoredSource)
+    if indexed:
+        cells,primary=source.cells,source.primary
+        by_final,anchors=source.boundary(context,[r['original_bit'] for r in document['boundary']])
+    else:
+        cells,aliases,primary=source
+        resolver=Endpoints(context);by_final=defaultdict(set);anchors=defaultdict(list)
+        for (path,wire,offset),value in sorted(aliases.items()):
+            for final,inverted in resolver.signals(path,wire,offset):
+                if isinstance(final,int):
+                    by_final[final].add((value,inverted))
+                    anchors[final].append({'instance':path,'wire':wire,'offset':offset,'source_bit':value,'inverted':inverted})
     inputs=[b for b in document['boundary'] if b['direction']=='input']
     outputs=[b for b in document['boundary'] if b['direction']=='output']
     require(inputs and outputs,'source cut requires inputs and outputs')
@@ -106,7 +125,7 @@ def make_cut(context, document, source):
     ports={};cuts={};next_bit=2;mapping={};actual_mapping={};reference_outputs={};evidence=[];inverters={}
     manager=LogicDAG()
     primaries=sorted(b for b in primary if isinstance(b,int))
-    full=Circuit(cells,dict(zip(primaries,manager.variables(len(primaries)))),manager)
+    full=source.circuit(manager) if indexed else Circuit(cells,dict(zip(primaries,manager.variables(len(primaries)))),manager)
     def allocate():
         nonlocal next_bit
         value=next_bit;next_bit+=1;return value
@@ -134,13 +153,14 @@ def make_cut(context, document, source):
             name=row['port']+'__anchor_'+str(i)
             reference_outputs[name]=old
         evidence.append({'port':row['port'],'direction':'output','final_bit':final,'anchors':anchors[final]})
-    drivers={}
-    for name,cell in cells.items():
-        for port,bs in cell['connections'].items():
-            if cell['port_directions'][port]!='output':continue
-            for bit in bs:
-                if isinstance(bit,int):
-                    require(bit not in drivers,'source has multiple drivers');drivers[bit]=name
+    drivers=source.drivers if indexed else {}
+    if not indexed:
+        for name,cell in cells.items():
+            for port,bs in cell['connections'].items():
+                if cell['port_directions'][port]!='output':continue
+                for bit in bs:
+                    if isinstance(bit,int):
+                        require(bit not in drivers,'source has multiple drivers');drivers[bit]=name
     selected=set();active=set();seen=set()
     stack=[(bit,False) for bit in reversed(list(reference_outputs.values()))]
     while stack:
@@ -160,6 +180,8 @@ def make_cut(context, document, source):
             continue
         require(bit in drivers,'source cut has an undriven signal')
         active.add(bit);name=drivers[bit];selected.add(name)
+        from .online_evidence import current
+        if current():current().check_nodes(len(selected),'source_cut_cells')
         dependencies=[b for p,bs in cells[name]['connections'].items()
                       if cells[name]['port_directions'][p]=='input' for b in bs]
         stack.append((bit,True))
@@ -218,8 +240,10 @@ def prove_design(binary, directory, design):
     module['ports']['undefined']={'direction':'output','bits':[flag]}
     module['netnames']['undefined']={'hide_name':0,'bits':[flag],'attributes':{}}
     (directory/'checked.json').write_text(json.dumps(miter))
+    from .online_evidence import current
+    seconds=max(1,min(50,int(current().remaining()))) if current() else 50
     log=command(binary,directory,'read_json checked.json; hierarchy -top miter; check -assert; '
-        'sat -enable_undef -timeout 50 -set-def-inputs -prove trigger 0 -prove undefined 0')
+        f'sat -enable_undef -timeout {seconds} -set-def-inputs -prove trigger 0 -prove undefined 0')
     require(log.splitlines().count('SAT proof finished - no model found: SUCCESS!')==1,
             'source cut SAT did not prove equality and definedness')
 
@@ -242,15 +266,25 @@ def prove(context, document):
             'command_timeout_seconds':60,'solver_timeout_seconds':50,
             'source_lowering':'proc; opt_expr; techmap; opt_expr; opt_clean',
             'abc_invocations':0}
+    @contextmanager
+    def timing(name):
+        started=time.perf_counter()
+        try:yield
+        finally:
+            values=context.__dict__.setdefault('proof_timings',{})
+            values[name]=values.get(name,0.0)+time.perf_counter()-started
     try:
         version=subprocess.check_output([binary,'-V'],text=True,timeout=10).strip()
         require(PIN in version,'source proof requires pinned Yosys')
         result['tool_sha256']=digest(binary)
         with tempfile.TemporaryDirectory(prefix='source-cut-') as tmp:
             directory=Path(tmp)
-            source=archived(context,directory,binary)
-            design,anchors=make_cut(context,document,source)
-            prove_design(binary,directory,design)
+            with timing('old_source_representation_seconds'):
+                source=archived(context,directory,binary)
+            with timing('old_source_cut_assembly_seconds'):
+                design,anchors=make_cut(context,document,source)
+            with timing('old_source_miter_and_sat_seconds'):
+                prove_design(binary,directory,design)
             result.update(status='verified',all_outputs=True,anchors=anchors,
                           cut_sha256=fingerprint(design),output_count=sum(p['direction']=='output'
                               for p in design['modules']['gold']['ports'].values()))

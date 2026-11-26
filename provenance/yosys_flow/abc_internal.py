@@ -414,7 +414,7 @@ def read_evidence(path, script):
         'complete_rewrite_history': False, 'truth_table_input_limit': TRUTH_TABLE_INPUT_LIMIT}
 
 
-def analyze(path, script, region, imports, input_blif=None, progress=None):
+def analyze(path, script, region, imports, input_blif=None, progress=None, evidence_consumer=None):
     if progress: progress("abc_internal_evidence")
     rows, nets, cuts, report = read_evidence(path, script)
     proof, report = analyze_global(rows, nets, cuts, report, region, imports, input_blif, progress)
@@ -433,6 +433,8 @@ def analyze(path, script, region, imports, input_blif=None, progress=None):
         report['unproved_import_nodes'] = sorted(set(imports)-set(proof))
         report['unproved_import_reasons'] = {n:local['unproved_reasons'].get(n,
             report['unproved_import_reasons'].get(n,[{'reason':'no_local_proof'}])) for n in report['unproved_import_nodes']}
+    if evidence_consumer is not None:
+        evidence_consumer((rows, nets, cuts, report),{'proofs':proof,'imports':imports})
     return proof, report
 
 

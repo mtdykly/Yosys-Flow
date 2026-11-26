@@ -17,6 +17,7 @@ import uuid
 
 from yosys_flow.common import PIN, digest, require, require_combinational, token, unescape, write_json
 from yosys_flow.contracts import ContractContext
+from yosys_flow.online_evidence import Budget, EvidenceBlocked
 from yosys_flow.traversal import evaluate_stack
 from . import rtlil, replace, equivalence
 from .failures import classify
@@ -340,7 +341,8 @@ def _run(args):
         'selection_mode':selection_mode,'minimal_region_claimed':False,
         'resource_policy':{'yosys_call_timeout_seconds':float(getattr(args,'yosys_timeout',120.0)),
                            'whole_equivalence_timeout_seconds':float(getattr(args,'whole_equivalence_timeout',1200.0)),
-                           'separate_source_proof_and_precheck_budgets_unchanged':True},
+                           'old_region_proof_budget_seconds':float(getattr(args,'region_proof_budget',60)),
+                           'old_region_node_limit':getattr(args,'region_node_limit',4096)},
         'new_full_synthesis_used_only_as_validation_oracle':True,'timings':{},'attempts':[],
         'timing_scope':{
             'baseline_replay_seconds':'legacy field name: archive hash checks, verified-index restore or raw replay, and archived frontend parsing; see baseline_load for the actual path',
@@ -358,10 +360,12 @@ def _run(args):
             'selection_strategy':report.get('selection_strategy'),
             **({'detail':detail,**details} if detail else {})})
     checkpoint()
+    context=None
     try:
         require(selection_mode in {'fine','module'},'selection_mode must be fine or module')
-        context=ContractContext(args.base_run,compact=True);top=context.baseline['module']
+        context=ContractContext(args.base_run,compact=True,proof_evidence=getattr(args,'proof_evidence',None));top=context.baseline['module']
         context.progress = checkpoint
+        context.evidence_budget=Budget(getattr(args,'region_proof_budget',60),getattr(args,'region_node_limit',4096))
         report['baseline_load']=context.load_timings
         require('frontend.il' in context.manifest['artifacts'],'automatic mode requires archived pre-proc frontend.il')
         old=rtlil.parse((context.directory/'frontend.il').read_text())
@@ -462,12 +466,41 @@ def _run(args):
             report['timings']['incremental_candidate_ready_seconds']=report['timings']['automatic_preparation_seconds']+result['timings']['replacement_ready_seconds']
             for suffix in ('json','il','v'):shutil.copyfile(out/'replacement'/('incremental.'+suffix),out/('incremental.'+suffix))
         report['artifacts']={str(p.relative_to(out)):digest(p) for p in sorted(out.rglob('*')) if p.is_file() and p.name!='report.json'}
+    except EvidenceBlocked as exc:
+        report.update(status='blocked',failure={'stage':stage,'code':exc.code,'detail':exc.detail},published_incremental_netlist=False)
     except PlanningBlocked as exc:
         report.update(status='blocked',failure={'stage':stage,'code':exc.code,'detail':exc.detail},published_incremental_netlist=False)
     except Exception as exc:
         report.update(status='failed',failure=classify(stage,exc),published_incremental_netlist=False)
         (out/'failure-traceback.txt').write_text(traceback.format_exc())
         report['failure']['traceback']='failure-traceback.txt'
+    if context is not None:
+        if hasattr(context,'evidence_budget'):
+            report['old_region_budget']={'used_seconds':context.evidence_budget.used,
+                'stages':context.evidence_budget.stages,'limit_seconds':context.evidence_budget.seconds,
+                'node_limit':context.evidence_budget.node_limit}
+        proof_timings=dict(context.proof_timings)
+        store=getattr(context,'proof_evidence',None)
+        if store:
+            report['proof_evidence']={'directory':str(store.directory), 'metrics':dict(store.metrics),
+                'preparation_scope':store.document['preparation_scope'],
+                'library_sha256':store.document['sha256'], 'complete_causal_history':False}
+            report['proof_evidence']['timing_scope']={
+                'phase_seconds':'disjoint phases inside region_preparation_seconds; includes required proof and certificate publication',
+                'source_representation':'authenticated offline lowering; cells/drivers/aliases read on demand, not a proof verdict'}
+            proof_timings['boundary_function_proof_seconds']=store.metrics['boundary_function_proof_seconds']
+        report['proof_timings']=proof_timings
+        required=sum(proof_timings.get(k,0.0) for k in ('old_source_cut_proof_seconds','boundary_function_proof_seconds'))
+        report['timings']['required_old_region_proof_seconds']=required
+        report['timing_scope']['required_old_region_proof_seconds']=(
+            'subset of online selection/generation, not an additional stage; includes old source cut preparation and solving; '
+            'required on evidence misses, never subtract it from reported online time')
+        report['timing_scope']['proof_timings']=(
+            'old source certificate lookup is authenticated reuse; boundary/source proofs are required region evidence; '
+            'old_source_representation_seconds, old_source_cut_assembly_seconds and old_source_miter_and_sat_seconds '
+            'are contained in old_source_cut_proof_seconds, not additional costs; '
+            'post_generation_validation_seconds remains the separate correctness audit; equivalence precheck is separately reported')
     report['timings']['total_seconds']=time.perf_counter()-started
     write_json(out/'report.json',report)
+    if context is not None and getattr(context,'proof_evidence',None): context.proof_evidence.close()
     return report

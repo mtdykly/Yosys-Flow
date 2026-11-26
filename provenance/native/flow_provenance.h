@@ -3,6 +3,7 @@
 #include "kernel/rtlil.h"
 #include "kernel/sigtools.h"
 #include <set>
+#include <memory>
 
 YOSYS_NAMESPACE_BEGIN
 namespace FlowProvenance {
@@ -18,7 +19,7 @@ int source(const std::string &module, const std::string &file, int line, int col
            int end_line, int end_column, const std::string &kind);
 void gap(const std::string &reason);
 struct Scope {
-    Origins previous;
+    std::shared_ptr<const Origins> previous;
     std::string previous_precision;
     Scope(const Origins &ids, const std::string &precision = "cell", bool inherit = true);
     ~Scope();
@@ -36,9 +37,31 @@ struct CellScope {
     std::string previous_operation;
     pool<RTLIL::SigBit> previous_outputs;
     CellScope(RTLIL::Cell *cell, const std::string &operation);
-    CellScope(const std::vector<RTLIL::Cell*> &cells, const std::string &operation);
+    CellScope(const std::vector<RTLIL::Cell*> &cells, const std::string &operation, bool reuse_observed = false);
     ~CellScope();
 };
+// A semantic rewrite at an actual decision site. Only changed/created objects
+// are rebound; unchanged premise cells keep their independent identities.
+struct RewriteScope {
+    struct Impl;
+    std::unique_ptr<Impl> impl;
+    RewriteScope(const std::vector<RTLIL::Cell*> &inputs, const std::string &rule,
+                 const std::vector<std::string> &premises = {});
+    ~RewriteScope();
+};
+std::vector<std::string> constant_premises(RTLIL::Cell *cell, const SigMap &map);
+std::string rewrite_input(RTLIL::Cell *cell);
+// No allocation or object observation until a known mutation site is reached.
+struct DeferredRewrite {
+    RTLIL::Cell *cell;
+    const char *rule;
+    const SigMap *map;
+    DeferredRewrite *previous;
+    std::unique_ptr<RewriteScope> scope;
+    DeferredRewrite(RTLIL::Cell *cell, const char *rule, const SigMap *map = nullptr);
+    ~DeferredRewrite();
+};
+void rewrite_touch(RTLIL::Cell *cell = nullptr);
 struct Region {
     dict<RTLIL::SigBit, std::string> node_cells;
     std::string id;

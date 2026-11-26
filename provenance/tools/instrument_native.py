@@ -22,14 +22,14 @@ def instrument(root):
             raise ValueError(f"Native instrumentation anchor changed: {name}: {old!r}")
         path.write_text(text.replace(old, new))
 
-    for name in ("flow_provenance.h", "flow_provenance.cc", "process_provenance.inc", "hierarchy_provenance.inc"):
+    for name in ("flow_provenance.h", "flow_provenance.cc", "process_provenance.inc", "hierarchy_provenance.inc", "optimization_provenance.inc"):
         shutil.copyfile(ROOT / "native" / name, root / "kernel" / name)
     shutil.copyfile(ROOT / "native/ast_sources.inc", root / "frontends/ast/flow_sources.inc")
     edit("kernel/CMakeLists.txt", "\tbinding.cc", "\tflow_provenance.cc\n\tflow_provenance.h\n\tbinding.cc")
     for file in ("kernel/rtlil.cc", "kernel/register.cc", "frontends/ast/ast.cc",
                  "frontends/ast/genrtlil.cc", "passes/proc/proc_mux.cc",
                  "passes/proc/proc_dff.cc", "passes/proc/proc_dlatch.cc", "passes/opt/opt_merge.cc",
-                 "passes/opt/opt_expr.cc", "passes/opt/opt_muxtree.cc", "passes/opt/opt_reduce.cc", "passes/opt/opt_clean/wires.cc",
+                 "passes/opt/opt_expr.cc", "passes/opt/opt_share.cc", "passes/opt/wreduce.cc", "passes/opt/opt_muxtree.cc", "passes/opt/opt_reduce.cc", "passes/opt/opt_clean/wires.cc",
                  "passes/techmap/techmap.cc", "passes/techmap/alumacc.cc", "passes/techmap/abc.cc", "passes/hierarchy/hierarchy.cc", "passes/hierarchy/flatten.cc", "passes/proc/proc_prune.cc", "passes/proc/proc_clean.cc", "passes/proc/proc_rmdead.cc"):
         path = root / file
         originals.setdefault(file, path.read_text())
@@ -190,6 +190,84 @@ def instrument(root):
          "\tFlowProvenance::remap_connections(module, actx.assign_map);")
     edit("passes/opt/opt_expr.cc", "\tfor (auto cell : cells.sorted)\n\t{",
          "\tfor (auto cell : cells.sorted)\n\t{\n\t\tFlowProvenance::CellScope flow_scope(cell, \"opt_expr\");")
+    # Preserve the actual inversion witness, including its immutable version if
+    # another rewrite retires it before this consumer is processed.
+    f = "passes/opt/opt_expr.cc"
+    edit(f, "\tdict<RTLIL::SigSpec, RTLIL::SigSpec> invert_map;",
+         "\tdict<RTLIL::SigSpec, RTLIL::SigSpec> invert_map;\n\tdict<RTLIL::SigSpec, std::string> flow_inverters;")
+    for port in ("A", "S"):
+        old = f"\t\t\t\tinvert_map[assign_map(cell->getPort(ID::Y))] = assign_map(cell->getPort(ID::{port}));"
+        edit(f, old, "\t\t\t{\n" + old + "\n\t\t\t\tflow_inverters[assign_map(cell->getPort(ID::Y))] = FlowProvenance::rewrite_input(cell);\n\t\t\t}")
+    edit(f, '\t\t\treplace_cell(assign_map, module, cell, "double_invert",',
+         '\t\t\tFlowProvenance::RewriteScope flow_rewrite({cell}, "opt_expr_double_invert", {flow_inverters.at(assign_map(cell->getPort(ID::A)))});\n\t\t\treplace_cell(assign_map, module, cell, "double_invert",')
+    edit(f, '\t\t\tlog_debug("Optimizing away select inverter',
+         '\t\t\tFlowProvenance::RewriteScope flow_rewrite({cell}, "opt_expr_mux_invert", {flow_inverters.at(assign_map(cell->getPort(ID::S)))});\n\t\t\tlog_debug("Optimizing away select inverter')
+    edit(f, "\tRTLIL::SigSpec Y = cell->getPort(out_port);",
+         '\tFlowProvenance::RewriteScope flow_rewrite({cell}, "opt_expr_replace", FlowProvenance::constant_premises(cell, assign_map));\n\tRTLIL::SigSpec Y = cell->getPort(out_port);')
+    edit(f, "\t\t\tSigBit non_const_input = State::Sm;",
+         "\t\t\tSigBit non_const_input = State::Sm;\n\t\t\tstd::vector<std::string> flow_complements;")
+    edit(f, "\t\t\t\t\t\tfound_inv = true;",
+         "\t\t\t\t\t{ found_inv = true; flow_complements.push_back(flow_inverters.at(bit)); }")
+    for kind in ("and", "or"):
+        old = f'\t\t\t\treplace_cell(assign_map, module, cell, "const_{kind}",'
+        edit(f, old, '\t\t\t\tauto flow_constants = FlowProvenance::constant_premises(cell, assign_map);\n'
+             '\t\t\t\tflow_constants.insert(flow_constants.end(), flow_complements.begin(), flow_complements.end());\n'
+             '\t\t\t\tFlowProvenance::RewriteScope flow_rewrite({cell}, "opt_expr_const_logic", flow_constants);\n' + old)
+    f = "passes/opt/opt_share.cc"
+    edit(f, "\tstd::vector<ExtSigSpec> muxed_operands;",
+         '\tstd::vector<RTLIL::Cell*> flow_members{mux};\n\tfor (const auto &p : ports) flow_members.push_back(p.op);\n'
+         '\tFlowProvenance::RewriteScope flow_rewrite(flow_members, "opt_share_operators");\n\tstd::vector<ExtSigSpec> muxed_operands;')
+    f = "passes/opt/wreduce.cc"
+    edit(f, "\t\tif (cell->type.in(ID($mux), ID($pmux)))\n\t\t\treturn run_cell_mux(cell);",
+         '\t\tFlowProvenance::DeferredRewrite flow_rewrite(cell, "wreduce_cell", &mi.sigmap);\n'
+         '\t\tif (cell->type.in(ID($mux), ID($pmux)))\n\t\t\treturn run_cell_mux(cell);')
+    edit(f, "\t\t\tfor (auto c : module->selected_cells())\n\t\t\t{",
+         '\t\t\tfor (auto c : module->selected_cells())\n\t\t\t{\n'
+         '\t\t\t\tFlowProvenance::DeferredRewrite flow_rewrite(c, "wreduce_special");')
+    # Activate before mutation, including helpers and early removals. The
+    # comma expression preserves unbraced conditionals in the pinned source.
+    old = 'cell->setPort('
+    path = root / f
+    text = path.read_text()
+    if text.count(old) != 7:
+        raise ValueError("wreduce mutation anchors changed: " + old)
+    path.write_text(text.replace(old, '(FlowProvenance::rewrite_touch(cell), cell)->setPort('))
+    old = 'cell->setParam('
+    path = root / f
+    text = path.read_text()
+    if text.count(old) != 9:
+        raise ValueError("wreduce mutation anchors changed: " + old)
+    path.write_text(text.replace(old, '(FlowProvenance::rewrite_touch(cell), cell)->setParam('))
+    old = 'cell->fixup_parameters('
+    path = root / f
+    text = path.read_text()
+    if text.count(old) != 3:
+        raise ValueError("wreduce mutation anchors changed: " + old)
+    path.write_text(text.replace(old, '(FlowProvenance::rewrite_touch(cell), cell)->fixup_parameters('))
+    old = 'c->setPort('
+    path = root / f
+    text = path.read_text()
+    if text.count(old) != 4:
+        raise ValueError("wreduce mutation anchors changed: " + old)
+    path.write_text(text.replace(old, '(FlowProvenance::rewrite_touch(c), c)->setPort('))
+    old = 'c->setParam('
+    path = root / f
+    text = path.read_text()
+    if text.count(old) != 4:
+        raise ValueError("wreduce mutation anchors changed: " + old)
+    path.write_text(text.replace(old, '(FlowProvenance::rewrite_touch(c), c)->setParam('))
+    old = 'module->connect('
+    path = root / f
+    text = path.read_text()
+    if text.count(old) != 7:
+        raise ValueError("wreduce mutation anchors changed: " + old)
+    path.write_text(text.replace(old, '(FlowProvenance::rewrite_touch(), module)->connect('))
+    old = 'module->remove('
+    path = root / f
+    text = path.read_text()
+    if text.count(old) != 3:
+        raise ValueError("wreduce mutation anchors changed: " + old)
+    path.write_text(text.replace(old, '(FlowProvenance::rewrite_touch(), module)->remove('))
     edit("passes/techmap/techmap.cc", "\t\tfor (auto cell : cells.sorted)\n\t\t{",
          "\t\tfor (auto cell : cells.sorted)\n\t\t{\n\t\t\tFlowProvenance::CellScope flow_scope(cell, \"techmap\");")
     edit("passes/techmap/alumacc.cc", "\t\t\t\t\tbool do_subtract = port.do_subtract;",

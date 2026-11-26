@@ -6,6 +6,7 @@ single renaming. Ambiguous matches and exhausted work budgets become edits.
 """
 from bisect import bisect_left
 from dataclasses import dataclass
+import time
 
 # Exact LCS is restricted to small gaps, with one budget shared by all objects
 # of a module. Large gaps use unique anchors or a conservative replacement.
@@ -13,6 +14,7 @@ MAX_GAP_SIDE = 256
 MAX_GAP_CELLS = 16_384
 MAX_MODULE_CELLS = 262_144
 ALIGNMENT_PASSES = 3
+MAX_POSITIONAL_EDITS = 256
 
 
 @dataclass
@@ -119,6 +121,33 @@ def generated(token):
     return token.startswith('@generated_') and token[11:].isdigit()
 
 
+def _positional_edits(old, new):
+    """Exact identity-map comparison for sparse, name-stable edits.
+
+    Equal rows are compared in full. Every changed row must retain the same
+    sequence of generated references, so one identity mapping covers the whole
+    module. Never infer equality from cell shapes, names, or a digest. Numbering
+    shifts, insertions/deletions and dense edits use the bounded general matcher.
+    """
+    if len(old) != len(new):
+        return None
+    edits = []; changed = 0
+    for i, (a, b) in enumerate(zip(old, new)):
+        if a == b:
+            continue
+        changed += 1
+        if changed > MAX_POSITIONAL_EDITS:
+            return None
+        if [t for t in a if generated(t)] != [t for t in b if generated(t)]:
+            return None
+        if edits and edits[-1][2] == i:
+            tag, start, _, other, _ = edits[-1]
+            edits[-1] = tag, start, i+1, other, i+1
+        else:
+            edits.append(('replace', i, i+1, i, i+1))
+    return edits
+
+
 def _shape(rows, known):
     local = {}
     return tuple(tuple(('matched', known[t]) if t in known else
@@ -223,17 +252,39 @@ def compare_objects(old, new, old_spans, new_spans):
     Snippets retain the input canonical identifiers. Omitted name-only changes
     are covered by a single injective mapping, not independent per-cell names.
     """
+    started = time.perf_counter()
+    edits = _positional_edits(old, new)
+    timings = {'positional_scan_seconds': time.perf_counter()-started}
+    stats = {'method':'structured_bounded_rtlil_v2', 'old_rows':len(old), 'new_rows':len(new),
+             'old_objects':len(old_spans), 'new_objects':len(new_spans),
+             'positional_edit_limit':MAX_POSITIONAL_EDITS, 'timings_seconds':timings,
+             'functional_equivalence_claimed':False}
+    if edits is not None:
+        stats.update(matching_path='exact_identity', aligned_generated_identifiers=0,
+                     alignment_conflicts=0, alignment_passes=0, exact_gap_work_cells=0,
+                     exact_gap_work_limit=MAX_MODULE_CELLS, conservative_gap_fallbacks=0,
+                     name_alignment_scope='module_wide_identity')
+        return edits, stats
+    step = time.perf_counter()
     old_blocks = [old[i:j] for i, j in old_spans]
     new_blocks = [new[i:j] for i, j in new_spans]
+    timings['object_materialization_seconds'] = time.perf_counter()-step
+    step = time.perf_counter()
     mapping, conflicts, passes = _alignment(old_blocks, new_blocks)
+    timings['identifier_alignment_seconds'] = time.perf_counter()-step
+    step = time.perf_counter()
     renamed = [[mapping.get(t, '@unmatched_new_'+t if generated(t) else t) for t in row] for row in new]
     renamed_blocks = [renamed[i:j] for i, j in new_spans]
+    timings['rename_materialization_seconds'] = time.perf_counter()-step
+    step = time.perf_counter()
     work = Work(); edits = []
     def position(spans, i, total):
         return spans[i][0] if i < len(spans) else total
     for tag, i, j, k, l in opcodes(list(map(_block_key, old_blocks)), list(map(_block_key, renamed_blocks)), work):
         if tag == 'equal':
             for a, b in zip(range(i, j), range(k, l)):
+                if old_blocks[a] == renamed_blocks[b]:
+                    continue
                 x, y = old_spans[a][0], new_spans[b][0]
                 for kind, u, v, w, z in opcodes(list(map(row_key, old_blocks[a])), list(map(row_key, renamed_blocks[b])), work):
                     if kind != 'equal':
@@ -245,9 +296,10 @@ def compare_objects(old, new, old_spans, new_spans):
             for kind, u, v, w, z in opcodes(list(map(row_key, old[x:xe])), list(map(row_key, renamed[y:ye])), work):
                 if kind != 'equal':
                     edits.append((kind, x+u, x+v, y+w, y+z))
-    return edits, {'method':'structured_bounded_rtlil_v1', 'old_rows':len(old), 'new_rows':len(new),
-        'old_objects':len(old_spans), 'new_objects':len(new_spans),
-        'aligned_generated_identifiers':len(mapping), 'alignment_conflicts':conflicts,
-        'alignment_passes':passes, 'exact_gap_work_cells':work.cells,
-        'exact_gap_work_limit':MAX_MODULE_CELLS, 'conservative_gap_fallbacks':work.fallbacks,
-        'name_alignment_scope':'module_wide_bijection', 'functional_equivalence_claimed':False}
+    timings['bounded_comparison_seconds'] = time.perf_counter()-step
+    stats.update(matching_path='bounded_alignment',
+        aligned_generated_identifiers=len(mapping), alignment_conflicts=conflicts,
+        alignment_passes=passes, exact_gap_work_cells=work.cells,
+        exact_gap_work_limit=MAX_MODULE_CELLS, conservative_gap_fallbacks=work.fallbacks,
+        name_alignment_scope='module_wide_bijection')
+    return edits, stats

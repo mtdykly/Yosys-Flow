@@ -293,6 +293,24 @@ def _recheck_context_archive(context, directory):
     require(digest(manifest) == expected, 'baseline manifest hash mismatch during context handoff')
 
 
+def _revalidate_baseline(context, contract):
+    """Fresh final audit using the same evidence selection as the initial load.
+
+    Rediscovering <base>.proofs here can switch to a stale, unrelated library
+    after an automatic call explicitly selected another one. False also keeps
+    evidence disabled when the initial context had no library attached.
+    """
+    store = getattr(context, 'proof_evidence', None)
+    checked = ContractContext(context.directory, compact=context.compact,
+                              proof_evidence=store.directory if store is not None else False)
+    try:
+        return checked.validate(contract)
+    finally:
+        reader = getattr(checked, 'proof_evidence', None)
+        if reader is not None:
+            reader.close()
+
+
 def _run(args, *, validated_context=None):
     """Private handoff for a validated context in this automatic call."""
     started = time.perf_counter()
@@ -444,7 +462,7 @@ def _run(args, *, validated_context=None):
         require(digest(context.directory/'manifest.json') == contract['baseline']['manifest_sha256'], 'baseline changed')
         # Revalidate every archived artifact; never mutate the baseline run.
         stage = 'baseline_revalidation'; step = time.perf_counter()
-        ContractContext(args.base_run).validate(contract)
+        _revalidate_baseline(context, contract)
         timings['final_baseline_revalidation_seconds'] = time.perf_counter()-step
         timings['post_generation_validation_seconds'] = time.perf_counter()-validation_started
         for extension in ('json','il','v'):

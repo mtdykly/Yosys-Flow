@@ -66,23 +66,10 @@ if (( fresh )); then
   run_stage archive 21600 python3 -u -m yosys_flow run --flow synth \
     --source "$hyp_old" --top top --yosys "$hyp_stock" --native-yosys "$hyp_native" \
     --index-backend sqlite --out "$hyp_suite/base-raw"
-  if (( ! dry )); then
-    # This recipe names a captured object, so check its actual electrical target.
-    # The refinement tool subsequently authenticates the archive and re-proves
-    # every reused pair; this read is only a recipe guard, never proof authority.
-    python3 - "$hyp_suite/base-raw/verified-index.sqlite3" <<'PY'
-import json,sqlite3,sys,zlib
-from pathlib import Path
-db=sqlite3.connect(Path(sys.argv[1]).resolve().as_uri()+'?mode=ro')
-row=db.execute("SELECT d.data FROM items i JOIN documents d ON d.id=i.doc WHERE i.field='objects' AND i.key=?",
-               (json.dumps('native:cell_1118516@1'),)).fetchone()
-assert row, 'captured target identity changed; do not reuse this fixed recipe'
-state=json.loads(zlib.decompress(row[0]))['state']
-assert state['type']=='$_AND_' and state['connections']['\\Y']==[{'offset':0,'wire':'\\n214713'}], 'captured target no longer names the expected AND'
-PY
-  fi
+  # The authenticated reader resolves this capture's actual signal binding.
+  # Added provenance events can change object IDs without changing the circuit.
   run_stage region-proof 21600 python3 -u provenance/tools/refine_partitions.py \
-    "$hyp_suite/base-raw" --input-cell 'native:cell_1118516@1' \
+    "$hyp_suite/base-raw" --input-wire n214713 --input-module top --input-type '$_AND_' \
     --out "$hyp_suite/region-proof" --publish "$hyp_base" \
     --reuse-pairs "$hyp_pairs" --node-limits 64 256 4096 \
     --sat-timeout 60 --cec-timeout 360 --cec-attempts 256 \

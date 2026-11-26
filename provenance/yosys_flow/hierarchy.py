@@ -275,6 +275,7 @@ def instance_view(trace, modules, top):
                 if key in {'origins','recorded_origins','enclosing_controls'}: return [source_map[s] for s in value]
                 return [rewrite(x) for x in value]
             if isinstance(value,dict):
+                if key == 'premises': return {rewrite(k):v for k,v in value.items()}
                 return {k:({role:[source_map[s] for s in ss] for role,ss in v.items()} if k=='roles' else rewrite(v,k)) for k,v in value.items()}
             return value
         def signal(bs): return [{'wire':name(path,b['wire']),'offset':b['offset']} if isinstance(b,dict) else b for b in bs]
@@ -309,7 +310,8 @@ def instance_view(trace, modules, top):
             view.edges.append({**rewrite(edge),'from':source_map[edge['from']] if isinstance(edge['from'],int) else refmap[edge['from']], 'instance':path})
         for attr in ('events','removals','process_discards','techmap_bits','abc_associations'):
             for row in getattr(trace,attr):
-                if row.get('ref',row.get('output')) in needed:
+                if row.get('ref',row.get('output')) in needed or (row.get('record_type')=='optimization_rewrite' and
+                        any(r in needed for r in [*row['outputs'], *row['connections']])):
                     getattr(view,attr).append({**rewrite(row),'instance':path})
         for attr in ('abc_internal','regions'):
             for row in getattr(trace,attr):

@@ -234,6 +234,8 @@ def refine(trace, internal=None, progress=None):
             obj['origins'] = source_lists[id(sources)]
             obj['precision'] = p
         for e in edges: e['precision'] = p
+    from .optimization import propagate_gaps
+    propagate_gaps(trace, groups)
 
 
 def validate_artifacts(trace, region, files):

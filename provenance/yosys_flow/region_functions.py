@@ -129,6 +129,8 @@ class Circuit:
 
     def value(self, bit):
         active = set()
+        from .online_evidence import current
+        policy=current();visited=0
         constants = {'0': self.manager.one ^ self.manager.one, '1': self.manager.one}
         stack = [(bit, False)]
         while stack:
@@ -137,6 +139,8 @@ class Circuit:
                 if b not in {'0','1'}: raise UnsupportedFunction('non_binary_constant:'+b)
                 continue
             if b in self.values: continue
+            visited+=1
+            if policy:policy.check_nodes(visited,'source_anchor_function_nodes')
             require(b in self.drivers, 'region function has unbound input')
             cell = self.cells[self.drivers[b]]
             if done:

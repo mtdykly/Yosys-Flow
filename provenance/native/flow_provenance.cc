@@ -27,7 +27,7 @@ static bool active_input_cached = false;
 static long long input_content_lookups = 0, input_cache_hits = 0;
 using Clock = std::chrono::steady_clock;
 static bool profile_capture = false;
-enum ProfileKind { StateBuild, JsonEncode, StreamWrite, Checkpoint, AbcImport, ProfileCount };
+enum ProfileKind { StateBuild, JsonEncode, StreamWrite, Checkpoint, AbcImport, PremiseQuery, ProfileCount };
 static double profile_seconds[ProfileCount];
 static long long profile_calls[ProfileCount], encoded_bytes = 0;
 static std::vector<Clock::time_point> step_started;
@@ -46,6 +46,11 @@ static std::string merged_precision(const std::string &, const std::string &);
 static int sequence = 0, source_id = 0, object_id = 0, step_id = 0;
 static std::vector<int> steps;
 static std::vector<std::string> passes;
+static std::map<std::string, long long> capture_work;
+static std::map<std::string, std::pair<long long*, long long*>> observe_work;
+static void work(const std::string &site) {
+    if (profile_capture) ++capture_work[(passes.empty() ? "outside" : passes.back()) + "/" + site];
+}
 // Run-local immutable origin sets: an ABC region can contribute the same large
 // set to thousands of outputs. Do not allocate one tree per output/version.
 static std::map<Origins, std::shared_ptr<const Origins>> origin_pool;
@@ -67,6 +72,11 @@ struct SharedOrigins {
     auto begin() const { return value->begin(); }
     auto end() const { return value->end(); }
     bool empty() const { return value->empty(); }
+    void unite(const SharedOrigins &other) {
+        if (value == other.value) return;
+        if (empty()) { value = other.value; return; }
+        insert(other.begin(), other.end());
+    }
     void clear() { value = share_origins({}); }
     template<typename It> void insert(It first, It last) {
         bool changed = false;
@@ -92,7 +102,8 @@ static std::vector<int> checkpoint_connections;
 static int checkpoint_sequence = 0;
 static bool full_checkpoints = false;
 static std::map<RTLIL::Module*, std::unique_ptr<SigMap>> connection_maps;
-void connections_reset(RTLIL::Module *module) { connection_maps.erase(module); }
+static void clear_premise_cache(RTLIL::Module *module);
+void connections_reset(RTLIL::Module *module) { connection_maps.erase(module); clear_premise_cache(module); }
 static SigMap &connection_map(RTLIL::Module *module) {
     auto &map = connection_maps[module];
     if (!map || audit_scans) { map = std::make_unique<SigMap>(module); ++map_builds; }
@@ -131,6 +142,57 @@ struct ConnectionInfo {
     std::string precision;
 };
 static std::vector<ConnectionInfo> connections;
+// Original directed assignments, indexed by wire identity (never by constant
+// value). Used only to recover premises actually consumed by constant folding.
+struct ConnectionEvidence {
+    using Key = std::pair<RTLIL::Wire*, int>;
+    // SigBit's default hash reads the mutable wire name. Use pointer identity
+    // and offsets so opt_clean renaming cannot invalidate this index.
+    dict<RTLIL::Wire*, dict<int, std::pair<int, RTLIL::SigBit>>> links;
+    dict<RTLIL::Wire*, pool<Key>> users;
+    // Directed evidence only; the current SigMap terminal is checked at use.
+    std::map<Key, std::pair<RTLIL::SigBit, std::vector<int>>> constant_cache;
+    bool count(RTLIL::SigBit bit) const {
+        return links.count(bit.wire) && links.at(bit.wire).count(bit.offset);
+    }
+    std::pair<int, RTLIL::SigBit> at(RTLIL::SigBit bit) const {
+        return links.at(bit.wire).at(bit.offset);
+    }
+    void erase(Key lhs) {
+        constant_cache.clear();
+        if (!links.count(lhs.first) || !links.at(lhs.first).count(lhs.second)) return;
+        auto &outputs = links.at(lhs.first);
+        auto rhs = outputs.at(lhs.second).second;
+        if (rhs.wire) {
+            auto &incoming = users.at(rhs.wire);
+            incoming.erase(lhs);
+            if (incoming.empty()) users.erase(rhs.wire);
+        }
+        outputs.erase(lhs.second);
+        if (outputs.empty()) links.erase(lhs.first);
+    }
+    void set(RTLIL::SigBit lhs, int index, RTLIL::SigBit rhs) {
+        Key key{lhs.wire, lhs.offset};
+        erase(key);
+        links[lhs.wire][lhs.offset] = {index, rhs};
+        if (rhs.wire) users[rhs.wire].insert(key);
+    }
+    void remove(RTLIL::Wire *wire) {
+        // Invalidate incoming links as well as the wire's own drivers. Keeping
+        // a dangling RHS would let allocator address reuse invent a premise.
+        if (users.count(wire)) {
+            auto incoming = users.at(wire);
+            for (auto lhs : incoming) erase(lhs);
+        }
+        // Also retire offsets that wreduce already removed from wire->width.
+        while (links.count(wire)) erase({wire, links.at(wire).begin()->first});
+    }
+};
+static dict<RTLIL::Module*, ConnectionEvidence> connection_evidence;
+static void clear_premise_cache(RTLIL::Module *module) {
+    if (connection_evidence.count(module)) connection_evidence.at(module).constant_cache.clear();
+}
+static dict<std::string, int> connection_slots;
 static dict<RTLIL::Process*, dict<RTLIL::SigBit, Origins>> actions;
 static dict<RTLIL::Process*, dict<RTLIL::SigBit, RTLIL::SigBit>> temporaries;
 static std::set<std::string> gaps;
@@ -255,30 +317,46 @@ void gap(const std::string &reason) {
     if (enabled() && gaps.insert(reason).second)
         emit({{"record_type", "coverage_gap"}, {"reason", reason}});
 }
-Scope::Scope(const Origins &origins, const std::string &p, bool inherit) : previous(active), previous_precision(precision) {
+Scope::Scope(const Origins &origins, const std::string &p, bool inherit) : previous(active.value), previous_precision(precision) {
     if (!inherit) active = origins;
     else active.insert(origins.begin(), origins.end());
     precision = p;
 }
-Scope::~Scope() { active = previous; precision = previous_precision; }
+Scope::~Scope() { active.value = previous; precision = previous_precision; }
 static void observe(RTLIL::Cell *cell, const std::string &capture) {
     if (!cells.count(cell)) return;
     if (cell->is_builtin_ff()) log_error("Combinational-only flow rejects state cell %s (%s).\n", log_id(cell), log_id(cell->type));
     auto &info = cells.at(cell);
     ++observe_calls;
-    if (unchanged(cell, info)) return;
+    std::pair<long long*, long long*> counters{nullptr, nullptr};
+    if (profile_capture) {
+        auto found = observe_work.find(capture);
+        if (found == observe_work.end()) {
+            auto prefix = (passes.empty() ? "outside" : passes.back()) + std::string("/");
+            found = observe_work.emplace(capture, std::make_pair(
+                &capture_work[prefix + "observe/" + capture], &capture_work[prefix + "unchanged/" + capture])).first;
+        }
+        counters = found->second;
+        ++*counters.first;
+    }
+    if (unchanged(cell, info)) { if (counters.second) ++*counters.second; return; }
     ++state_builds;
     J data = state(cell);
     remember(cell, info);
     // JSON values are immutable/shared. Compare the typed state and serialize
     // it only once, as part of the emitted event, instead of dumping twice.
     if (data == info.state) return;
+    bool initialized = !info.state.is_null();
     auto old = ref(info);
     ++info.version;
     emit({{"record_type", "cell_state"}, {"input", old}, {"ref", ref(info)},
           {"state", data}, {"origins", ids(info.origins)}, {"precision", info.precision},
           {"capture", capture}, {"operation", operation}});
     info.state = std::move(data);
+    if (initialized && capture == "structural_observation" && !passes.empty() &&
+        passes.back() != "opt_clean" && passes.back() != "hierarchy" && passes.back() != "flatten")
+        emit({{"record_type", "coverage_gap"}, {"reason", "object_change_without_rewrite_binding"},
+              {"ref", ref(info)}, {"input", old}, {"pass", passes.back()}, {"operation", operation}});
 }
 static SharedOrigins collect_origins(const std::vector<RTLIL::Cell*> &targets) {
     if (targets.size() == 1 && cells.count(targets[0])) return cells.at(targets[0]).origins;
@@ -293,13 +371,14 @@ static std::string collect_precision(const std::vector<RTLIL::Cell*> &targets) {
     return result;
 }
 CellScope::CellScope(RTLIL::Cell *cell, const std::string &op) : CellScope(std::vector<RTLIL::Cell*>{cell}, op) {}
-CellScope::CellScope(const std::vector<RTLIL::Cell*> &cs, const std::string &op) :
+CellScope::CellScope(const std::vector<RTLIL::Cell*> &cs, const std::string &op, bool reuse_observed) :
     scope(collect_origins(cs), collect_precision(cs), false),
-    previous_inputs(active_inputs), previous_operation(operation), previous_outputs(active_outputs) {
+    previous_inputs(std::move(active_inputs)), previous_operation(std::move(operation)), previous_outputs(std::move(active_outputs)) {
     previous_scope = cell_scope; cell_scope = this;
     active_inputs.clear(); active_input_cached = false; active_outputs.clear(); operation = op;
     for (auto c : cs) if (cells.count(c)) {
-        observe(c, "before_instrumented_rewrite");
+        if (!reuse_observed) observe(c, "before_instrumented_rewrite");
+        else work("scope_reused_observation");
         targets.emplace_back(c, cells.at(c).id);
         active_inputs.push_back(ref(cells.at(c)));
         if (op == "techmap" && cs.size() == 1) {
@@ -332,7 +411,7 @@ CellScope::~CellScope() {
     cell_scope = previous_scope;
     for (auto [cell, id] : targets)
         if (cells.count(cell) && cells.at(cell).id == id) observe(cell, "instrumented_rewrite");
-    active_inputs = previous_inputs; active_input_cached = false; operation = previous_operation; active_outputs = previous_outputs;
+    active_inputs = std::move(previous_inputs); active_input_cached = false; operation = std::move(previous_operation); active_outputs = std::move(previous_outputs);
 }
 RegionCapture::RegionCapture(Region &region, const RTLIL::SigSpec &outputs) : previous(capturing_region), previous_outputs(captured_outputs) { capturing_region = &region; captured_outputs = outputs; }
 RegionCapture::~RegionCapture() { capturing_region = previous; captured_outputs = previous_outputs; }
@@ -376,7 +455,7 @@ RegionScope::RegionScope(const Region &region, RTLIL::Module *module, const RTLI
 }
 RegionScope::~RegionScope() {
     if (profile_capture) { profile_seconds[AbcImport] += std::chrono::duration<double>(Clock::now()-abc_import_started).count(); ++profile_calls[AbcImport]; }
-    active_inputs = previous_inputs; active_input_cached = false; operation = previous_operation; active_outputs = previous_outputs; active_region = previous_region;
+    active_inputs = std::move(previous_inputs); active_input_cached = false; operation = std::move(previous_operation); active_outputs = std::move(previous_outputs); active_region = previous_region;
 }
 AbcImportScope::AbcImportScope(RTLIL::Cell *mapped, const dict<RTLIL::IdString, RTLIL::SigSpec> &target_ports) : previous(abc_node), previous_boundary(abc_boundary) {
     abc_node = mapped->name.str(); abc_boundary = -1;
@@ -400,7 +479,11 @@ void created(RTLIL::Cell *cell) {
           {"inputs", active_input_ids()}, {"operation", operation}, {"abc_invocation", active_region}, {"abc_node", abc_node}, {"abc_boundary", abc_boundary}});
     if (cell_scope) cell_scope->generated.emplace_back(cell, cells.at(cell).id);
     process_created(cell);
-    if (active.empty() && precision != "process_pending") gap("cell_created_without_semantic_source_binding");
+    if (active.empty() && precision != "process_pending") {
+        gap("cell_created_without_semantic_source_binding");
+        emit({{"record_type", "coverage_gap"}, {"reason", "object_created_without_source"},
+              {"ref", ref(cells.at(cell))}, {"operation", operation}});
+    }
 }
 void removed(RTLIL::Cell *cell) {
     if (!tracks(cell->module)) return;
@@ -414,10 +497,14 @@ void removed(RTLIL::Cell *cell) {
         capturing_region->origins.insert(info.origins.begin(), info.origins.end());
         for (auto &port : cell->connections()) if (cell->output(port.first)) capturing_region->outputs.append(port.second);
     }
+    auto reason = operation.empty() ? (passes.empty() ? "outside_pass" : passes.back()) : operation;
+    if (operation.compare(0, 9, "opt_expr_") == 0) reason = "opt_expr";
+    if (operation.compare(0, 8, "wreduce_") == 0) reason = "wreduce";
+    if (operation == "opt_share_operators") reason = "opt_share";
     emit({{"record_type", "cell_remove"}, {"ref", ref(cells.at(cell))},
           {"abc_invocation", capturing_region ? capturing_region->id : ""},
           {"abc_outputs", capturing_region ? signal(captured_outputs) : J::array{}},
-          {"reason", operation.empty() ? (passes.empty() ? "outside_pass" : passes.back()) : operation}});
+          {"reason", reason}, {"operation", operation}});
     process_retired(cell);
     cells.erase(cell); // Explicit retirement prevents allocator address reuse.
 }
@@ -455,6 +542,9 @@ void assignment(RTLIL::Module *module, const RTLIL::SigSpec &lhs, const RTLIL::S
     ConnectionInfo info{module, lhs, rhs, "native:connection_" + std::to_string(++object_id), {}};
     for (int i = 0; i < lhs.size(); ++i) info.offsets.push_back(i);
     info.origins = origins; info.precision = p;
+    connection_slots[info.ref] = GetSize(connections);
+    for (int i = 0; i < lhs.size(); ++i) if (lhs[i].wire && lhs[i] != rhs[i])
+        connection_evidence[module].set(lhs[i], GetSize(connections), rhs[i]);
     connections.push_back(info);
     emit({{"record_type", "assignment"}, {"ref", info.ref},
           {"module", module->name.str()}, {"lhs", signal(lhs)}, {"rhs", signal(rhs)},
@@ -463,6 +553,7 @@ void assignment(RTLIL::Module *module, const RTLIL::SigSpec &lhs, const RTLIL::S
           {"cloned_from", cloned_from}, {"origins", ids(origins)}, {"precision", p}, {"inputs", active_input_ids()}, {"operation", operation}, {"abc_invocation", active_region}, {"abc_node", abc_node}, {"abc_boundary", abc_boundary}});
 }
 void connected(RTLIL::Module *module, const RTLIL::SigSig &conn) {
+    clear_premise_cache(module);
     auto cached = connection_maps.find(module);
     if (cached != connection_maps.end()) cached->second->add(conn.first, conn.second);
     if (!tracks(module) || operation.empty() || active_inputs.empty()) return;
@@ -473,6 +564,7 @@ void connected(RTLIL::Module *module, const RTLIL::SigSig &conn) {
     if (!lhs.empty()) assignment(module, lhs, rhs, active, precision);
 }
 static void connection_state(ConnectionInfo &info, const std::string &reason) {
+    clear_premise_cache(info.module);
     emit({{"record_type", "connection_state"}, {"ref", info.ref}, {"revision", ++info.revision},
           {"lhs", signal(info.lhs)}, {"rhs", signal(info.rhs)}, {"offsets", info.offsets}, {"reason", reason},
           {"module", info.module->name.str()}});
@@ -488,6 +580,8 @@ void remap_connections(RTLIL::Module *module, const SigMap &map) {
     }
 }
 void wires_removed(RTLIL::Module *module, const pool<RTLIL::Wire*> &wires) {
+    if (connection_evidence.count(module)) for (auto wire : wires)
+        connection_evidence.at(module).remove(wire);
     connections_reset(module);
     if (!tracks(module) || wires.empty()) return;
     for (auto &info : connections) if (info.module == module) {
@@ -546,6 +640,7 @@ void parameter_module_cloned(RTLIL::Module *original, RTLIL::Module *copy) {
     }
 }
 void module_removed(RTLIL::Module *module) {
+    connection_evidence.erase(module);
     connections_reset(module);
     if (!tracks(module)) return;
     for (auto cell : module->cells()) removed(cell);
@@ -603,6 +698,7 @@ Origins process_sources(RTLIL::Process *proc, const RTLIL::SigSpec &sig) {
     }
     return result;
 }
+#include "optimization_provenance.inc"
 #include "process_provenance.inc"
 #include "hierarchy_provenance.inc"
 
@@ -653,9 +749,12 @@ static void checkpoint(RTLIL::Design *design, bool final) {
             {"input_content_lookups", double(input_content_lookups)}, {"input_cache_hits", double(input_cache_hits)}};
         if (profile_capture) {
             J::object timings;
-            const char *names[] = {"state_build", "json_encode", "stream_write", "checkpoint_inclusive", "abc_import_inclusive"};
+            const char *names[] = {"state_build", "json_encode", "stream_write", "checkpoint_inclusive", "abc_import_inclusive", "premise_query"};
             for (int i = 0; i < ProfileCount; ++i)
                 timings[names[i]] = J::object{{"seconds", profile_seconds[i]}, {"calls", double(profile_calls[i])}};
+            J::object work_counts;
+            for (const auto &item : capture_work) work_counts[item.first] = double(item.second);
+            record["capture_work"] = work_counts;
             record["capture_profile"] = J::object{{"timings", timings}, {"encoded_bytes", double(encoded_bytes)},
                 {"note", "overlapping scopes; checkpoint timer excludes final checkpoint; encoding/write counters stop before run_end"}};
         }
@@ -666,7 +765,10 @@ static void checkpoint(RTLIL::Design *design, bool final) {
 }
 void step_begin(const std::vector<std::string> &args, RTLIL::Design *design) {
     if (!tracks(design) || args[0] == "flow_start" || args[0] == "flow_stop") return;
+    observe_work.clear();
     connection_maps.clear(); // No cache crosses an arbitrary pass boundary.
+    for (auto &item : connection_evidence) item.second.constant_cache.clear();
+    if (!rewrite_depth) rewrite_inputs.clear();
     int parent = steps.empty() ? 0 : steps.back();
     steps.push_back(++step_id); passes.push_back(args[0]);
     if (profile_capture) step_started.push_back(Clock::now());
@@ -674,7 +776,7 @@ void step_begin(const std::vector<std::string> &args, RTLIL::Design *design) {
     static const std::set<std::string> supported = {"read_verilog", "hierarchy", "flatten", "flow_hierarchy", "proc", "proc_clean", "proc_rmdead",
         "proc_prune", "proc_init", "proc_arst", "proc_rom", "proc_mux", "proc_dlatch", "proc_dff", "proc_memwr",
         "opt_merge", "opt_clean", "opt_dff", "techmap", "abc", "write_json", "write_rtlil", "write_verilog", "check", "stat", "synth", "opt"};
-    static const std::set<std::string> partial = {"opt_expr", "opt_muxtree", "opt_reduce", "alumacc"};
+    static const std::set<std::string> partial = {"opt_expr", "opt_muxtree", "opt_reduce", "alumacc", "opt_share", "wreduce"};
     if (partial.count(args[0])) gap("partial_pass:" + args[0]);
     else if (!supported.count(args[0])) gap("uncovered_pass:" + args[0]);
 }
@@ -695,6 +797,7 @@ void step_end(RTLIL::Design *design) {
     emit(std::move(end));
     { ProfileTimer timer(StreamWrite); output.flush(); } // Publish completed batches.
     steps.pop_back(); passes.pop_back();
+    observe_work.clear();
 }
 struct Start : Pass {
     Start() : Pass("flow_start", "start native synthesis provenance") {}
@@ -706,7 +809,7 @@ struct Start : Pass {
         input_content_lookups = input_cache_hits = 0; active_input_cached = false; active_input_encoding = J();
         profile_capture = std::getenv("YOSYS_FLOW_CAPTURE_PROFILE") != nullptr;
         for (int i = 0; i < ProfileCount; ++i) { profile_seconds[i] = 0; profile_calls[i] = 0; }
-        encoded_bytes = 0; step_started.clear();
+        encoded_bytes = 0; step_started.clear(); observe_work.clear(); capture_work.clear();
         audit_scans = std::getenv("YOSYS_FLOW_NATIVE_AUDIT") != nullptr;
         full_checkpoints = audit_scans || std::getenv("YOSYS_FLOW_NATIVE_FULL_CHECKPOINTS") != nullptr;
         checkpoint_sequence = 0; checkpoint_cells.clear(); checkpoint_connections.clear();
@@ -716,7 +819,7 @@ struct Start : Pass {
         cells.clear(); actions.clear(); temporaries.clear(); gaps.clear(); active.clear(); steps.clear(); passes.clear();
         source_rows.clear(); cloning_source.clear(); flatten_context.clear(); flatten_sources.clear();
         process_reset();
-        root_design = design; pending_modules.clear(); connections.clear(); active_inputs.clear(); active_outputs.clear(); operation.clear(); capturing_region = nullptr;
+        root_design = design; pending_modules.clear(); connections.clear(); connection_slots.clear(); connection_evidence.clear(); active_inputs.clear(); active_outputs.clear(); operation.clear(); capturing_region = nullptr;
         abc_id = 0; active_region.clear(); abc_node.clear(); abc_boundary = -1; captured_outputs = RTLIL::SigSpec(); cell_scope = nullptr;
         rewrite_filename(args[1]);
         trace_path = args[1];
@@ -724,7 +827,7 @@ struct Start : Pass {
         if (existing.good()) log_cmd_error("Refusing to overwrite native provenance output.\n");
         output.open(args[1]);
         if (!output) log_cmd_error("Cannot open provenance output.\n");
-        emit({{"record_type", "run_begin"}, {"schema_version", 2}, {"run_id", args[2]}, {"profile", "native-combinational"}, {"features", J::array{"process_action_proofs", "conservative_precision_merge", "abc_node_correspondence", "conservative_derivation", "techmap_output_bits", "combinational_only", "abc_internal_v5", "shared_native_arrays_v1", "native_checkpoint_deltas_v1"}}});
+        emit({{"record_type", "run_begin"}, {"schema_version", 2}, {"run_id", args[2]}, {"profile", "native-combinational"}, {"features", J::array{"process_action_proofs", "conservative_precision_merge", "abc_node_correspondence", "conservative_derivation", "techmap_output_bits", "combinational_only", "abc_internal_v5", "shared_native_arrays_v1", "native_checkpoint_deltas_v1", "optimization_rewrites_v1"}}});
     }
 } Start;
 struct Stop : Pass {

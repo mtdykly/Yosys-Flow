@@ -12,7 +12,7 @@ from weakref import WeakValueDictionary
 
 from .common import require
 
-SHARED_FIELDS = {'origins', 'recorded_origins', 'inputs', 'values', 'enclosing_controls'}
+SHARED_FIELDS = {'origins', 'recorded_origins', 'inputs', 'values', 'enclosing_controls', 'source_gaps', 'direct_source_gaps'}
 EAGER = {'design', 'instance_catalog', 'view_rule', 'final', 'gaps',
          'abc_fallbacks', 'process_connection_proofs', 'hierarchy'}
 TABLE_WIDTHS = {'documents':3, 'document_fields':3, 'fields':4, 'items':4, 'refs':2,

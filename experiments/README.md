@@ -29,6 +29,7 @@ python3 -m experiments anubis-nochange --upstream-top --repeats 1 \
 | [耗时归因](docs/cost-attribution.md) | 跨案例归因与 `python3 -m experiments.profile` |
 | [索引微基准](docs/index-backends.md) | 同一验证记录、相同查询下的历史公平对比 |
 | [hyp](docs/hyp.md) | 最新保留的大案例结果与复现脚本 |
+| [div](docs/div.md) | 第二个大组合电路；旧建档、通用证据、全量对照和真实首次增量 |
 | [ANUBIS 清单](../benchmarks/anubis/README.md) | 功能修改、NOC 与配置的固定来源 |
 
 `experiment.py` 调度、`experiment_worker.py` 执行独立测量、`experiment_metrics.py` 统计；`anubis.py/epfl.py` 准备固定案例，`profile.py` 仅在显式启用时采样。`nochange*.py` 和 `seq_anubis.py` 是独立调查入口，EQY 复用功能仍在 `incremental/sequential.py`。

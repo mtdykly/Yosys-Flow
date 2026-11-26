@@ -63,9 +63,9 @@ def register(commands):
     seq_bench.add_argument('--frontend-timeout',type=positive_seconds,default=120.0)
     compare.add_argument('--equivalence-timeout',type=positive_seconds,default=5.0)
     compare.add_argument('--equivalence-budget',type=positive_seconds,default=15.0)
-    benchmark.add_argument('--no-equivalence-precheck',action='store_true')
-    benchmark.add_argument('--equivalence-timeout',type=positive_seconds,default=5.0)
-    benchmark.add_argument('--equivalence-budget',type=positive_seconds,default=15.0)
+    benchmark.add_argument('--no-equivalence-precheck',action='store_true',help=argparse.SUPPRESS)
+    benchmark.add_argument('--equivalence-timeout',type=positive_seconds,default=5.0,help=argparse.SUPPRESS)
+    benchmark.add_argument('--equivalence-budget',type=positive_seconds,default=15.0,help=argparse.SUPPRESS)
     for command in (experiment,benchmark,survey,seq_bench,compare):
         command.add_argument('--out',required=True,help='新的实验结果目录')
         command.add_argument('--yosys',default='yosys')

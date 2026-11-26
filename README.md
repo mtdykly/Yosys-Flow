@@ -26,6 +26,8 @@ python3 -m incremental auto \
 
 首次建档保存原始 JSONL、前端表示、最终网表及验证索引。默认 SQLite 按需查询，`run --index-backend gzip` 使用同样去重结构的内存后端。捕获完成后若后处理被中断，可以 `python3 -m yosys_flow resume OLD_CAPTURE --out NEW_ARCHIVE` 续建档，见[存储与恢复](provenance/docs/storage.md)。
 
+可用 `python3 -m yosys_flow prepare-evidence OLD_ARCHIVE` 提前整理旧设计已证函数关系，在线按需组合和缓存区域，避免重复恢复全局证明状态。它默认复用已记录的 FRAIG/DCH 成功关系、对旧日志中的未知改写做有预算的补证，并扫描相邻旧检查点的局部函数边界，不需要提前指定修改；命中证据与缺失证明的耗时分别报告，详见[持久证明证据](provenance/docs/proof-evidence.md)。
+
 增量入口继承旧顶层、参数、宏和综合模式；默认从变化赋值及依赖起步，必要时扩区。叶模块等价预检查可直接复用功能不变的旧网表。候选生成后执行整网与导出验证，通过才发布交付结果。新网表尚不能直接作为下一轮来源归档。
 
 ## 目录与文档

@@ -406,7 +406,7 @@ def run(args):
     library = None
     if getattr(args, 'liberty', None):
         library = prepare_area_library(args.liberty, out/'technology', tools['yosys']['path'])
-    code = {str(p.relative_to(ROOT)): digest(p) for folder in ('incremental', 'experiments', 'provenance/yosys_flow')
+    code = {str(p.relative_to(ROOT)): digest(p) for folder in ('incremental', 'provenance/yosys_flow')
             for p in (ROOT/folder).rglob('*.py')}
     for name in code:
         snapshot = out/'implementation'/name

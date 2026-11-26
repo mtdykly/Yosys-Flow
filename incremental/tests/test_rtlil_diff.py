@@ -1,9 +1,10 @@
 """Structural matching must not hide rewiring, attributes or process priority."""
 import random
 import unittest
+from unittest.mock import patch
 
 from incremental import rtlil
-from incremental.rtlil_diff import Work, opcodes
+from incremental.rtlil_diff import MAX_POSITIONAL_EDITS, Work, _positional_edits, opcodes
 
 
 def compare(a, b):
@@ -29,6 +30,50 @@ def network(count, extra=False, prefix='old'):
 
 
 class StructuredDifferenceTests(unittest.TestCase):
+    def test_lexical_filters_keep_port_semantics_and_retained_attributes(self):
+        text='''module \\top
+  attribute \\src "old.v:1.1-1.2"
+  wire width 4 signed input 1 \\a
+  wire output 2 \\y
+  wire inout 3 \\io
+  wire \\input_hidden
+  attribute \\src_extra 1
+  connect \\y \\a
+end
+'''
+        modules=rtlil.parse(text);ports=modules['top'].ports()
+        self.assertEqual(set(ports),{'a','y','io'})
+        self.assertEqual(ports['a']['width'],4)
+        self.assertTrue(ports['a']['signed'])
+        self.assertEqual(ports['io']['direction'],'inout')
+        self.assertFalse(compare(text,text.replace('old.v:1.1-1.2','new.v:3.4-5.6'))['changes'])
+        self.assertTrue(compare(text,text.replace('src_extra 1','src_extra 0'))['changes'])
+
+    def test_sparse_name_stable_edits_skip_global_alignment(self):
+        old=network(5000)
+        new=old.replace('cell $xor $old$cell1\n','cell $or $old$cell1\n').replace(
+            'connect \\A \\input4999','connect \\A \\common')
+        with patch('incremental.rtlil_diff._alignment',side_effect=AssertionError('unneeded alignment')):
+            report=compare(old,new)
+        edits=report['changes'][0]['ir_changes']
+        self.assertEqual(sum(len(r['old']) for r in edits),2)
+        self.assertTrue(any(r['old'][0][:2]==['cell','$xor'] and r['new'][0][:2]==['cell','$or']
+                            for r in edits))
+        self.assertIn({'operation':'replace','old':[['connect','\\A','\\input4999']],
+                       'new':[['connect','\\A','\\common']]},edits)
+        stats=report['diff_statistics'][0]
+        self.assertEqual(stats['matching_path'],'exact_identity')
+        self.assertEqual(stats['alignment_passes'],0)
+
+    def test_dense_name_stable_edits_keep_bounded_fallback(self):
+        old=network(MAX_POSITIONAL_EDITS+1)
+        new=old.replace('connect \\B \\common','connect \\B 1')
+        report=compare(old,new)
+        stats=report['diff_statistics'][0]
+        self.assertEqual(stats['matching_path'],'bounded_alignment')
+        self.assertTrue(report['changes'])
+        self.assertLessEqual(stats['exact_gap_work_cells'],stats['exact_gap_work_limit'])
+
     def test_early_expression_insertion_does_not_rewrite_unchanged_body(self):
         old=network(1500)
         new=network(1500,extra=True,prefix='moved')
@@ -103,6 +148,7 @@ end
         new=old.replace('connect \\z $z','connect \\z $x')
         report=compare(old,new)
         self.assertTrue(report['changes'])
+        self.assertEqual(report['diff_statistics'][0]['matching_path'],'bounded_alignment')
         self.assertGreater(report['diff_statistics'][0]['alignment_conflicts'],0)
 
     def test_process_is_one_block_and_keeps_order_and_attributes(self):
@@ -154,6 +200,22 @@ end
 
 
 class MatchingBudgetTests(unittest.TestCase):
+    def test_identity_path_preserves_every_literal_change_and_rejects_reference_changes(self):
+        rng=random.Random(1091)
+        for _ in range(100):
+            old=[['connect','\\A',f'@generated_{i}',str(rng.randrange(4))] for i in range(40)]
+            new=[list(r) for r in old]
+            for i in rng.sample(range(40),8):new[i][-1]=str(4+rng.randrange(4))
+            edits=_positional_edits(old,new)
+            self.assertIsNotNone(edits)
+            rebuilt=[list(r) for r in old]
+            for tag,i,j,k,l in edits:
+                self.assertEqual(tag,'replace');rebuilt[i:j]=new[k:l]
+            self.assertEqual(rebuilt,new)
+            new[17][2]='@generated_0'
+            self.assertIsNone(_positional_edits(old,new))
+        self.assertIsNone(_positional_edits([['wire','@generated_0']],[]))
+
     def assert_exact_edits(self,old,new,work):
         rebuilt=[]; cursor=0
         for tag,i,j,k,l in opcodes(old,new,work):

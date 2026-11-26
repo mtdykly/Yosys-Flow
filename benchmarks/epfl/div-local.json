@@ -1,0 +1,31 @@
+{
+  "case": "epfl_div_local",
+  "repository": "https://github.com/lsils/benchmarks",
+  "commit": "82d8cc6910419298e713a46644ed59fd3df53038",
+  "upstream_file": "arithmetic/div.v",
+  "base_sha256": "7fd2e122a9fb8ccaec1a33647ebc5105e33e8eaa5222291620308d2c93c9dd88",
+  "new_sha256": "548c775577e5417dd3360cf2731179e13e802266e68c4e46d9bb9def246a689b",
+  "license_sha256": "83e4dd21429a91fb7cea67a476032a9641425e5355df2e0f589a738b6ec9fd2c",
+  "top": "top",
+  "physical_lines": 63574,
+  "assignments": 57247,
+  "input_bits": 128,
+  "output_bits": 128,
+  "selection_rule": "experiments.epfl._ranked_targets: local; source topology only, before synthesis",
+  "mutation": {
+    "line": 34986,
+    "target": "n28918",
+    "original": "  assign n28918 = ~\\b[63]  & ~n28917;",
+    "replacement": "  assign n28918 = ~\\b[63]  | ~n28917;",
+    "reachable_output_count": 1,
+    "max_source_distance_to_output": 1,
+    "direct_users": 1
+  },
+  "witness": {
+    "a_hex": "0x4e768a7d834b8",
+    "b_hex": "0x3e51eceb8d1f37b",
+    "differing_outputs": {"quotient[0]": {"base": 0, "new": 1}}
+  },
+  "scope": "artificial local functional edit, not an upstream historical ECO",
+  "planner_inputs": "old archive, target-independent old evidence, complete new RTL only"
+}
